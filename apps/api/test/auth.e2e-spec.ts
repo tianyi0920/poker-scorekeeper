@@ -21,12 +21,66 @@ const fixturePassword = `${randomBytes(18).toString('base64url')}Aa1!`;
 const changedPassword = `${randomBytes(18).toString('base64url')}Bb2!`;
 const bootstrapPassword = `${randomBytes(18).toString('base64url')}Cc3!`;
 const csrfSecret = randomBytes(32).toString('hex');
+const originalTestOnlyBootstrapUsername = process.env.TEST_ONLY_BOOTSTRAP_USERNAME;
 
 type SeedName = 'forced' | 'standard' | 'wrong' | 'disabled' | 'deleted' | 'change' | 'logout' | 'throttle';
 
 function normalized(value: string): string {
   return value.trim().toLowerCase();
 }
+
+function assertAuthTestDatabase(databaseUrl = process.env.DATABASE_URL): void {
+  if (databaseUrl === undefined) throw new Error('DATABASE_URL is required for auth E2E');
+  const database = new URL(databaseUrl).pathname.slice(1);
+  if (!database.endsWith('_test')) {
+    throw new Error(`Refusing auth E2E on database: ${database}`);
+  }
+}
+
+assertAuthTestDatabase();
+
+let sentinelPrisma: PrismaService;
+let sentinelSuperAdmin: User;
+let sentinelUpdatedAt: Date;
+
+beforeAll(async () => {
+  sentinelPrisma = new PrismaService(new ConfigService({
+    DATABASE_URL: process.env.DATABASE_URL,
+    NODE_ENV: 'test'
+  }));
+  const passwordHash = await argon2.hash(fixturePassword, { type: argon2.argon2id });
+  const username = `sentinel-auth-${runId}`;
+  sentinelSuperAdmin = await sentinelPrisma.user.create({
+    data: {
+      username,
+      normalizedUsername: normalized(username),
+      nickname: `sentinel-auth-${runId}`,
+      activeNormalizedNickname: normalized(`sentinel-auth-${runId}`),
+      passwordHash,
+      role: Role.SUPER_ADMIN,
+      avatarValue: 'default'
+    }
+  });
+  sentinelUpdatedAt = sentinelSuperAdmin.updatedAt;
+});
+
+afterAll(async () => {
+  try {
+    const sentinelAfterSuite = await sentinelPrisma.user.findUniqueOrThrow({
+      where: { id: sentinelSuperAdmin.id }
+    });
+    expect(sentinelAfterSuite).toMatchObject({
+      role: Role.SUPER_ADMIN,
+      isActive: true,
+      deletedAt: null
+    });
+    expect(sentinelAfterSuite.updatedAt.getTime()).toBe(sentinelUpdatedAt.getTime());
+  } finally {
+    await sentinelPrisma.authSession.deleteMany({ where: { userId: sentinelSuperAdmin.id } });
+    await sentinelPrisma.user.delete({ where: { id: sentinelSuperAdmin.id } });
+    await sentinelPrisma.$disconnect();
+  }
+});
 
 function serializedCookieFrom(response: Response): string {
   const setCookie = response.headers['set-cookie'];
@@ -74,7 +128,6 @@ describe.sequential('session authentication', () => {
   let prisma: PrismaService;
   let passwordHash: string;
   let users: Record<SeedName, User>;
-  let preexistingActiveSuperAdminIds: string[] = [];
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
@@ -82,31 +135,11 @@ describe.sequential('session authentication', () => {
     process.env.BOOTSTRAP_ADMIN_USERNAME = `${usernamePrefix}-bootstrap`;
     process.env.BOOTSTRAP_ADMIN_NICKNAME = `${usernamePrefix}-root`;
     process.env.BOOTSTRAP_ADMIN_PASSWORD = bootstrapPassword;
+    process.env.TEST_ONLY_BOOTSTRAP_USERNAME = normalized(`${usernamePrefix}-bootstrap`);
 
     app = await createApp();
     prisma = app.get(PrismaService);
-    preexistingActiveSuperAdminIds = (await prisma.user.findMany({
-      where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null },
-      select: { id: true }
-    })).map(({ id }) => id);
-    if (preexistingActiveSuperAdminIds.length > 0) {
-      await prisma.user.updateMany({
-        where: { id: { in: preexistingActiveSuperAdminIds } },
-        data: { isActive: false }
-      });
-    }
-
-    try {
-      await app.init();
-    } catch (error: unknown) {
-      if (preexistingActiveSuperAdminIds.length > 0) {
-        await prisma.user.updateMany({
-          where: { id: { in: preexistingActiveSuperAdminIds } },
-          data: { isActive: true }
-        });
-      }
-      throw error;
-    }
+    await app.init();
     passwordHash = await argon2.hash(fixturePassword, { type: argon2.argon2id });
 
     const seed = async (
@@ -142,26 +175,18 @@ describe.sequential('session authentication', () => {
   afterAll(async () => {
     try {
       if (prisma !== undefined) {
-        try {
-          const ownedUsers = await prisma.user.findMany({
-            where: { normalizedUsername: { startsWith: normalized(usernamePrefix) } },
-            select: { id: true }
-          });
-          const ownedIds = ownedUsers.map(({ id }) => id);
-          if (ownedIds.length > 0) {
-            await prisma.authSession.deleteMany({ where: { userId: { in: ownedIds } } });
-            await prisma.user.deleteMany({ where: { id: { in: ownedIds } } });
-          }
-        } finally {
-          if (preexistingActiveSuperAdminIds.length > 0) {
-            await prisma.user.updateMany({
-              where: { id: { in: preexistingActiveSuperAdminIds } },
-              data: { isActive: true }
-            });
-          }
+        const ownedUsers = await prisma.user.findMany({
+          where: { normalizedUsername: { startsWith: normalized(usernamePrefix) } },
+          select: { id: true }
+        });
+        const ownedIds = ownedUsers.map(({ id }) => id);
+        if (ownedIds.length > 0) {
+          await prisma.authSession.deleteMany({ where: { userId: { in: ownedIds } } });
+          await prisma.user.deleteMany({ where: { id: { in: ownedIds } } });
         }
       }
     } finally {
+      restoreEnvironment('TEST_ONLY_BOOTSTRAP_USERNAME', originalTestOnlyBootstrapUsername);
       if (app !== undefined) await app.close();
     }
   }, 30_000);
@@ -171,6 +196,20 @@ describe.sequential('session authentication', () => {
       .post('/api/auth/login')
       .send({ username: user.username, password });
   }
+
+  it('does not mutate an unrelated active super admin while bootstrapping its own fixture', async () => {
+    await expect(prisma.user.findUniqueOrThrow({ where: { id: sentinelSuperAdmin.id } }))
+      .resolves.toMatchObject({
+        role: Role.SUPER_ADMIN,
+        isActive: true,
+        updatedAt: sentinelUpdatedAt
+      });
+  });
+
+  it('refuses auth fixture access when the configured database is not a test database', () => {
+    expect(() => assertAuthTestDatabase('mysql://localhost/poker_scorekeeper'))
+      .toThrow('Refusing auth E2E on database: poker_scorekeeper');
+  });
 
   it('logs in with an Argon2id password, stores only the token hash, and returns the forced-change state', async () => {
     const startedAt = Date.now();
@@ -536,21 +575,19 @@ describe.sequential('session authentication', () => {
   });
 
   it('serializes concurrent bootstrap calls using the same configuration', async () => {
-    const original = await prisma.user.findUniqueOrThrow({
-      where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
-    });
     const concurrentUsername = `${usernamePrefix}-concurrent-same`;
     const makeService = (): BootstrapAdminService => new BootstrapAdminService(
       prisma,
       app.get(PasswordService),
       new ConfigService({
         NODE_ENV: 'test',
+        DATABASE_URL: process.env.DATABASE_URL,
         BOOTSTRAP_ADMIN_USERNAME: concurrentUsername,
         BOOTSTRAP_ADMIN_NICKNAME: `${usernamePrefix}-concurrent-root`,
-        BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword
+        BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword,
+        TEST_ONLY_BOOTSTRAP_USERNAME: normalized(concurrentUsername)
       })
     );
-    await prisma.user.update({ where: { id: original.id }, data: { isActive: false } });
 
     try {
       const results = await Promise.allSettled([
@@ -560,98 +597,146 @@ describe.sequential('session authentication', () => {
 
       expect(results.map(({ status }) => status)).toEqual(['fulfilled', 'fulfilled']);
       await expect(prisma.user.count({
-        where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
-      })).resolves.toBe(1);
-      await expect(prisma.user.count({
         where: { normalizedUsername: normalized(concurrentUsername) }
       })).resolves.toBe(1);
     } finally {
       await prisma.user.deleteMany({
         where: { normalizedUsername: normalized(concurrentUsername) }
       });
-      await prisma.user.update({ where: { id: original.id }, data: { isActive: true } });
     }
   }, 15_000);
 
-  it('serializes concurrent bootstrap calls using different configurations', async () => {
-    const original = await prisma.user.findUniqueOrThrow({
-      where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
-    });
-    const usernames = [
-      `${usernamePrefix}-concurrent-first`,
-      `${usernamePrefix}-concurrent-second`
-    ];
-    const makeService = (username: string, sequence: number): BootstrapAdminService =>
+  it('rejects one of two concurrent test-only bootstrap calls with conflicting configurations', async () => {
+    const concurrentUsername = `${usernamePrefix}-concurrent-conflict`;
+    const makeService = (sequence: number): BootstrapAdminService =>
       new BootstrapAdminService(
         prisma,
         app.get(PasswordService),
         new ConfigService({
           NODE_ENV: 'test',
-          BOOTSTRAP_ADMIN_USERNAME: username,
+          DATABASE_URL: process.env.DATABASE_URL,
+          BOOTSTRAP_ADMIN_USERNAME: concurrentUsername,
           BOOTSTRAP_ADMIN_NICKNAME: `${usernamePrefix}-concurrent-${sequence}`,
-          BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword
+          BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword,
+          TEST_ONLY_BOOTSTRAP_USERNAME: normalized(concurrentUsername)
         })
       );
-    await prisma.user.update({ where: { id: original.id }, data: { isActive: false } });
 
     try {
       const results = await Promise.allSettled([
-        makeService(usernames[0]!, 1).onApplicationBootstrap(),
-        makeService(usernames[1]!, 2).onApplicationBootstrap()
+        makeService(1).onApplicationBootstrap(),
+        makeService(2).onApplicationBootstrap()
       ]);
 
-      expect(results.map(({ status }) => status)).toEqual(['fulfilled', 'fulfilled']);
+      expect(results.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected']);
       await expect(prisma.user.count({
-        where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
-      })).resolves.toBe(1);
-      await expect(prisma.user.count({
-        where: { normalizedUsername: { in: usernames.map(normalized) } }
+        where: { normalizedUsername: normalized(concurrentUsername) }
       })).resolves.toBe(1);
     } finally {
       await prisma.user.deleteMany({
-        where: { normalizedUsername: { in: usernames.map(normalized) } }
+        where: { normalizedUsername: normalized(concurrentUsername) }
       });
-      await prisma.user.update({ where: { id: original.id }, data: { isActive: true } });
     }
   }, 15_000);
 
-  it('refuses production startup when no active super admin or complete bootstrap configuration exists', async () => {
-    const bootstrap = await prisma.user.findUniqueOrThrow({
-      where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
-    });
-    const otherActiveSuperAdmins = await prisma.user.count({
-      where: {
-        id: { not: bootstrap.id },
-        role: Role.SUPER_ADMIN,
-        isActive: true,
-        deletedAt: null
-      }
-    });
-    expect(otherActiveSuperAdmins).toBe(0);
+  it.each([
+    ['outside test mode', {
+      NODE_ENV: 'production',
+      DATABASE_URL: process.env.DATABASE_URL
+    }],
+    ['outside a test database', {
+      NODE_ENV: 'test',
+      DATABASE_URL: 'mysql://localhost/poker_scorekeeper'
+    }]
+  ])('fails closed for test-only bootstrap %s', async (_case, environment) => {
+    const target = `${usernamePrefix}-fail-closed-${randomUUID()}`;
+    const service = new BootstrapAdminService(
+      prisma,
+      app.get(PasswordService),
+      new ConfigService({
+        ...environment,
+        BOOTSTRAP_ADMIN_USERNAME: target,
+        BOOTSTRAP_ADMIN_NICKNAME: target,
+        BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword,
+        TEST_ONLY_BOOTSTRAP_USERNAME: normalized(target)
+      })
+    );
 
+    await expect(service.onApplicationBootstrap()).rejects.toThrow(/Test-only|test-only/);
+    await expect(prisma.user.count({ where: { normalizedUsername: normalized(target) } }))
+      .resolves.toBe(0);
+  });
+
+  it('does not override an existing super admin without the explicit test-only marker', async () => {
+    const target = `${usernamePrefix}-missing-marker`;
+    const service = new BootstrapAdminService(
+      prisma,
+      app.get(PasswordService),
+      new ConfigService({
+        NODE_ENV: 'test',
+        DATABASE_URL: process.env.DATABASE_URL,
+        BOOTSTRAP_ADMIN_USERNAME: target,
+        BOOTSTRAP_ADMIN_NICKNAME: target,
+        BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword,
+        TEST_ONLY_BOOTSTRAP_USERNAME: ''
+      })
+    );
+
+    await expect(service.onApplicationBootstrap()).resolves.toBeUndefined();
+    await expect(prisma.user.count({ where: { normalizedUsername: normalized(target) } }))
+      .resolves.toBe(0);
+  });
+
+  it('fails closed when the test-only marker does not identify the configured username', async () => {
+    const target = `${usernamePrefix}-marker-target`;
+    const service = new BootstrapAdminService(
+      prisma,
+      app.get(PasswordService),
+      new ConfigService({
+        NODE_ENV: 'test',
+        DATABASE_URL: process.env.DATABASE_URL,
+        BOOTSTRAP_ADMIN_USERNAME: target,
+        BOOTSTRAP_ADMIN_NICKNAME: target,
+        BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword,
+        TEST_ONLY_BOOTSTRAP_USERNAME: `${target}-different`
+      })
+    );
+
+    await expect(service.onApplicationBootstrap())
+      .rejects.toThrow('Test-only bootstrap target must match bootstrap username');
+    await expect(prisma.user.count({ where: { normalizedUsername: normalized(target) } }))
+      .resolves.toBe(0);
+  });
+
+  it('refuses production startup when no active super admin or complete bootstrap configuration exists', async () => {
     const environment = {
       nodeEnv: process.env.NODE_ENV,
       username: process.env.BOOTSTRAP_ADMIN_USERNAME,
       nickname: process.env.BOOTSTRAP_ADMIN_NICKNAME,
       password: process.env.BOOTSTRAP_ADMIN_PASSWORD
     };
-    let failingApp: INestApplication | undefined;
-    await prisma.user.update({ where: { id: bootstrap.id }, data: { isActive: false } });
     process.env.NODE_ENV = 'production';
     delete process.env.BOOTSTRAP_ADMIN_PASSWORD;
 
     try {
       expect(app.get(SessionService).cookieOptions().secure).toBe(true);
-      failingApp = await createApp();
-      await expect(failingApp.init())
+      const isolatedService = new BootstrapAdminService(
+        {
+          $transaction: async (operation: (transaction: unknown) => Promise<unknown>) => operation({
+            $queryRaw: async () => [{ id: 'singleton' }],
+            user: { count: async () => 0 }
+          })
+        } as unknown as PrismaService,
+        app.get(PasswordService),
+        new ConfigService({ NODE_ENV: 'production', TEST_ONLY_BOOTSTRAP_USERNAME: '' })
+      );
+      await expect(isolatedService.onApplicationBootstrap())
         .rejects.toThrow('Bootstrap super admin configuration is required');
     } finally {
-      if (failingApp !== undefined) await failingApp.close();
       restoreEnvironment('NODE_ENV', environment.nodeEnv);
       restoreEnvironment('BOOTSTRAP_ADMIN_USERNAME', environment.username);
       restoreEnvironment('BOOTSTRAP_ADMIN_NICKNAME', environment.nickname);
       restoreEnvironment('BOOTSTRAP_ADMIN_PASSWORD', environment.password);
-      await prisma.user.update({ where: { id: bootstrap.id }, data: { isActive: true } });
     }
   }, 15_000);
 

@@ -335,6 +335,37 @@ describe.sequential('avatar pipeline', () => {
       .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
+  it('keeps the old file and successful response when the history reference query fails', async () => {
+    const target = await seedUser('reference-query-failure-target', Role.USER);
+    const oldFilename = `${target.id}-${randomUUID()}.webp`;
+    const oldPath = join(avatarRoot, oldFilename);
+    await writeFile(oldPath, validPng);
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { avatarKind: AvatarKind.UPLOAD, avatarValue: oldFilename }
+    });
+    const count = vi.spyOn(prisma.gamePlayer, 'count').mockRejectedValueOnce(
+      Object.assign(new Error('injected reference query failure'), { code: 'INJECTED_QUERY_FAILURE' })
+    );
+
+    try {
+      await request(app.getHttpServer())
+        .post(`/api/users/${target.id}/avatar/reset`)
+        .set('Cookie', adminAuth.cookie)
+        .set('X-CSRF-Token', adminAuth.csrfToken)
+        .expect(200)
+        .expect(({ body }) => expect(body).toMatchObject({
+          avatarKind: 'PRESET',
+          avatarValue: 'preset-01'
+        }));
+      expect(count).toHaveBeenCalledOnce();
+      await expect(readFile(oldPath)).resolves.toEqual(validPng);
+    } finally {
+      count.mockRestore();
+      await rm(oldPath, { force: true });
+    }
+  });
+
   it('keeps the old avatar and removes new files when the database commit is rejected', async () => {
     const target = await seedUser('commit-failure-target', Role.USER);
     const oldFilename = `${target.id}-${randomUUID()}.webp`;
