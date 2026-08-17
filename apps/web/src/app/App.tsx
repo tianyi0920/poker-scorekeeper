@@ -1,3 +1,5 @@
+import { AppRouter } from './router.js';
+
 export function App() {
-  return <h1>德州计分</h1>;
+  return <AppRouter />;
 }

@@ -1,0 +1,17 @@
+:root {
+  --bg: #080b16;
+  --surface: #171e34;
+  --surface-raised: #222b4a;
+  --gold: #f0ca73;
+  --positive: #70e0a9;
+  --negative: #ff8880;
+  --expense: #e8a75d;
+  --rake: #d8b4ff;
+  --text: #f6f1e6;
+  --muted: #929aaf;
+  --radius-card: 16px;
+  --touch-target: 44px;
+  color: var(--text);
+  background: var(--bg);
+  font-family: Inter, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
