@@ -1,0 +1,275 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum Role {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+enum AvatarKind {
+  PRESET
+  UPLOAD
+}
+
+enum GameStatus {
+  DRAFT
+  ACTIVE
+  SETTLING
+  COMPLETED
+  VOIDED
+}
+
+enum BuyinEventType {
+  BUY
+  ADJUST
+}
+
+enum FeeType {
+  ROOM
+  OTHER
+}
+
+model User {
+  id                       String            @id @default(cuid()) @db.VarChar(30)
+  username                 String            @db.VarChar(64)
+  normalizedUsername       String            @unique @map("normalized_username") @db.VarChar(64)
+  nickname                 String            @db.VarChar(64)
+  activeNormalizedNickname String?           @unique @map("active_normalized_nickname") @db.VarChar(64)
+  passwordHash             String            @map("password_hash") @db.VarChar(255)
+  role                     Role              @default(USER)
+  rakeEnabled              Boolean           @default(true) @map("rake_enabled")
+  avatarKind               AvatarKind        @default(PRESET) @map("avatar_kind")
+  avatarValue              String            @map("avatar_value") @db.VarChar(512)
+  isActive                 Boolean           @default(true) @map("is_active")
+  mustChangePassword       Boolean           @default(false) @map("must_change_password")
+  createdById              String?           @map("created_by_id") @db.VarChar(30)
+  deletedAt                DateTime?         @map("deleted_at") @db.DateTime(3)
+  createdAt                DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt                DateTime          @updatedAt @map("updated_at") @db.DateTime(3)
+  createdBy                User?             @relation("UserCreatedBy", fields: [createdById], references: [id], onDelete: SetNull)
+  createdUsers             User[]            @relation("UserCreatedBy")
+  authSessions             AuthSession[]
+  updatedSettings          SystemSetting[]
+  createdGames             Game[]            @relation("GameCreatedBy")
+  settledGames             Game[]            @relation("GameSettledBy")
+  gamePlayers              GamePlayer[]
+  activePlayerLock         ActivePlayerLock?
+  buyinEvents              BuyinEvent[]      @relation("BuyinEventActor")
+  editedSettlementDrafts   SettlementDraft[] @relation("SettlementDraftEditor")
+  updatedSettlementDrafts  SettlementDraft[] @relation("SettlementDraftUpdatedBy")
+  settlements              Settlement[]      @relation("SettlementSettledBy")
+  auditLogs                AuditLog[]        @relation("AuditLogActor")
+
+  @@map("users")
+}
+
+model AuthSession {
+  id                String    @id @default(cuid()) @db.VarChar(30)
+  userId            String    @map("user_id") @db.VarChar(30)
+  tokenHash         String    @unique @map("token_hash") @db.VarChar(128)
+  expiresAt         DateTime  @map("expires_at") @db.DateTime(3)
+  absoluteExpiresAt DateTime  @map("absolute_expires_at") @db.DateTime(3)
+  lastSeenAt        DateTime  @map("last_seen_at") @db.DateTime(3)
+  ipAddress         String    @map("ip_address") @db.VarChar(45)
+  userAgent         String    @map("user_agent") @db.VarChar(512)
+  revokedAt         DateTime? @map("revoked_at") @db.DateTime(3)
+  createdAt         DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  user              User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("auth_sessions")
+}
+
+model SystemSetting {
+  id            String   @id @default("singleton") @db.VarChar(30)
+  rakeThreshold BigInt   @default(1000) @map("rake_threshold") @db.BigInt
+  rakeBps       Int      @default(1000) @map("rake_bps")
+  version       Int      @default(1)
+  updatedById   String?  @map("updated_by_id") @db.VarChar(30)
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt     DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  updatedBy     User?    @relation(fields: [updatedById], references: [id], onDelete: SetNull)
+
+  @@map("system_settings")
+}
+
+model Game {
+  id              String             @id @default(cuid()) @db.VarChar(30)
+  name            String             @db.VarChar(128)
+  handPrice       BigInt             @map("hand_price") @db.BigInt
+  rakeEnabled     Boolean            @default(true) @map("rake_enabled")
+  status          GameStatus         @default(DRAFT)
+  version         Int                @default(1)
+  createdById     String             @map("created_by_id") @db.VarChar(30)
+  startedAt       DateTime?          @map("started_at") @db.DateTime(3)
+  stoppedAt       DateTime?          @map("stopped_at") @db.DateTime(3)
+  completedAt     DateTime?          @map("completed_at") @db.DateTime(3)
+  settledById     String?            @map("settled_by_id") @db.VarChar(30)
+  createdAt       DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+  createdBy       User               @relation("GameCreatedBy", fields: [createdById], references: [id])
+  settledBy       User?              @relation("GameSettledBy", fields: [settledById], references: [id], onDelete: SetNull)
+  players         GamePlayer[]
+  activeLocks     ActivePlayerLock[]
+  buyinEvents     BuyinEvent[]
+  settlementDraft SettlementDraft?
+  settlement      Settlement?
+
+  @@index([status, startedAt])
+  @@map("games")
+}
+
+model GamePlayer {
+  id                  String                    @id @default(cuid()) @db.VarChar(30)
+  gameId              String                    @map("game_id") @db.VarChar(30)
+  userId              String                    @map("user_id") @db.VarChar(30)
+  nicknameSnapshot    String                    @map("nickname_snapshot") @db.VarChar(64)
+  avatarKindSnapshot  AvatarKind                @map("avatar_kind_snapshot")
+  avatarValueSnapshot String                    @map("avatar_value_snapshot") @db.VarChar(512)
+  seatNo              Int                       @map("seat_no")
+  firstBuyinAt        DateTime                  @map("first_buyin_at") @db.DateTime(3)
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
+  game                Game                      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  user                User                      @relation(fields: [userId], references: [id])
+  buyinEvents         BuyinEvent[]
+  settlementResults   SettlementResult[]
+  feeAllocations      SettlementFeeAllocation[]
+
+  @@unique([gameId, userId])
+  @@unique([gameId, seatNo])
+  @@map("game_players")
+}
+
+model ActivePlayerLock {
+  userId    String   @id @map("user_id") @db.VarChar(30)
+  gameId    String   @map("game_id") @db.VarChar(30)
+  createdAt DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  game      Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+
+  @@map("active_player_locks")
+}
+
+model BuyinEvent {
+  id             String         @id @default(cuid()) @db.VarChar(30)
+  gameId         String         @map("game_id") @db.VarChar(30)
+  gamePlayerId   String         @map("game_player_id") @db.VarChar(30)
+  actorUserId    String         @map("actor_user_id") @db.VarChar(30)
+  type           BuyinEventType
+  logicalBuyId   String         @map("logical_buy_id") @db.VarChar(30)
+  previousHands  Int?           @map("previous_hands")
+  newHands       Int            @map("new_hands")
+  handsDelta     Int            @map("hands_delta")
+  idempotencyKey String         @unique @map("idempotency_key") @db.VarChar(128)
+  createdAt      DateTime       @default(now()) @map("created_at") @db.DateTime(3)
+  game           Game           @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  gamePlayer     GamePlayer     @relation(fields: [gamePlayerId], references: [id], onDelete: Cascade)
+  actorUser      User           @relation("BuyinEventActor", fields: [actorUserId], references: [id])
+
+  @@index([gamePlayerId, createdAt, id])
+  @@map("buyin_events")
+}
+
+model SettlementDraft {
+  id             String   @id @default(cuid()) @db.VarChar(30)
+  gameId         String   @unique @map("game_id") @db.VarChar(30)
+  payload        Json
+  version        Int      @default(1)
+  editorUserId   String   @map("editor_user_id") @db.VarChar(30)
+  leaseExpiresAt DateTime @map("lease_expires_at") @db.DateTime(3)
+  updatedById    String   @map("updated_by_id") @db.VarChar(30)
+  createdAt      DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt      DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+  game           Game     @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  editorUser     User     @relation("SettlementDraftEditor", fields: [editorUserId], references: [id])
+  updatedBy      User     @relation("SettlementDraftUpdatedBy", fields: [updatedById], references: [id])
+
+  @@map("settlement_drafts")
+}
+
+model Settlement {
+  id                  String                    @id @default(cuid()) @db.VarChar(30)
+  gameId              String                    @unique @map("game_id") @db.VarChar(30)
+  buyInTotal          BigInt                    @map("buy_in_total") @db.BigInt
+  cashOutTotal        BigInt                    @map("cash_out_total") @db.BigInt
+  roomFee             BigInt                    @map("room_fee") @db.BigInt
+  otherFee            BigInt                    @map("other_fee") @db.BigInt
+  otherFeeNote        String                    @default("") @map("other_fee_note") @db.VarChar(500)
+  rakeThresholdUsed   BigInt                    @map("rake_threshold_used") @db.BigInt
+  rakeBpsUsed         Int                       @map("rake_bps_used")
+  settingsVersionUsed Int                       @map("settings_version_used")
+  rakeTotal           BigInt                    @map("rake_total") @db.BigInt
+  finalTotal          BigInt                    @map("final_total") @db.BigInt
+  settledById         String                    @map("settled_by_id") @db.VarChar(30)
+  lockedAt            DateTime                  @map("locked_at") @db.DateTime(3)
+  createdAt           DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
+  game                Game                      @relation(fields: [gameId], references: [id])
+  settledBy           User                      @relation("SettlementSettledBy", fields: [settledById], references: [id])
+  results             SettlementResult[]
+  feeAllocations      SettlementFeeAllocation[]
+
+  @@map("settlements")
+}
+
+model SettlementResult {
+  id             String     @id @default(cuid()) @db.VarChar(30)
+  settlementId   String     @map("settlement_id") @db.VarChar(30)
+  gamePlayerId   String     @map("game_player_id") @db.VarChar(30)
+  buyIn          BigInt     @map("buy_in") @db.BigInt
+  cashOut        BigInt     @map("cash_out") @db.BigInt
+  rawProfit      BigInt     @map("raw_profit") @db.BigInt
+  roomFeeShare   BigInt     @map("room_fee_share") @db.BigInt
+  otherFeeShare  BigInt     @map("other_fee_share") @db.BigInt
+  afterFeeProfit BigInt     @map("after_fee_profit") @db.BigInt
+  rakeEligible   Boolean    @map("rake_eligible")
+  rakeAmount     BigInt     @map("rake_amount") @db.BigInt
+  finalAmount    BigInt     @map("final_amount") @db.BigInt
+  createdAt      DateTime   @default(now()) @map("created_at") @db.DateTime(3)
+  settlement     Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  gamePlayer     GamePlayer @relation(fields: [gamePlayerId], references: [id])
+
+  @@unique([settlementId, gamePlayerId])
+  @@map("settlement_results")
+}
+
+model SettlementFeeAllocation {
+  id                String     @id @default(cuid()) @db.VarChar(30)
+  settlementId      String     @map("settlement_id") @db.VarChar(30)
+  feeType           FeeType    @map("fee_type")
+  gamePlayerId      String     @map("game_player_id") @db.VarChar(30)
+  allocationOrder   Int        @map("allocation_order")
+  amount            BigInt     @db.BigInt
+  receivedRemainder Boolean    @map("received_remainder")
+  createdAt         DateTime   @default(now()) @map("created_at") @db.DateTime(3)
+  settlement        Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  gamePlayer        GamePlayer @relation(fields: [gamePlayerId], references: [id])
+
+  @@unique([settlementId, feeType, gamePlayerId])
+  @@map("settlement_fee_allocations")
+}
+
+model AuditLog {
+  id          String   @id @default(cuid()) @db.VarChar(30)
+  actorUserId String?  @map("actor_user_id") @db.VarChar(30)
+  action      String   @db.VarChar(100)
+  entityType  String   @map("entity_type") @db.VarChar(100)
+  entityId    String   @map("entity_id") @db.VarChar(30)
+  requestId   String   @map("request_id") @db.VarChar(128)
+  beforeJson  Json?    @map("before_json")
+  afterJson   Json?    @map("after_json")
+  sourceIp    String   @map("source_ip") @db.VarChar(45)
+  userAgent   String   @map("user_agent") @db.VarChar(512)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  actorUser   User?    @relation("AuditLogActor", fields: [actorUserId], references: [id], onDelete: SetNull)
+
+  @@index([actorUserId, createdAt])
+  @@index([entityType, entityId, createdAt])
+  @@map("audit_logs")
+}
