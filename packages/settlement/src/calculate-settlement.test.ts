@@ -26,6 +26,15 @@ describe('calculateRake', () => {
     expect(calculateRake(afterFee, { gameEnabled, userEnabled, threshold: 1000n, bps }))
       .toBe(expectedRake);
   });
+
+  it('rounds a half unit up at the minimum eligible profit', () => {
+    expect(calculateRake(1n, {
+      gameEnabled: true,
+      userEnabled: true,
+      threshold: 0n,
+      bps: 5000,
+    })).toBe(1n);
+  });
 });
 
 describe('calculateSettlement', () => {

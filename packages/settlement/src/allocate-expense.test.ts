@@ -18,6 +18,12 @@ describe('allocateExpense', () => {
     expect(() => allocateExpense(1n, ['missing'], players)).toThrow('UNKNOWN_FEE_PAYER');
   });
 
+  it('rejects duplicate fee payers instead of silently deduplicating them', () => {
+    expect(() => allocateExpense(10n, ['a', 'a'], [
+      { playerId: 'a', seatNo: 1, rawProfit: 1n },
+    ])).toThrow('DUPLICATE_FEE_PAYER');
+  });
+
   it('returns zero shares for a zero fee without requiring payers', () => {
     expect(allocateExpense(0n, [], [])).toEqual(new Map());
   });

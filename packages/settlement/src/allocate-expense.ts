@@ -7,6 +7,9 @@ export function allocateExpense(
   players: ProfitOrder[],
 ): Map<string, bigint> {
   if (total < 0n) throw new SettlementError('FEE_NEGATIVE');
+  if (new Set(payerIds).size !== payerIds.length) {
+    throw new SettlementError('DUPLICATE_FEE_PAYER');
+  }
   if (total > 0n && payerIds.length === 0) throw new SettlementError('FEE_PAYERS_REQUIRED');
   if (total === 0n) return new Map(payerIds.map((id) => [id, 0n]));
 

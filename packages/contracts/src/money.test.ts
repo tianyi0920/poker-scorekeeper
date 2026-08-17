@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { formatMoney, moneyJsonSchema, parseMoney } from './money.js';
+import { formatMoney, moneyJsonSchema, parseMoney, type MoneyJson } from './money.js';
 
 describe('money contract', () => {
   it('round-trips signed integer amounts without floating point', () => {
@@ -15,5 +15,10 @@ describe('money contract', () => {
     expect(moneyJsonSchema.safeParse('01').success).toBe(false);
     expect(moneyJsonSchema.safeParse('+1').success).toBe(false);
     expect(moneyJsonSchema.safeParse('1.2').success).toBe(false);
+  });
+
+  it('rejects non-canonical values when parsing at runtime', () => {
+    expect(() => parseMoney('01' as MoneyJson)).toThrow();
+    expect(() => parseMoney('+1' as MoneyJson)).toThrow();
   });
 });
