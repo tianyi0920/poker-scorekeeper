@@ -85,12 +85,95 @@ describe('audit redaction', () => {
   });
 
   it.each([
+    'PASSWORDHASH',
+    'passwordhash',
+    'password_hash',
+    'password-hash',
+    'passwordHash',
+    'SESSIONTOKEN',
+    'sessiontoken',
+    'session_token',
+    'session-token',
+    'sessionToken',
+    'COOKIEHEADER',
+    'cookieheader',
+    'cookie_header',
+    'cookie-header',
+    'cookieHeader',
+    'AUTHHEADER',
+    'authheader',
+    'auth_header',
+    'auth-header',
+    'authHeader'
+  ])('redacts compact and segmented credential key: %s', (key) => {
+    expect(redactAuditValue({ [key]: 'credential' })).toEqual({ [key]: '[REDACTED]' });
+  });
+
+  it('preserves the must-change-password state without allowing password hashes through', () => {
+    expect(redactAuditValue({
+      mustChangePassword: false,
+      must_change_password: true,
+      passwordhash: 'hash-one',
+      PASSWORDHASH: 'hash-two'
+    })).toEqual({
+      mustChangePassword: false,
+      must_change_password: true,
+      passwordhash: '[REDACTED]',
+      PASSWORDHASH: '[REDACTED]'
+    });
+    expect(redactAuditValue({ mustChangePassword: 'not-a-boolean' }))
+      .toEqual({ mustChangePassword: '[REDACTED]' });
+  });
+
+  it.each([
     'Bearer bearer-token',
     'Cookie: poker_session=cookie-token',
     'X-API-Key: api-key-token',
-    'postgresql://user:password@db.example/internal'
+    'postgresql://user:password@db.example/internal',
+    'Authorization: Basic basic-token',
+    'agent Authorization: Bearer bearer-token',
+    'agent Cookie: poker_session=cookie-token',
+    'agent X-API-Key: api-key-token',
+    'User ID=db-user;Password=db-password;Server=db.example'
   ])('redacts credential-shaped string values under generic keys: %s', (value) => {
     expect(redactAuditValue({ metadata: value })).toEqual({ metadata: '[REDACTED]' });
+  });
+
+  it('replaces content beyond the maximum traversal depth', () => {
+    let deep: Record<string, unknown> = { leaf: 'must-not-be-reached' };
+    for (let index = 0; index < 128; index += 1) deep = { child: deep };
+
+    expect(JSON.stringify(redactAuditValue(deep))).toContain('[MAX_DEPTH_EXCEEDED]');
+  });
+
+  it('replaces objects that exceed the maximum node budget', () => {
+    const wide = Object.fromEntries(
+      Array.from({ length: 12_000 }, (_, index) => [`field${index}`, index])
+    );
+    const result = redactAuditValue(wide);
+
+    expect(typeof result).toBe('string');
+    expect(result).toBe('[MAX_NODES_EXCEEDED]');
+  });
+
+  it('rejects a large sparse array before allocating the output array', () => {
+    const sparse = new Array<string>(1_000_000);
+    sparse[999_999] = 'must-not-be-reached';
+    const result = redactAuditValue(sparse);
+
+    expect(typeof result).toBe('string');
+    expect(result).toBe('[MAX_ARRAY_LENGTH_EXCEEDED]');
+  });
+
+  it('replaces strings beyond the maximum audit value length', () => {
+    expect(redactAuditValue('x'.repeat(20_000)) === '[MAX_STRING_LENGTH_EXCEEDED]')
+      .toBe(true);
+  });
+
+  it('keeps an ordinary browser user agent intact', () => {
+    const userAgent = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15';
+
+    expect(redactAuditValue(userAgent)).toBe(userAgent);
   });
 
   it('returns JSON-safe placeholders for cycles, invalid dates, and unreadable properties', () => {

@@ -307,9 +307,9 @@ describe.sequential('live rake settings', () => {
         entityId: firstEntityId,
         before: null,
         after: null,
-        requestId: 'Bearer request-token',
-        sourceIp: 'Cookie: poker_session=cookie-token',
-        userAgent: 'X-API-Key: api-key-token'
+        requestId: 'agent Authorization: Bearer request-token',
+        sourceIp: 'Authorization: Basic basic-token',
+        userAgent: 'User ID=db-user;Password=db-password;Server=db.example'
       });
       await audit.record(transaction, {
         actorUserId: superUser.id,
@@ -318,7 +318,9 @@ describe.sequential('live rake settings', () => {
         entityId: secondEntityId,
         before: null,
         after: null,
-        requestId: 'mysql://user:password@db.example/internal'
+        requestId: 'mysql://user:password@db.example/internal',
+        sourceIp: 'agent Cookie: poker_session=cookie-token',
+        userAgent: 'agent X-API-Key: api-key-token'
       });
       await audit.record(transaction, {
         actorUserId: superUser.id,
@@ -340,7 +342,11 @@ describe.sequential('live rake settings', () => {
       sourceIp: '[REDACTED]',
       userAgent: '[REDACTED]'
     });
-    expect(logs[1]).toMatchObject({ requestId: '[REDACTED]' });
+    expect(logs[1]).toMatchObject({
+      requestId: '[REDACTED]',
+      sourceIp: '[REDACTED]',
+      userAgent: '[REDACTED]'
+    });
     expect(logs[2]).toMatchObject({
       beforeJson: {
         cyclic: { safe: true, self: '[CIRCULAR]' },

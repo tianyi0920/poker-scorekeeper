@@ -117,6 +117,10 @@ describe.sequential('user administration audit trail', () => {
     await write('patch', `/api/users/${targetId}`, { role: 'ADMIN' }).expect(200);
     await write('patch', `/api/users/${targetId}`, { isActive: false }).expect(200);
     await write('patch', `/api/users/${targetId}`, { isActive: true }).expect(200);
+    await prisma.user.update({
+      where: { id: targetId },
+      data: { mustChangePassword: false }
+    });
     await write('post', `/api/users/${targetId}/reset-password`, {
       newPassword: replacementPassword
     }).expect(200);
@@ -156,6 +160,10 @@ describe.sequential('user administration audit trail', () => {
     expect(logs[6]).toMatchObject({
       beforeJson: { avatarKind: 'PRESET', avatarValue: 'preset-09' },
       afterJson: { avatarKind: 'PRESET', avatarValue: 'preset-01' }
+    });
+    expect(logs[5]).toMatchObject({
+      beforeJson: { mustChangePassword: false },
+      afterJson: { mustChangePassword: true }
     });
     expect(logs[7]).toMatchObject({ beforeJson: { deletedAt: null }, afterJson: { isActive: false } });
     expect(logs[8]).toMatchObject({ beforeJson: { isActive: false }, afterJson: { isActive: true } });
