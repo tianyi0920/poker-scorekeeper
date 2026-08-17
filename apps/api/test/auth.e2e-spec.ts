@@ -40,12 +40,6 @@ function cookieFrom(response: Response): string {
   return serializedCookieFrom(response).split(';', 1)[0]!;
 }
 
-function cookieMaxAge(serializedCookie: string): number {
-  const match = /(?:^|; )Max-Age=(\d+)/.exec(serializedCookie);
-  expect(match).not.toBeNull();
-  return Number(match![1]);
-}
-
 function cookieExpiresAt(serializedCookie: string): number {
   const match = /(?:^|; )Expires=([^;]+)/.exec(serializedCookie);
   expect(match).not.toBeNull();
@@ -231,9 +225,14 @@ describe.sequential('session authentication', () => {
     const renewedCookie = serializedCookieFrom(response);
 
     expect(cookieFrom(response)).toBe(cookie);
-    expect(cookieMaxAge(renewedCookie)).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 - 5);
-    expect(cookieMaxAge(renewedCookie)).toBeLessThanOrEqual(7 * 24 * 60 * 60);
+    expect(renewedCookie).toContain('HttpOnly');
+    expect(renewedCookie).toContain('SameSite=Lax');
+    expect(renewedCookie).toContain('Path=/');
+    expect(renewedCookie).not.toContain('Max-Age=');
     const after = await prisma.authSession.findUniqueOrThrow({ where: { tokenHash } });
+    expect(cookieExpiresAt(renewedCookie)).toBe(
+      Math.floor(after.expiresAt.getTime() / 1000) * 1000
+    );
     expect(after.id).toBe(before.id);
     expect(after.tokenHash).toBe(before.tokenHash);
   });
@@ -252,21 +251,67 @@ describe.sequential('session authentication', () => {
       }
     });
 
-    const requestedAt = Date.now();
     const response = await request(app.getHttpServer())
       .get('/api/auth/session')
       .set('Cookie', cookie)
       .expect(200);
     const renewedCookie = serializedCookieFrom(response);
-    const maximumSeconds = Math.ceil((absoluteExpiresAt.getTime() - requestedAt) / 1000);
 
     expect(cookieFrom(response)).toBe(cookie);
-    expect(cookieMaxAge(renewedCookie)).toBeGreaterThan(0);
-    expect(cookieMaxAge(renewedCookie)).toBeLessThanOrEqual(maximumSeconds);
+    expect(renewedCookie).not.toContain('Max-Age=');
     expect(cookieExpiresAt(renewedCookie)).toBeLessThanOrEqual(absoluteExpiresAt.getTime());
     const stored = await prisma.authSession.findUniqueOrThrow({ where: { tokenHash } });
     expect(stored.expiresAt.getTime()).toBeLessThanOrEqual(absoluteExpiresAt.getTime());
     expect(stored.tokenHash).toBe(tokenHash);
+  });
+
+  it('never serializes renewal expiry beyond the fixed absolute limit when the response clock advances', async () => {
+    const loginResponse = await login(users.standard).expect(201);
+    const cookie = cookieFrom(loginResponse);
+    const rawToken = rawTokenFrom(cookie);
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const absoluteExpiresAt = new Date(Math.ceil((Date.now() + 120_000) / 1000) * 1000);
+    await prisma.authSession.update({
+      where: { tokenHash },
+      data: {
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt
+      }
+    });
+    interface ExpressResponsePrototype {
+      cookie(
+        this: ExpressResponsePrototype,
+        name: string,
+        value: string,
+        options: Record<string, unknown>
+      ): ExpressResponsePrototype;
+    }
+    const expressApp = app.getHttpAdapter().getInstance() as {
+      response: ExpressResponsePrototype;
+    };
+    const originalCookie = expressApp.response.cookie;
+    expressApp.response.cookie = function (name, value, options) {
+      const now = vi.spyOn(Date, 'now').mockReturnValue(absoluteExpiresAt.getTime() + 2_000);
+      try {
+        return originalCookie.call(this, name, value, options);
+      } finally {
+        now.mockRestore();
+      }
+    };
+
+    let response: Response;
+    try {
+      response = await request(app.getHttpServer())
+        .get('/api/auth/session')
+        .set('Cookie', cookie)
+        .expect(200);
+    } finally {
+      expressApp.response.cookie = originalCookie;
+    }
+    const renewedCookie = serializedCookieFrom(response);
+
+    expect(cookieFrom(response)).toBe(cookie);
+    expect(cookieExpiresAt(renewedCookie)).toBeLessThanOrEqual(absoluteExpiresAt.getTime());
   });
 
   it('rejects an expired session from the real session table', async () => {

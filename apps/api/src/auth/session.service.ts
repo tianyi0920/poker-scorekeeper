@@ -16,8 +16,20 @@ export interface SessionCookieOptions {
   maxAge: number;
 }
 
+interface RenewalCookieOptions {
+  httpOnly: true;
+  secure: boolean;
+  sameSite: 'lax';
+  path: '/';
+  expires: Date;
+}
+
 interface CookieResponse {
-  cookie(name: string, value: string, options: SessionCookieOptions): void;
+  cookie(
+    name: string,
+    value: string,
+    options: SessionCookieOptions | RenewalCookieOptions
+  ): void;
 }
 
 function toAuthUser(user: {
@@ -65,13 +77,13 @@ export class SessionService {
     @Inject(CsrfService) private readonly csrf: CsrfService
   ) {}
 
-  cookieOptions(maxAge = SESSION_IDLE_MILLISECONDS): SessionCookieOptions {
+  cookieOptions(): SessionCookieOptions {
     return {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: Math.max(0, Math.min(maxAge, SESSION_IDLE_MILLISECONDS))
+      maxAge: SESSION_IDLE_MILLISECONDS
     };
   }
 
@@ -157,12 +169,17 @@ export class SessionService {
     if (renewal === undefined) return;
     this.browserRenewals.delete(authSession);
     if (!this.isCookieResponse(response)) return;
-    const remainingMilliseconds = Math.max(0, renewal.expiresAt.getTime() - Date.now());
-    const maxAge = Math.floor(remainingMilliseconds / 1000) * 1000;
+    const cookie = this.cookieOptions();
     response.cookie(
       SESSION_COOKIE_NAME,
       renewal.rawToken,
-      this.cookieOptions(maxAge)
+      {
+        httpOnly: cookie.httpOnly,
+        secure: cookie.secure,
+        sameSite: cookie.sameSite,
+        path: cookie.path,
+        expires: renewal.expiresAt
+      }
     );
   }
 
