@@ -222,8 +222,12 @@ it.each([
   expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('同步');
   const initialSnapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length;
 
-  await act(async () => { vi.advanceTimersByTime(5_000); });
-  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('定期同步');
+  // The fallback effect is installed after the failed ACK render, so allow its
+  // five-second delay plus one scheduler turn instead of assuming timer epoch 0.
+  await act(async () => { vi.advanceTimersByTime(5_100); });
+  await waitFor(() => {
+    expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('定期同步');
+  });
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length).toBeGreaterThan(initialSnapshots);
 
   socket.joinAcknowledgement = (command) => ({
