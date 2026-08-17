@@ -136,7 +136,7 @@ model GamePlayer {
   seatNo              Int                       @map("seat_no")
   firstBuyinAt        DateTime                  @map("first_buyin_at") @db.DateTime(3)
   createdAt           DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
-  game                Game                      @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  game                Game                      @relation(fields: [gameId], references: [id], onDelete: Restrict)
   user                User                      @relation(fields: [userId], references: [id])
   buyinEvents         BuyinEvent[]
   settlementResults   SettlementResult[]
@@ -169,8 +169,8 @@ model BuyinEvent {
   handsDelta     Int            @map("hands_delta")
   idempotencyKey String         @unique @map("idempotency_key") @db.VarChar(128)
   createdAt      DateTime       @default(now()) @map("created_at") @db.DateTime(3)
-  game           Game           @relation(fields: [gameId], references: [id], onDelete: Cascade)
-  gamePlayer     GamePlayer     @relation(fields: [gamePlayerId], references: [id], onDelete: Cascade)
+  game           Game           @relation(fields: [gameId], references: [id], onDelete: Restrict)
+  gamePlayer     GamePlayer     @relation(fields: [gamePlayerId], references: [id], onDelete: Restrict)
   actorUser      User           @relation("BuyinEventActor", fields: [actorUserId], references: [id])
 
   @@index([gamePlayerId, createdAt, id])
@@ -232,7 +232,7 @@ model SettlementResult {
   rakeAmount     BigInt     @map("rake_amount") @db.BigInt
   finalAmount    BigInt     @map("final_amount") @db.BigInt
   createdAt      DateTime   @default(now()) @map("created_at") @db.DateTime(3)
-  settlement     Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  settlement     Settlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
   gamePlayer     GamePlayer @relation(fields: [gamePlayerId], references: [id])
 
   @@unique([settlementId, gamePlayerId])
@@ -248,7 +248,7 @@ model SettlementFeeAllocation {
   amount            BigInt     @db.BigInt
   receivedRemainder Boolean    @map("received_remainder")
   createdAt         DateTime   @default(now()) @map("created_at") @db.DateTime(3)
-  settlement        Settlement @relation(fields: [settlementId], references: [id], onDelete: Cascade)
+  settlement        Settlement @relation(fields: [settlementId], references: [id], onDelete: Restrict)
   gamePlayer        GamePlayer @relation(fields: [gamePlayerId], references: [id])
 
   @@unique([settlementId, feeType, gamePlayerId])

@@ -226,7 +226,7 @@ ALTER TABLE `games` ADD CONSTRAINT `games_created_by_id_fkey` FOREIGN KEY (`crea
 ALTER TABLE `games` ADD CONSTRAINT `games_settled_by_id_fkey` FOREIGN KEY (`settled_by_id`) REFERENCES `users`(`id`) ON DELETE SET NULL ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `game_players` ADD CONSTRAINT `game_players_game_id_fkey` FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `game_players` ADD CONSTRAINT `game_players_game_id_fkey` FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `game_players` ADD CONSTRAINT `game_players_user_id_fkey` FOREIGN KEY (`user_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -238,10 +238,10 @@ ALTER TABLE `active_player_locks` ADD CONSTRAINT `active_player_locks_user_id_fk
 ALTER TABLE `active_player_locks` ADD CONSTRAINT `active_player_locks_game_id_fkey` FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `buyin_events` ADD CONSTRAINT `buyin_events_game_id_fkey` FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `buyin_events` ADD CONSTRAINT `buyin_events_game_id_fkey` FOREIGN KEY (`game_id`) REFERENCES `games`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `buyin_events` ADD CONSTRAINT `buyin_events_game_player_id_fkey` FOREIGN KEY (`game_player_id`) REFERENCES `game_players`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `buyin_events` ADD CONSTRAINT `buyin_events_game_player_id_fkey` FOREIGN KEY (`game_player_id`) REFERENCES `game_players`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `buyin_events` ADD CONSTRAINT `buyin_events_actor_user_id_fkey` FOREIGN KEY (`actor_user_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
@@ -262,13 +262,13 @@ ALTER TABLE `settlements` ADD CONSTRAINT `settlements_game_id_fkey` FOREIGN KEY 
 ALTER TABLE `settlements` ADD CONSTRAINT `settlements_settled_by_id_fkey` FOREIGN KEY (`settled_by_id`) REFERENCES `users`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `settlement_results` ADD CONSTRAINT `settlement_results_settlement_id_fkey` FOREIGN KEY (`settlement_id`) REFERENCES `settlements`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `settlement_results` ADD CONSTRAINT `settlement_results_settlement_id_fkey` FOREIGN KEY (`settlement_id`) REFERENCES `settlements`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `settlement_results` ADD CONSTRAINT `settlement_results_game_player_id_fkey` FOREIGN KEY (`game_player_id`) REFERENCES `game_players`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
-ALTER TABLE `settlement_fee_allocations` ADD CONSTRAINT `settlement_fee_allocations_settlement_id_fkey` FOREIGN KEY (`settlement_id`) REFERENCES `settlements`(`id`) ON DELETE CASCADE ON UPDATE CASCADE;
+ALTER TABLE `settlement_fee_allocations` ADD CONSTRAINT `settlement_fee_allocations_settlement_id_fkey` FOREIGN KEY (`settlement_id`) REFERENCES `settlements`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE `settlement_fee_allocations` ADD CONSTRAINT `settlement_fee_allocations_game_player_id_fkey` FOREIGN KEY (`game_player_id`) REFERENCES `game_players`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE;
