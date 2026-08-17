@@ -3,10 +3,12 @@ import { NestFactory } from '@nestjs/core';
 import { pathToFileURL } from 'node:url';
 import 'reflect-metadata';
 import { AppModule } from './app.module.js';
+import { ApiExceptionFilter } from './common/errors/api-exception.filter.js';
 
 export async function createApp(): Promise<INestApplication> {
   const app = await NestFactory.create(AppModule);
   app.setGlobalPrefix('api');
+  app.useGlobalFilters(new ApiExceptionFilter());
   app.enableShutdownHooks();
   return app;
 }
