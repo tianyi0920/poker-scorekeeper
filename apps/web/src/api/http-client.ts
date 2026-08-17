@@ -7,11 +7,23 @@ const apiErrorMessages = {
   VALIDATION_ERROR: '提交的信息有误，请检查后重试',
   TOO_MANY_REQUESTS: '请求过于频繁，请稍后再试',
   NOT_FOUND: '请求的内容不存在',
+  SETTINGS_VERSION_CONFLICT: '规则已被其他管理员更新，请核对后再次提交',
+  USERNAME_TAKEN: '用户名已被使用，请换一个',
+  NICKNAME_TAKEN: '昵称已被使用，请换一个',
+  USER_IN_ACTIVE_GAME: '用户仍在未完成牌局中，请先完成牌局',
+  LAST_SUPER_ADMIN: '系统必须保留至少一位启用的超级管理员',
+  ACTIVE_GAME_LIMIT: '最多同时开启两场对局，请先完成现有对局',
+  ACTIVE_GAME_NAME_TAKEN: '已有进行中对局使用该名称，请更换名称',
+  GAME_STATE_CONFLICT: '对局状态已变化，请刷新后重试',
+  GAME_HAS_BUYINS: '对局已有购买记录，必须完成结算',
+  GAME_HAS_RELATIONS: '草稿已关联业务记录，无法删除',
+  AVATAR_UNSUPPORTED: '仅支持 JPG、PNG 或 WebP 图片',
+  AVATAR_TOO_LARGE: '图片不能超过 5 MiB',
   INTERNAL_ERROR: '服务暂时不可用，请稍后重试',
   HTTP_ERROR: '请求失败，请稍后重试'
 } as const;
 
-type ApiErrorCode = keyof typeof apiErrorMessages;
+export type ApiErrorCode = keyof typeof apiErrorMessages;
 
 function isApiErrorCode(value: unknown): value is ApiErrorCode {
   return typeof value === 'string' && Object.hasOwn(apiErrorMessages, value);

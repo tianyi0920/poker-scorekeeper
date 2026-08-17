@@ -1,21 +1,7 @@
-import { useEffect, useState } from 'react';
-import { Outlet } from 'react-router-dom';
+import { NavLink, Outlet } from 'react-router-dom';
 import { useAuth } from '../auth/AuthProvider.js';
 import { Button } from '../components/Button.js';
-
-function useOnlineStatus(): boolean {
-  const [online, setOnline] = useState(() => navigator.onLine);
-  useEffect(() => {
-    const update = () => setOnline(navigator.onLine);
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    return () => {
-      window.removeEventListener('online', update);
-      window.removeEventListener('offline', update);
-    };
-  }, []);
-  return online;
-}
+import { useOnlineStatus } from '../hooks/useOnlineStatus.js';
 
 export function OfflineBanner() {
   const online = useOnlineStatus();
@@ -25,7 +11,12 @@ export function OfflineBanner() {
 export function AppShell() {
   const { user, logout } = useAuth();
   return <div className="app-shell">
-    <header className="app-header"><h1>德州计分</h1><Button variant="ghost" unsafe aria-label="退出登录" onClick={() => void logout()}>退出</Button></header>
-    <main><p>欢迎回来，{user?.nickname}。</p><Outlet /></main>
+    <header className="app-header"><div><span className="eyebrow">MIDNIGHT TABLE</span><h1>德州计分</h1></div><Button variant="ghost" unsafe aria-label="退出登录" onClick={() => void logout()}>退出</Button></header>
+    <main className="app-content"><p className="welcome">晚上好，{user?.nickname}</p><Outlet /></main>
+    <nav className="bottom-nav" aria-label="主导航">
+      <NavLink to="/" end>首页</NavLink>
+      <NavLink to="/history">战绩</NavLink>
+      <NavLink to="/profile">我的</NavLink>
+    </nav>
   </div>;
 }
