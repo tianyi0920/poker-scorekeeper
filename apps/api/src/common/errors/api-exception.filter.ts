@@ -12,6 +12,7 @@ const STATUS_CODES: Partial<Record<number, ErrorCode>> = {
   [HttpStatus.BAD_REQUEST]: 'VALIDATION_ERROR',
   [HttpStatus.UNAUTHORIZED]: 'UNAUTHENTICATED',
   [HttpStatus.FORBIDDEN]: 'FORBIDDEN',
+  [HttpStatus.PAYLOAD_TOO_LARGE]: 'AVATAR_TOO_LARGE',
   [HttpStatus.NOT_FOUND]: 'NOT_FOUND',
   [HttpStatus.TOO_MANY_REQUESTS]: 'TOO_MANY_REQUESTS'
 };
