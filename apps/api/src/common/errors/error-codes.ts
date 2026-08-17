@@ -13,6 +13,11 @@ export const ERROR_CODES = {
   SETTINGS_VERSION_CONFLICT: 'SETTINGS_VERSION_CONFLICT',
   AVATAR_UNSUPPORTED: 'AVATAR_UNSUPPORTED',
   AVATAR_TOO_LARGE: 'AVATAR_TOO_LARGE',
+  ACTIVE_GAME_LIMIT: 'ACTIVE_GAME_LIMIT',
+  ACTIVE_GAME_NAME_TAKEN: 'ACTIVE_GAME_NAME_TAKEN',
+  GAME_STATE_CONFLICT: 'GAME_STATE_CONFLICT',
+  GAME_HAS_BUYINS: 'GAME_HAS_BUYINS',
+  GAME_HAS_RELATIONS: 'GAME_HAS_RELATIONS',
   NOT_FOUND: 'NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR'
 } as const;
@@ -34,6 +39,11 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   SETTINGS_VERSION_CONFLICT: 'Rake settings were updated by another request',
   AVATAR_UNSUPPORTED: 'Unsupported avatar image',
   AVATAR_TOO_LARGE: 'Avatar image is too large',
+  ACTIVE_GAME_LIMIT: 'At most two games can be active or settling',
+  ACTIVE_GAME_NAME_TAKEN: 'An active game already uses this name',
+  GAME_STATE_CONFLICT: 'Game state changed or does not allow this action',
+  GAME_HAS_BUYINS: 'A game with purchases cannot be voided',
+  GAME_HAS_RELATIONS: 'A draft with related records cannot be deleted',
   NOT_FOUND: 'Not found',
   INTERNAL_ERROR: 'Internal server error'
 };
