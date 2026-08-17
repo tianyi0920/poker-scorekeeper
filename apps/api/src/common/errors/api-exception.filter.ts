@@ -5,7 +5,7 @@ import { ERROR_MESSAGES, type ErrorCode } from './error-codes.js';
 
 interface JsonResponse {
   status(statusCode: number): JsonResponse;
-  json(body: { code: string; message: string }): void;
+  json(body: { code: string; message: string; details?: unknown }): void;
 }
 
 const STATUS_CODES: Partial<Record<number, ErrorCode>> = {
@@ -23,7 +23,11 @@ export class ApiExceptionFilter implements ExceptionFilter {
     const response = host.switchToHttp().getResponse<JsonResponse>();
 
     if (exception instanceof AppError) {
-      const body = exception.getResponse() as { code: ErrorCode; message: string };
+      const body = exception.getResponse() as {
+        code: ErrorCode;
+        message: string;
+        details?: unknown;
+      };
       response.status(exception.getStatus()).json(body);
       return;
     }

@@ -12,6 +12,7 @@ import { GameStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { GameEventsService } from '../realtime/game-events.service.js';
 import { PresenceService } from '../realtime/presence.service.js';
+import { defaultSettlementDraftPayload } from '../settlements/settlement-draft.schema.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 import {
   assertCanViewGameSnapshot,
@@ -128,6 +129,23 @@ export class GamesService {
         data: { status: GameStatus.SETTLING, stoppedAt: now, version: { increment: 1 } }
       });
       if (changed.count !== 1) throw conflict('GAME_STATE_CONFLICT');
+      const players = await transaction.gamePlayer.findMany({
+        where: { gameId: id },
+        select: { id: true },
+        orderBy: [{ seatNo: 'asc' }, { id: 'asc' }]
+      });
+      const initialPayload = defaultSettlementDraftPayload(
+        players.map(({ id: playerId }) => playerId)
+      );
+      await transaction.settlementDraft.create({
+        data: {
+          gameId: id,
+          payload: initialPayload as Prisma.InputJsonValue,
+          editorUserId: currentActor.id,
+          updatedById: currentActor.id,
+          leaseExpiresAt: new Date(now.getTime() + 5 * 60_000)
+        }
+      });
       const after = await transaction.game.findUniqueOrThrow({ where: { id } });
       await this.recordTransition(
         transaction,

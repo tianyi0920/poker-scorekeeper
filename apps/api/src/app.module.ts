@@ -8,6 +8,7 @@ import { GamesModule } from './games/games.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
 import { RealtimeModule } from './realtime/realtime.module.js';
 import { SettingsModule } from './settings/settings.module.js';
+import { SettlementsModule } from './settlements/settlements.module.js';
 import { UsersModule } from './users/users.module.js';
 
 @Module({
@@ -20,7 +21,8 @@ import { UsersModule } from './users/users.module.js';
     BuyinsModule,
     GamesModule,
     UsersModule,
-    SettingsModule
+    SettingsModule,
+    SettlementsModule
   ],
   controllers: [HealthController]
 })

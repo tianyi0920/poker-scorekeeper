@@ -4,8 +4,13 @@ import { ERROR_MESSAGES, type ErrorCode } from './error-codes.js';
 export class AppError extends HttpException {
   readonly code: ErrorCode;
 
-  constructor(status: HttpStatus, code: ErrorCode, message = ERROR_MESSAGES[code]) {
-    super({ code, message }, status);
+  constructor(
+    status: HttpStatus,
+    code: ErrorCode,
+    message = ERROR_MESSAGES[code],
+    details?: unknown
+  ) {
+    super(details === undefined ? { code, message } : { code, message, details }, status);
     this.code = code;
   }
 }
@@ -24,6 +29,10 @@ export function forbidden(code: ErrorCode): AppError {
 
 export function conflict(code: ErrorCode): AppError {
   return new AppError(HttpStatus.CONFLICT, code);
+}
+
+export function conflictWithDetails(code: ErrorCode, details: unknown): AppError {
+  return new AppError(HttpStatus.CONFLICT, code, ERROR_MESSAGES[code], details);
 }
 
 export function notFound(code: ErrorCode): AppError {

@@ -421,10 +421,16 @@ describe.sequential('avatar pipeline', () => {
       });
     }, { timeout: 10_000, maxWait: 5_000 });
     await locked;
-    const resetPromise = avatars.resetByAdministrator(admin, target.id);
+    const result = avatars.resetByAdministrator(admin, target.id).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
 
     await blocker;
-    await expect(resetPromise).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(result).resolves.toMatchObject({
+      status: 'rejected',
+      reason: { code: 'FORBIDDEN' }
+    });
   }, 15_000);
 
   it('re-authorizes avatar reset after the administrator is demoted mid-request', async () => {
