@@ -20,6 +20,11 @@ function nullableJson(value: unknown): Prisma.InputJsonValue | typeof Prisma.DbN
   return redactAuditValue(value) as Prisma.InputJsonValue;
 }
 
+function safeMetadata(value: string | undefined, fallback: string, maxLength: number): string {
+  const sanitized = redactAuditValue(value ?? fallback);
+  return (typeof sanitized === 'string' ? sanitized : '[UNREADABLE]').slice(0, maxLength);
+}
+
 @Injectable()
 export class AuditService {
   async record(transaction: Prisma.TransactionClient, entry: AuditEntry): Promise<void> {
@@ -29,11 +34,11 @@ export class AuditService {
         action: entry.action,
         entityType: entry.entityType,
         entityId: entry.entityId,
-        requestId: (entry.requestId ?? randomUUID()).slice(0, 128),
+        requestId: safeMetadata(entry.requestId, randomUUID(), 128),
         beforeJson: nullableJson(entry.before),
         afterJson: nullableJson(entry.after),
-        sourceIp: (entry.sourceIp ?? 'unknown').slice(0, 45),
-        userAgent: (entry.userAgent ?? 'unknown').slice(0, 512)
+        sourceIp: safeMetadata(entry.sourceIp, 'unknown', 45),
+        userAgent: safeMetadata(entry.userAgent, 'unknown', 512)
       }
     });
   }

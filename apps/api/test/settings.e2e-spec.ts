@@ -3,6 +3,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import * as argon2 from 'argon2';
 import request, { type Response } from 'supertest';
 import { rakeSettingsResponseSchema } from '@poker/contracts';
+import { vi } from 'vitest';
 import { AuditService } from '../src/audit/audit.service.js';
 import { Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
@@ -170,6 +171,38 @@ describe.sequential('live rake settings', () => {
       .expect(({ body: response }) => expect(response.code, label).toBe('VALIDATION_ERROR'));
   });
 
+  it('accepts the signed BIGINT maximum threshold', async () => {
+    await patchRake(superAuth, {
+      threshold: '9223372036854775807',
+      bps: 1000,
+      version: 1
+    })
+      .expect(200)
+      .expect(({ body }) => expect(body).toEqual({
+        threshold: '9223372036854775807',
+        bps: 1000,
+        version: 2
+      }));
+
+    await expect(prisma.systemSetting.findUniqueOrThrow({ where: { id: 'singleton' } }))
+      .resolves.toMatchObject({ rakeThreshold: 9223372036854775807n, version: 2 });
+    expect(await prisma.auditLog.count({ where: { action: 'RAKE_SETTINGS_UPDATED' } })).toBe(1);
+  });
+
+  it('rejects a threshold above signed BIGINT without changing settings or auditing', async () => {
+    await patchRake(superAuth, {
+      threshold: '9223372036854775808',
+      bps: 1000,
+      version: 1
+    })
+      .expect(400)
+      .expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
+
+    await expect(prisma.systemSetting.findUniqueOrThrow({ where: { id: 'singleton' } }))
+      .resolves.toMatchObject({ rakeThreshold: 1000n, rakeBps: 1000, version: 1 });
+    expect(await prisma.auditLog.count({ where: { action: 'RAKE_SETTINGS_UPDATED' } })).toBe(0);
+  });
+
   it('increments the version and records actor, action, entity, before, and after', async () => {
     await patchRake(superAuth, { threshold: '1500', bps: 1250, version: 1 })
       .expect(200)
@@ -250,5 +283,91 @@ describe.sequential('live rake settings', () => {
     })).rejects.toThrow('force rollback');
 
     expect(await prisma.auditLog.count({ where: { entityId } })).toBe(0);
+  });
+
+  it('sanitizes credential-shaped audit metadata before storage', async () => {
+    const firstEntityId = `metadata-first-${runId}`;
+    const secondEntityId = `metadata-second-${runId}`;
+    const unsafeEntityId = `metadata-unsafe-${runId}`;
+    const cyclic: Record<string, unknown> = { safe: true };
+    cyclic.self = cyclic;
+    const unreadable: Record<string, unknown> = {};
+    Object.defineProperty(unreadable, 'safe', {
+      enumerable: true,
+      get() { throw new Error('getter must not escape'); }
+    });
+    const hostileProxy = new Proxy({}, {
+      ownKeys() { throw new Error('proxy must not escape'); }
+    });
+    await prisma.$transaction(async (transaction) => {
+      await audit.record(transaction, {
+        actorUserId: superUser.id,
+        action: 'METADATA_REDACTION_PROBE',
+        entityType: 'TEST',
+        entityId: firstEntityId,
+        before: null,
+        after: null,
+        requestId: 'Bearer request-token',
+        sourceIp: 'Cookie: poker_session=cookie-token',
+        userAgent: 'X-API-Key: api-key-token'
+      });
+      await audit.record(transaction, {
+        actorUserId: superUser.id,
+        action: 'METADATA_REDACTION_PROBE',
+        entityType: 'TEST',
+        entityId: secondEntityId,
+        before: null,
+        after: null,
+        requestId: 'mysql://user:password@db.example/internal'
+      });
+      await audit.record(transaction, {
+        actorUserId: superUser.id,
+        action: 'METADATA_REDACTION_PROBE',
+        entityType: 'TEST',
+        entityId: unsafeEntityId,
+        before: { cyclic, invalidDate: new Date('not-a-date'), unreadable, hostileProxy },
+        after: null
+      });
+    });
+
+    const logs = await prisma.auditLog.findMany({
+      where: { entityId: { in: [firstEntityId, secondEntityId, unsafeEntityId] } },
+      orderBy: { entityId: 'asc' }
+    });
+    expect(logs).toHaveLength(3);
+    expect(logs[0]).toMatchObject({
+      requestId: '[REDACTED]',
+      sourceIp: '[REDACTED]',
+      userAgent: '[REDACTED]'
+    });
+    expect(logs[1]).toMatchObject({ requestId: '[REDACTED]' });
+    expect(logs[2]).toMatchObject({
+      beforeJson: {
+        cyclic: { safe: true, self: '[CIRCULAR]' },
+        invalidDate: '[INVALID_DATE]',
+        unreadable: { safe: '[UNREADABLE]' },
+        hostileProxy: '[UNREADABLE]'
+      }
+    });
+  });
+
+  it('rolls a setting update back when audit storage fails and returns a fixed error', async () => {
+    const injectedSecret = 'audit-storage-secret-marker';
+    const record = vi.spyOn(audit, 'record')
+      .mockRejectedValueOnce(new Error(injectedSecret));
+    try {
+      await patchRake(superAuth, { threshold: '1700', bps: 1700, version: 1 })
+        .expect(500)
+        .expect(({ body }) => {
+          expect(body).toEqual({ code: 'INTERNAL_ERROR', message: 'Internal server error' });
+          expect(JSON.stringify(body)).not.toContain(injectedSecret);
+        });
+    } finally {
+      record.mockRestore();
+    }
+
+    await expect(prisma.systemSetting.findUniqueOrThrow({ where: { id: 'singleton' } }))
+      .resolves.toMatchObject({ rakeThreshold: 1000n, rakeBps: 1000, version: 1 });
+    expect(await prisma.auditLog.count({ where: { action: 'RAKE_SETTINGS_UPDATED' } })).toBe(0);
   });
 });

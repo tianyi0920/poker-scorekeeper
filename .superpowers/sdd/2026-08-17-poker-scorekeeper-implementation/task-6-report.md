@@ -7,11 +7,13 @@
 ## 实现内容
 
 - 新增 `GET /api/settings/rake` 与 `PATCH /api/settings/rake`，共享契约为 `{ threshold: MoneyJson, bps, version }`。
-- `threshold` 仅接受非负、规范化的整数元字符串；`bps` 仅接受 0–10000 整数；`version` 为正整数。
+- `threshold` 仅接受 0–9223372036854775807 范围内非负、规范化的整数元字符串，以字符串长度/字典序比较避免 JavaScript `Number` 精度损失；`bps` 仅接受 0–10000 整数；`version` 为正整数。
 - 更新事务先锁定 `system_settings` singleton，再按现有确定顺序锁定操作人并重读角色，与 Task 5 生命周期锁序一致。
 - 使用乐观 `version` 检查与递增，陈旧版本稳定返回 `409 SETTINGS_VERSION_CONFLICT`。
 - 新增 `AuditService.record(transaction, entry)`，只接受 Prisma 事务客户端；记录失败会使业务修改整体回滚。
-- 递归脱敏支持嵌套对象、数组、大小写及下划线/连字符变体，屏蔽 password/hash/token/cookie/authorization/API key/DB URL/connection string/secret，且对任意键下的数据库 URL 值做二次保护。
+- 递归脱敏按 camelCase、大小写、下划线和连字符切分语义 token，屏蔽 password/hash/token/cookie/authorization/API key/DB URL/connection string/secret 及其常见前后缀，同时不误杀 `secretSanta`、`monkeyValue`、`tokenizerMode` 等普通字段。
+- 任意键下的 Bearer、Cookie、API key、数据库 URL/连接串值都会替换为固定占位；`requestId`、`sourceIp`、`userAgent` 也经同一安全入口清洗后再执行列长度截断。
+- 循环引用、无效日期、抛错 getter 和 hostile Proxy 分别安全降级为 JSON 可序列化占位，不会令审计事务因序列化异常返回 500。
 - 用户创建、昵称/抽成开关/角色/启用状态修改、密码重置、删除、恢复和管理员头像重置均审计 actor/action/entity/before/after。
 - 用户审计快照仅从白名单公开字段构建，不将密码哈希、会话令牌、Cookie 或数据库地址交给审计序列化。
 - 新增审计后，用户/头像 E2E 定向清理自己的审计行，不在测试库留下无主数据。
@@ -24,6 +26,8 @@
 - Task 5 联合回归 GREEN：用户 28/28、头像 13/13，与 Task 6 用例合计 58/58。
 - 设置并发覆盖包括：同版本双请求仅一个成功；操作人在等待 singleton 锁时被降权，获锁后事务内重读并拒绝，设置与审计均不变。
 - 真实 Prisma 事务抛错后审计记录为 0，证明审计参与外层事务回滚。
+- 修复轮 RED：脱敏 9 项中 5 项失败（wrapper/凭据形态漏网和循环栈溢出）；settings 20 项中 2 项失败（BIGINT 上界外返回 500、审计元数据原样入库）。
+- 修复轮 GREEN：脱敏 9/9、settings 20/20；覆盖 BIGINT 最大值成功、最大值加一稳定 400 且设置/审计不变，以及审计写入失败时客户端仅收到固定 `INTERNAL_ERROR`、设置与审计整体回滚。
 
 ## 验证
 
@@ -31,9 +35,10 @@
 
 | 验证 | 结果 |
 |---|---|
-| Task 6 脱敏单测 | PASS，3/3 |
-| Task 5 + Task 6 聚焦 HTTP/DB E2E | PASS，58/58 |
-| `pnpm test` | PASS，API 88/88；全仓 121/121 |
+| Task 6 脱敏单测 | PASS，9/9 |
+| Task 6 settings HTTP/DB E2E | PASS，20/20 |
+| Task 5 + Task 6 聚焦 HTTP/DB E2E | PASS，62/62 |
+| `pnpm test` | PASS，API 98/98；全仓 131/131 |
 | `pnpm --filter @poker/api test:integration` | PASS，12/12 |
 | `pnpm lint` | PASS |
 | `pnpm typecheck` | PASS |
@@ -45,6 +50,8 @@
 ## 测试库干扰调查
 
 全仓首跑的唯一失败是 auth 的 4 个既有 bootstrap 用例找不到本轮账号。只读取证发现测试库存在一个旧 Task 5 测试残留的启用超管，导致 bootstrap 服务按设计跳过创建。该账号符合严格测试前缀，且 sessions/games/players/audits/settings/buyins/drafts/settlements 等所有引用计数均为 0。在 `_test` 断言后仅定向删除该行，复跑即全绿。测试结束后同样定向清理了 health suite 继承环境产生的 1 个零引用测试 bootstrap 账号。
+
+修复轮复验同样先以 `_test` 断言、严格 `audit-<10hex>-bootstrap` 正则、全部用户关系计数为 0 且无 active-player lock 为事务内删除前置条件，定向清理旧夹具 1 行；全仓复验后再以相同守卫清理 health 遗留 1 行。未执行 reset，未接触生产库。
 
 ## 文件清单
 
