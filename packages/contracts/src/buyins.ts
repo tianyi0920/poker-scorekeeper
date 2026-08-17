@@ -1,6 +1,15 @@
 import { z } from 'zod';
 
-export const idempotencyKeySchema = z.string().min(1).max(128);
+export const idempotencyKeySchema = z.string()
+  .min(1)
+  .max(128)
+  .regex(/^[\x21-\x7e]+$/)
+  .refine((value) => value === value.toLowerCase());
+
+export const canonicalPublicIdSchema = z.string()
+  .min(1)
+  .max(30)
+  .regex(/^[a-z0-9]+(?:-[a-z0-9]+)*$/);
 
 export const buyHandsSchema = z.object({
   hands: z.number().int().min(1).max(99),

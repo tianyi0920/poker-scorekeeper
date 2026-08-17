@@ -10,6 +10,7 @@ import {
 import {
   adjustLatestBuyinSchema,
   buyHandsSchema,
+  canonicalPublicIdSchema,
   type AdjustLatestBuyinRequest,
   type BuyHandsRequest,
   type BuyinEventResponse
@@ -32,7 +33,7 @@ export class BuyinsController {
   @Post('buyins')
   async buy(
     @CurrentUser() actor: AuthUser,
-    @Param('gameId') gameId: string,
+    @Param('gameId', new ZodValidationPipe(canonicalPublicIdSchema)) gameId: string,
     @Body(new ZodValidationPipe(buyHandsSchema)) body: BuyHandsRequest,
     @Res({ passthrough: true }) response: StatusResponse
   ): Promise<BuyinEventResponse> {
@@ -44,8 +45,8 @@ export class BuyinsController {
   @Post('players/:playerId/buyins/latest/adjust')
   async adjust(
     @CurrentUser() actor: AuthUser,
-    @Param('gameId') gameId: string,
-    @Param('playerId') playerId: string,
+    @Param('gameId', new ZodValidationPipe(canonicalPublicIdSchema)) gameId: string,
+    @Param('playerId', new ZodValidationPipe(canonicalPublicIdSchema)) playerId: string,
     @Body(new ZodValidationPipe(adjustLatestBuyinSchema)) body: AdjustLatestBuyinRequest,
     @Res({ passthrough: true }) response: StatusResponse
   ): Promise<BuyinEventResponse> {

@@ -4,10 +4,11 @@ import type {
   BuyHandsRequest,
   BuyinEventResponse
 } from '@poker/contracts';
+import { canonicalPublicIdSchema, idempotencyKeySchema } from '@poker/contracts';
 import { randomBytes } from 'node:crypto';
 import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../common/auth/auth-user.js';
-import { conflict, forbidden, notFound } from '../common/errors/app-error.js';
+import { badRequest, conflict, forbidden, notFound } from '../common/errors/app-error.js';
 import {
   BuyinEventType,
   GameStatus,
@@ -28,7 +29,6 @@ const MAX_SIGNED_BIGINT = 9223372036854775807n;
 const MAX_PLAYERS = 12;
 
 const replayInclude = {
-  game: { select: { version: true } },
   gamePlayer: { select: { userId: true } }
 } satisfies Prisma.BuyinEventInclude;
 
@@ -46,6 +46,12 @@ interface LockedReplayEvent {
   newHands: number | bigint;
   handsDelta: number | bigint;
   gameVersion: number | bigint;
+}
+
+interface LockedGamePlayer {
+  id: string;
+  gameId: string;
+  userId: string;
 }
 
 interface ExpectedBinding {
@@ -73,6 +79,20 @@ function isRetryableTransactionConflict(error: unknown): boolean {
 
 function eventId(): string {
   return randomBytes(15).toString('hex');
+}
+
+function assertCanonicalWriteRequest(
+  gameId: string,
+  idempotencyKey: string,
+  playerId?: string
+): void {
+  if (
+    !canonicalPublicIdSchema.safeParse(gameId).success ||
+    !idempotencyKeySchema.safeParse(idempotencyKey).success ||
+    (playerId !== undefined && !canonicalPublicIdSchema.safeParse(playerId).success)
+  ) {
+    throw badRequest('VALIDATION_ERROR');
+  }
 }
 
 function ledgerEvent(event: Pick<BuyinEvent,
@@ -112,7 +132,8 @@ function auditEvent(event: BuyinEvent): Record<string, unknown> {
     logicalBuyId: event.logicalBuyId,
     previousHands: event.previousHands,
     newHands: event.newHands,
-    handsDelta: event.handsDelta
+    handsDelta: event.handsDelta,
+    gameVersion: event.gameVersion
   };
 }
 
@@ -128,7 +149,8 @@ export class BuyinsService {
     actor: AuthUser,
     input: BuyHandsRequest
   ): Promise<BuyinEventResponse> {
-    const binding: ExpectedBinding = {
+    assertCanonicalWriteRequest(gameId, input.idempotencyKey);
+    const requestBinding: ExpectedBinding = {
       gameId,
       actorUserId: actor.id,
       type: BuyinEventType.BUY,
@@ -139,9 +161,10 @@ export class BuyinsService {
     try {
       return await this.writeTransaction(async (transaction) => {
         const replay = await this.findReplay(transaction, input.idempotencyKey);
-        if (replay !== null) return this.mapReplay(replay, binding);
+        if (replay !== null) return this.mapReplay(replay, requestBinding);
 
         const game = await lockGameForUpdate(transaction, gameId);
+        const binding = { ...requestBinding, gameId: game.id };
         const currentReplay = await this.lockReplay(transaction, input.idempotencyKey);
         if (currentReplay !== null) return this.mapLockedReplay(currentReplay, binding);
         if (game.status !== GameStatus.ACTIVE) throw conflict('GAME_STATE_CONFLICT');
@@ -151,17 +174,17 @@ export class BuyinsService {
         const existingLock = await transaction.activePlayerLock.findUnique({
           where: { userId: currentActor.id }
         });
-        if (existingLock !== null && existingLock.gameId !== gameId) {
+        if (existingLock !== null && existingLock.gameId !== game.id) {
           throw conflict('USER_IN_ACTIVE_GAME');
         }
 
         let player = await transaction.gamePlayer.findUnique({
-          where: { gameId_userId: { gameId, userId: currentActor.id } }
+          where: { gameId_userId: { gameId: game.id, userId: currentActor.id } }
         });
         const now = new Date();
         if (player === null) {
           const seated = await transaction.gamePlayer.findMany({
-            where: { gameId },
+            where: { gameId: game.id },
             select: { seatNo: true },
             orderBy: [{ seatNo: 'asc' }, { id: 'asc' }]
           });
@@ -172,12 +195,12 @@ export class BuyinsService {
           if (seatNo === undefined) throw conflict('GAME_PLAYER_LIMIT');
           if (existingLock === null) {
             await transaction.activePlayerLock.create({
-              data: { userId: currentActor.id, gameId }
+              data: { userId: currentActor.id, gameId: game.id }
             });
           }
           player = await transaction.gamePlayer.create({
             data: {
-              gameId,
+              gameId: game.id,
               userId: currentActor.id,
               nicknameSnapshot: currentActor.nickname,
               avatarKindSnapshot: currentActor.avatarKind,
@@ -188,12 +211,12 @@ export class BuyinsService {
           });
         } else if (existingLock === null) {
           await transaction.activePlayerLock.create({
-            data: { userId: currentActor.id, gameId }
+            data: { userId: currentActor.id, gameId: game.id }
           });
         }
 
         const allEvents = await transaction.buyinEvent.findMany({
-          where: { gameId },
+          where: { gameId: game.id },
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
         });
         const playerEvents = allEvents.filter(({ gamePlayerId }) => gamePlayerId === player.id);
@@ -203,10 +226,11 @@ export class BuyinsService {
         const createdAt = nextLedgerCreatedAt(allEvents.at(-1)?.createdAt, new Date());
 
         const id = eventId();
+        const gameVersion = game.version + 1;
         const created = await transaction.buyinEvent.create({
           data: {
             id,
-            gameId,
+            gameId: game.id,
             gamePlayerId: player.id,
             actorUserId: currentActor.id,
             type: BuyinEventType.BUY,
@@ -214,6 +238,7 @@ export class BuyinsService {
             previousHands: null,
             newHands: input.hands,
             handsDelta: input.hands,
+            gameVersion,
             idempotencyKey: input.idempotencyKey,
             createdAt
           }
@@ -228,10 +253,10 @@ export class BuyinsService {
           before: null,
           after: auditEvent(created)
         });
-        return this.mapEvent(created, game.version + 1, false);
+        return this.mapEvent(created, false);
       });
     } catch (error) {
-      return this.recoverConstraint(error, input.idempotencyKey, binding);
+      return this.recoverConstraint(error, input.idempotencyKey, requestBinding);
     }
   }
 
@@ -241,7 +266,8 @@ export class BuyinsService {
     actor: AuthUser,
     input: AdjustLatestBuyinRequest
   ): Promise<BuyinEventResponse> {
-    const binding: ExpectedBinding = {
+    assertCanonicalWriteRequest(gameId, input.idempotencyKey, playerId);
+    const requestBinding: ExpectedBinding = {
       gameId,
       actorUserId: actor.id,
       type: BuyinEventType.ADJUST,
@@ -253,15 +279,20 @@ export class BuyinsService {
     try {
       return await this.writeTransaction(async (transaction) => {
         const replay = await this.findReplay(transaction, input.idempotencyKey);
-        if (replay !== null) return this.mapReplay(replay, binding);
+        if (replay !== null) return this.mapReplay(replay, requestBinding);
 
         const game = await lockGameForUpdate(transaction, gameId);
+        const player = await this.lockGamePlayerForUpdate(transaction, playerId);
+        if (player === null || player.gameId !== game.id) throw notFound('NOT_FOUND');
+        const binding = {
+          ...requestBinding,
+          gameId: game.id,
+          playerId: player.id
+        };
         const currentReplay = await this.lockReplay(transaction, input.idempotencyKey);
         if (currentReplay !== null) return this.mapLockedReplay(currentReplay, binding);
         if (game.status !== GameStatus.ACTIVE) throw conflict('GAME_STATE_CONFLICT');
 
-        const player = await transaction.gamePlayer.findUnique({ where: { id: playerId } });
-        if (player === null || player.gameId !== gameId) throw notFound('NOT_FOUND');
         if (player.userId !== actor.id) throw forbidden('FORBIDDEN');
         const users = await lockUsersInOrder(transaction, [actor.id, player.userId]);
         const currentActor = requireCurrentActor(users, actor.id);
@@ -282,7 +313,7 @@ export class BuyinsService {
         const handsDelta = input.newHands - latestEffective.effectiveHands;
 
         const allEvents = await transaction.buyinEvent.findMany({
-          where: { gameId },
+          where: { gameId: game.id },
           orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
         });
         const nextPlayerHands = effectiveHandTotal(playerEvents.map(ledgerEvent)) + handsDelta;
@@ -290,10 +321,11 @@ export class BuyinsService {
         assertAmountInRange(game.handPrice, nextPlayerHands, nextGameHands);
         const createdAt = nextLedgerCreatedAt(allEvents.at(-1)?.createdAt, new Date());
 
+        const gameVersion = game.version + 1;
         const created = await transaction.buyinEvent.create({
           data: {
             id: eventId(),
-            gameId,
+            gameId: game.id,
             gamePlayerId: player.id,
             actorUserId: currentActor.id,
             type: BuyinEventType.ADJUST,
@@ -301,6 +333,7 @@ export class BuyinsService {
             previousHands: latestEffective.effectiveHands,
             newHands: input.newHands,
             handsDelta,
+            gameVersion,
             idempotencyKey: input.idempotencyKey,
             createdAt
           }
@@ -315,10 +348,10 @@ export class BuyinsService {
           before: null,
           after: auditEvent(created)
         });
-        return this.mapEvent(created, game.version + 1, false);
+        return this.mapEvent(created, false);
       });
     } catch (error) {
-      return this.recoverConstraint(error, input.idempotencyKey, binding);
+      return this.recoverConstraint(error, input.idempotencyKey, requestBinding);
     }
   }
 
@@ -390,6 +423,22 @@ export class BuyinsService {
     });
   }
 
+  private async lockGamePlayerForUpdate(
+    transaction: Prisma.TransactionClient,
+    playerId: string
+  ): Promise<LockedGamePlayer | null> {
+    const rows = await transaction.$queryRaw<LockedGamePlayer[]>`
+      SELECT
+        id,
+        game_id AS gameId,
+        user_id AS userId
+      FROM game_players
+      WHERE id = ${playerId}
+      FOR UPDATE
+    `;
+    return rows[0] ?? null;
+  }
+
   private async lockReplay(
     transaction: Prisma.TransactionClient,
     idempotencyKey: string
@@ -406,10 +455,9 @@ export class BuyinsService {
         event.previous_hands AS previousHands,
         event.new_hands AS newHands,
         event.hands_delta AS handsDelta,
-        game.version AS gameVersion
+        event.game_version AS gameVersion
       FROM buyin_events AS event
       INNER JOIN game_players AS player ON player.id = event.game_player_id
-      INNER JOIN games AS game ON game.id = event.game_id
       WHERE event.idempotency_key = ${idempotencyKey}
       FOR UPDATE
     `;
@@ -418,7 +466,7 @@ export class BuyinsService {
 
   private mapReplay(event: ReplayEvent, binding: ExpectedBinding): BuyinEventResponse {
     this.assertBinding(event, event.gamePlayer.userId, binding);
-    return this.mapEvent(event, event.game.version, true);
+    return this.mapEvent(event, true);
   }
 
   private mapLockedReplay(
@@ -429,10 +477,11 @@ export class BuyinsService {
       ...event,
       previousHands: event.previousHands === null ? null : Number(event.previousHands),
       newHands: Number(event.newHands),
-      handsDelta: Number(event.handsDelta)
+      handsDelta: Number(event.handsDelta),
+      gameVersion: Number(event.gameVersion)
     };
     this.assertBinding(normalized, event.playerUserId, binding);
-    return this.mapEvent(normalized, Number(event.gameVersion), true);
+    return this.mapEvent(normalized, true);
   }
 
   private assertBinding(
@@ -457,9 +506,8 @@ export class BuyinsService {
   private mapEvent(
     event: Pick<BuyinEvent,
       'id' | 'gameId' | 'gamePlayerId' | 'actorUserId' | 'type' |
-      'logicalBuyId' | 'previousHands' | 'newHands' | 'handsDelta'
+      'logicalBuyId' | 'previousHands' | 'newHands' | 'handsDelta' | 'gameVersion'
     >,
-    gameVersion: number,
     replayed: boolean
   ): BuyinEventResponse {
     return {
@@ -473,7 +521,7 @@ export class BuyinsService {
       newHands: event.newHands,
       handsDelta: event.handsDelta,
       replayed,
-      gameVersion
+      gameVersion: event.gameVersion
     };
   }
 

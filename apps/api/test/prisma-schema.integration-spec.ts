@@ -1,4 +1,5 @@
 import { PrismaMariaDb } from '@prisma/adapter-mariadb';
+import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '../src/generated/prisma/client.js';
 
 const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
@@ -148,6 +149,98 @@ describe('Prisma financial schema', () => {
     );
   });
 
+  it('stores idempotency keys with binary collation and event versions as required integers', async () => {
+    const columns = await prisma.$queryRaw<Array<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      character_maximum_length: bigint | null;
+      collation_name: string | null;
+    }>>`
+      SELECT column_name, data_type, is_nullable, character_maximum_length, collation_name
+      FROM information_schema.columns
+      WHERE table_schema = DATABASE()
+        AND table_name = 'buyin_events'
+        AND column_name IN ('idempotency_key', 'game_version')
+      ORDER BY column_name
+    `;
+
+    expect(columns.map((column) => ({
+      ...column,
+      character_maximum_length: column.character_maximum_length === null
+        ? null
+        : Number(column.character_maximum_length)
+    }))).toEqual([
+      {
+        column_name: 'game_version',
+        data_type: 'int',
+        is_nullable: 'NO',
+        character_maximum_length: null,
+        collation_name: null
+      },
+      {
+        column_name: 'idempotency_key',
+        data_type: 'varchar',
+        is_nullable: 'NO',
+        character_maximum_length: 128,
+        collation_name: 'utf8mb4_bin'
+      }
+    ]);
+  });
+
+  it('allows byte-distinct idempotency keys to coexist at the database boundary', async () => {
+    const suffix = randomUUID().replaceAll('-', '').slice(0, 8);
+    const userId = `idu-${suffix}`;
+    const gameId = `idg-${suffix}`;
+    const playerId = `idp-${suffix}`;
+    const keys = [`case-${suffix}`, `CASE-${suffix}`];
+    const eventIds = keys.map((_key, index) => `ide-${suffix}-${index}`);
+    try {
+      await prisma.$executeRaw`
+        INSERT INTO users
+          (id, username, normalized_username, nickname, active_normalized_nickname,
+           password_hash, avatar_value, created_at, updated_at)
+        VALUES
+          (${userId}, ${userId}, ${userId}, ${userId}, ${userId},
+           'test-only-hash', 'preset-1', CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      `;
+      await prisma.$executeRaw`
+        INSERT INTO games
+          (id, name, hand_price, status, version, created_by_id, created_at, updated_at)
+        VALUES
+          (${gameId}, 'idempotency collation', 10, 'ACTIVE', 1, ${userId},
+           CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      `;
+      await prisma.$executeRaw`
+        INSERT INTO game_players
+          (id, game_id, user_id, nickname_snapshot, avatar_kind_snapshot,
+           avatar_value_snapshot, seat_no, first_buyin_at, created_at)
+        VALUES
+          (${playerId}, ${gameId}, ${userId}, ${userId}, 'PRESET', 'preset-1', 1,
+           CURRENT_TIMESTAMP(3), CURRENT_TIMESTAMP(3))
+      `;
+      for (let index = 0; index < keys.length; index += 1) {
+        await prisma.$executeRaw`
+          INSERT INTO buyin_events
+            (id, game_id, game_player_id, actor_user_id, type, logical_buy_id,
+             previous_hands, new_hands, hands_delta, game_version, idempotency_key, created_at)
+          VALUES
+            (${eventIds[index]}, ${gameId}, ${playerId}, ${userId}, 'BUY', ${eventIds[index]},
+             NULL, 1, 1, 2, ${keys[index]}, CURRENT_TIMESTAMP(3))
+        `;
+      }
+      const count = await prisma.$queryRaw<Array<{ count: bigint }>>`
+        SELECT COUNT(*) AS count FROM buyin_events WHERE game_id = ${gameId}
+      `;
+      expect(Number(count[0]?.count)).toBe(2);
+    } finally {
+      await prisma.buyinEvent.deleteMany({ where: { gameId } });
+      await prisma.gamePlayer.deleteMany({ where: { gameId } });
+      await prisma.game.deleteMany({ where: { id: gameId } });
+      await prisma.user.deleteMany({ where: { id: userId } });
+    }
+  });
+
   it('declares restrictive foreign keys for permanent financial history', async () => {
     const rows = await prisma.$queryRaw<
       Array<{ constraint_name: string; delete_rule: string }>
@@ -252,6 +345,7 @@ describe('Prisma financial schema', () => {
           logicalBuyId: eventId,
           newHands: 10,
           handsDelta: 10,
+          gameVersion: 1,
           idempotencyKey: `idem-${suffix}`
         }
       });

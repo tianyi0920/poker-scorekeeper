@@ -157,6 +157,53 @@ describe.sequential('buy-in transaction concurrency', () => {
       .resolves.toMatchObject({ version: 2 });
   });
 
+  it.each([
+    ['uppercase idempotency key', (game: Game) => buyins.buy(game.id, authUser(player), {
+      hands: 1,
+      idempotencyKey: `${prefix}-UPPER`
+    })],
+    ['space-suffixed idempotency key', (game: Game) => buyins.buy(game.id, authUser(player), {
+      hands: 1,
+      idempotencyKey: `${prefix}-space `
+    })],
+    ['uppercase game id', (game: Game) => buyins.buy(game.id.toUpperCase(), authUser(player), {
+      hands: 1,
+      idempotencyKey: `${prefix}-invalid-game`
+    })]
+  ] as const)('defensively rejects %s when the service is called directly', async (_label, call) => {
+    const game = await seedGame(`service-validation-${_label}`);
+    const transactionSpy = vi.spyOn(prisma, '$transaction');
+    try {
+      await expect(call(game)).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      expect(transactionSpy).not.toHaveBeenCalled();
+      await expect(prisma.activePlayerLock.findUnique({ where: { userId: player.id } }))
+        .resolves.toBeNull();
+      await expect(prisma.gamePlayer.count({ where: { gameId: game.id } })).resolves.toBe(0);
+      await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(0);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
+
+  it('defensively rejects a non-canonical player id before starting a transaction', async () => {
+    const game = await seedGame('service-player-validation');
+    const bought = await buyins.buy(game.id, authUser(player), {
+      hands: 2,
+      idempotencyKey: `${prefix}-service-player-seed`
+    });
+    const transactionSpy = vi.spyOn(prisma, '$transaction');
+    try {
+      await expect(buyins.adjust(game.id, bought.playerId.toUpperCase(), authUser(player), {
+        newHands: 1,
+        idempotencyKey: `${prefix}-service-player-invalid`
+      })).rejects.toMatchObject({ code: 'VALIDATION_ERROR' });
+      expect(transactionSpy).not.toHaveBeenCalled();
+      await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(1);
+    } finally {
+      transactionSpy.mockRestore();
+    }
+  });
+
   it('returns one stable conflict for simultaneous different payloads sharing a key', async () => {
     const game = await seedGame('key-conflict');
     const key = `${prefix}-conflicting-key`;

@@ -186,12 +186,52 @@ describe.sequential('buy-in HTTP ledger', () => {
     ['fractional hands', { hands: 1.5, idempotencyKey: randomUUID() }],
     ['missing key', { hands: 1 }],
     ['oversized key', { hands: 1, idempotencyKey: 'x'.repeat(129) }],
+    ['uppercase key', { hands: 1, idempotencyKey: 'Request-123' }],
+    ['space-suffixed key', { hands: 1, idempotencyKey: 'request-123 ' }],
+    ['non-ASCII key', { hands: 1, idempotencyKey: '请求-123' }],
     ['unknown field', { hands: 1, idempotencyKey: randomUUID(), surprise: true }]
   ])('rejects %s before writing', async (_label, body) => {
     const game = await seedGame(`invalid-${_label}`);
     await post(playerAuth, `/api/games/${game.id}/buyins`, body)
       .expect(400)
       .expect(({ body: response }) => expect(response.code).toBe('VALIDATION_ERROR'));
+    await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(0);
+  });
+
+  it.each([
+    ['uppercase player id', (id: string) => id.toUpperCase()],
+    ['space-suffixed player id', (id: string) => `${id}%20`]
+  ])('rejects %s before appending an adjustment', async (_label, mutateId) => {
+    const game = await seedGame(`invalid-player-route-${_label}`);
+    const bought = await post(playerAuth, `/api/games/${game.id}/buyins`, {
+      hands: 2,
+      idempotencyKey: `${prefix}-invalid-player-seed`
+    }).expect(201);
+    await post(
+      playerAuth,
+      `/api/games/${game.id}/players/${mutateId(bought.body.playerId)}/buyins/latest/adjust`,
+      { newHands: 1, idempotencyKey: `${prefix}-invalid-player-adjust` }
+    ).expect(400).expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
+    await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(1);
+    await expect(prisma.auditLog.count({
+      where: { action: 'BUYIN_ADJUSTED', entityType: 'BUYIN_EVENT' }
+    })).resolves.toBe(0);
+    await expect(prisma.game.findUniqueOrThrow({ where: { id: game.id } }))
+      .resolves.toMatchObject({ version: 2 });
+  });
+
+  it.each([
+    ['uppercase game id', (id: string) => id.toUpperCase()],
+    ['space-suffixed game id', (id: string) => `${id}%20`]
+  ])('rejects %s before creating a lock, player, or event', async (_label, mutateId) => {
+    const game = await seedGame(`invalid-route-${_label}`);
+    await post(playerAuth, `/api/games/${mutateId(game.id)}/buyins`, {
+      hands: 1,
+      idempotencyKey: `${prefix}-invalid-route`
+    }).expect(400).expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
+    await expect(prisma.activePlayerLock.findUnique({ where: { userId: player.id } }))
+      .resolves.toBeNull();
+    await expect(prisma.gamePlayer.count({ where: { gameId: game.id } })).resolves.toBe(0);
     await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(0);
   });
 
@@ -258,15 +298,23 @@ describe.sequential('buy-in HTTP ledger', () => {
     const game = await seedGame('replay');
     const body = { hands: 5, idempotencyKey: `${prefix}-replay-key` };
     const first = await post(playerAuth, `/api/games/${game.id}/buyins`, body).expect(201);
+    await post(playerAuth, `/api/games/${game.id}/buyins`, {
+      hands: 1,
+      idempotencyKey: `${prefix}-replay-later-1`
+    }).expect(201);
+    await post(playerAuth, `/api/games/${game.id}/buyins`, {
+      hands: 2,
+      idempotencyKey: `${prefix}-replay-later-2`
+    }).expect(201);
     const second = await post(playerAuth, `/api/games/${game.id}/buyins`, body).expect(200);
 
     expect(second.body).toEqual({ ...first.body, replayed: true });
-    await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(1);
+    await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(3);
     await expect(prisma.auditLog.count({
       where: { action: 'BUYIN_BOUGHT', entityId: first.body.eventId }
     })).resolves.toBe(1);
     await expect(prisma.game.findUniqueOrThrow({ where: { id: game.id } }))
-      .resolves.toMatchObject({ version: 2 });
+      .resolves.toMatchObject({ version: 4 });
   });
 
   it('binds an idempotency key to actor, route, game, player, operation, and payload', async () => {

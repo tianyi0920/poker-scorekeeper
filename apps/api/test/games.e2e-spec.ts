@@ -326,6 +326,7 @@ describe.sequential('game lifecycle and snapshots', () => {
         previousHands: null,
         newHands: 1,
         handsDelta: 1,
+        gameVersion: active.version,
         idempotencyKey: `${prefix}-purchase`
       }
     });
@@ -435,6 +436,7 @@ describe.sequential('game lifecycle and snapshots', () => {
           previousHands: null,
           newHands: 2,
           handsDelta: 2,
+          gameVersion: game.version,
           idempotencyKey: `${prefix}-idem-2`,
           createdAt: new Date('2026-08-17T10:03:00.000Z')
         },
@@ -448,6 +450,7 @@ describe.sequential('game lifecycle and snapshots', () => {
           previousHands: null,
           newHands: 5,
           handsDelta: 5,
+          gameVersion: game.version,
           idempotencyKey: `${prefix}-idem-1`,
           createdAt: new Date('2026-08-17T10:04:00.000Z')
         },
@@ -461,6 +464,7 @@ describe.sequential('game lifecycle and snapshots', () => {
           previousHands: 5,
           newHands: 3,
           handsDelta: -2,
+          gameVersion: game.version,
           idempotencyKey: `${prefix}-idem-adjust`,
           createdAt: new Date('2026-08-17T10:05:00.000Z')
         }

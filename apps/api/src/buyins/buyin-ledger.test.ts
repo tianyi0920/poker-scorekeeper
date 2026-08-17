@@ -42,6 +42,15 @@ describe('buy-in event ledger', () => {
       .toEqual(new Date('2026-08-17T12:00:01.000Z'));
   });
 
+  it('rejects a timestamp after the MySQL DATETIME(3) ceiling', () => {
+    const maximum = new Date('9999-12-31T23:59:59.999Z');
+    expect(nextLedgerCreatedAt(undefined, maximum)).toEqual(maximum);
+    expect(() => nextLedgerCreatedAt(maximum, maximum))
+      .toThrow('BUYIN_TIMESTAMP_OVERFLOW');
+    expect(() => nextLedgerCreatedAt(undefined, new Date('+010000-01-01T00:00:00.000Z')))
+      .toThrow('BUYIN_TIMESTAMP_OVERFLOW');
+  });
+
   it('keeps the original buy and appends a -2 correction', () => {
     expect(foldBuyinEvents([buy(5), adjust(-2, 'buy-1', 5)]))
       .toEqual([{ logicalBuyId: 'buy-1', effectiveHands: 3 }]);
@@ -67,6 +76,32 @@ describe('buy-in event ledger', () => {
   it('rejects a correction that does not point at a prior logical buy', () => {
     expect(() => foldBuyinEvents([adjust(1, 'missing', 0)]))
       .toThrow('BUYIN_LOGICAL_BUY_NOT_FOUND');
+  });
+
+  it('rejects a repeated logical BUY and a repeated physical event id', () => {
+    expect(() => foldBuyinEvents([buy(1), { ...buy(2), id: 'another-event' }]))
+      .toThrow('BUYIN_LOGICAL_BUY_DUPLICATE');
+    expect(() => foldBuyinEvents([buy(1), { ...buy(2, 'buy-2'), id: 'buy-1-event' }]))
+      .toThrow('BUYIN_EVENT_DUPLICATE');
+  });
+
+  it.each([
+    ['BUY previousHands must be null', { ...buy(2), previousHands: 0 }],
+    ['BUY newHands must match delta', { ...buy(2), newHands: 3 }],
+    ['BUY values must be safe integers', { ...buy(2), handsDelta: 1.5 }],
+    ['unknown event type', { ...buy(2), type: 'REPLACE' }]
+  ])('rejects malformed ledger event: %s', (_label, malformed) => {
+    expect(() => foldBuyinEvents([malformed as LedgerEvent]))
+      .toThrow('BUYIN_EVENT_INVALID');
+  });
+
+  it.each([
+    ['previousHands disagrees with the chain', { ...adjust(-1, 'buy-1', 4), newHands: 3 }],
+    ['newHands disagrees with delta', { ...adjust(-1, 'buy-1', 5), newHands: 3 }],
+    ['ADJUST values must be safe integers', { ...adjust(-1, 'buy-1', 5), newHands: 4.5 }]
+  ])('rejects malformed adjustment: %s', (_label, malformed) => {
+    expect(() => foldBuyinEvents([buy(5), malformed]))
+      .toThrow('BUYIN_EVENT_INVALID');
   });
 
   it('keeps logical buys in their original deterministic order', () => {

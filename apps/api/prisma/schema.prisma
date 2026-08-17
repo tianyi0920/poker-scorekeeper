@@ -167,6 +167,7 @@ model BuyinEvent {
   previousHands  Int?           @map("previous_hands")
   newHands       Int            @map("new_hands")
   handsDelta     Int            @map("hands_delta")
+  gameVersion    Int            @map("game_version")
   idempotencyKey String         @unique @map("idempotency_key") @db.VarChar(128)
   createdAt      DateTime       @default(now()) @map("created_at") @db.DateTime(3)
   game           Game           @relation(fields: [gameId], references: [id], onDelete: Restrict)
