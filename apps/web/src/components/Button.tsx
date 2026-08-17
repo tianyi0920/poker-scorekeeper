@@ -1,4 +1,5 @@
-import { type ButtonHTMLAttributes, useEffect, useState } from 'react';
+import type { ButtonHTMLAttributes } from 'react';
+import { useOnlineStatus } from '../hooks/useOnlineStatus.js';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'ghost';
 
@@ -7,22 +8,8 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   unsafe?: boolean;
 }
 
-function useOnline(): boolean {
-  const [online, setOnline] = useState(() => navigator.onLine);
-  useEffect(() => {
-    const update = () => setOnline(navigator.onLine);
-    window.addEventListener('online', update);
-    window.addEventListener('offline', update);
-    return () => {
-      window.removeEventListener('online', update);
-      window.removeEventListener('offline', update);
-    };
-  }, []);
-  return online;
-}
-
 export function Button({ variant = 'primary', unsafe = false, disabled, className = '', type = 'button', ...props }: ButtonProps) {
-  const online = useOnline();
+  const online = useOnlineStatus();
   return (
     <button
       {...props}

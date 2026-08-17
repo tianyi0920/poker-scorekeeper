@@ -2,7 +2,10 @@
   --bg: #080b16;
   --surface: #171e34;
   --surface-raised: #222b4a;
+  --surface-soft: #11182c;
+  --line: #39456d;
   --gold: #f0ca73;
+  --gold-deep: #a87823;
   --positive: #70e0a9;
   --negative: #ff8880;
   --expense: #e8a75d;
@@ -10,6 +13,7 @@
   --text: #f6f1e6;
   --muted: #929aaf;
   --radius-card: 16px;
+  --radius-pill: 999px;
   --touch-target: 44px;
   color: var(--text);
   background: var(--bg);
