@@ -10,6 +10,22 @@ const MAX_DEPTH = 32;
 const MAX_NODES = 10_000;
 const MAX_ARRAY_LENGTH = 10_000;
 const MAX_STRING_LENGTH = 16_384;
+const MIN_BEARER_TOKEN_LENGTH = 12;
+const MIN_BASIC_CREDENTIAL_LENGTH = 8;
+
+const DATABASE_URL_SCHEMES = [
+  'jdbc:postgresql://',
+  'jdbc:mariadb://',
+  'jdbc:mysql://',
+  'jdbc:postgres://',
+  'mongodb+srv://',
+  'postgresql://',
+  'mariadb://',
+  'mongodb://',
+  'postgres://',
+  'mysql://',
+  'redis://'
+] as const;
 
 interface RedactionContext {
   active: WeakSet<object>;
@@ -72,11 +88,97 @@ function shouldRedactKey(key: string, descriptor: PropertyDescriptor | undefined
   return isSensitiveKey(key);
 }
 
+function isAsciiAlphaNumeric(character: string | undefined): boolean {
+  if (character === undefined) return false;
+  const code = character.charCodeAt(0);
+  return code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122;
+}
+
+function isAsciiWhitespace(character: string | undefined): boolean {
+  return character === ' ' || character === '\t' || character === '\r' ||
+    character === '\n' || character === '\f';
+}
+
+function isBase64Character(character: string): boolean {
+  return isAsciiAlphaNumeric(character) || character === '+' || character === '/' || character === '=';
+}
+
+function isBasicCredential(token: string): boolean {
+  if (token.length < MIN_BASIC_CREDENTIAL_LENGTH || token.length % 4 === 1) return false;
+  let padding = 0;
+  for (let index = token.length - 1; index >= 0 && token[index] === '='; index -= 1) padding += 1;
+  if (padding > 2 || padding > 0 && token.length % 4 !== 0) return false;
+  const contentLength = token.length - padding;
+  for (let index = 0; index < contentLength; index += 1) {
+    if (!isBase64Character(token[index] ?? '') || token[index] === '=') return false;
+  }
+  for (let index = contentLength; index < token.length; index += 1) {
+    if (token[index] !== '=') return false;
+  }
+
+  try {
+    return Buffer.from(token, 'base64').includes(58);
+  } catch {
+    return false;
+  }
+}
+
+function isBearerCharacter(character: string): boolean {
+  return isAsciiAlphaNumeric(character) || '-._~+/='.includes(character);
+}
+
+function isBearerToken(token: string): boolean {
+  if (token.length < MIN_BEARER_TOKEN_LENGTH) return false;
+  for (const character of token) {
+    if (!isBearerCharacter(character)) return false;
+  }
+  return true;
+}
+
+function containsCredentialToken(
+  value: string,
+  scheme: 'basic' | 'bearer',
+  isValidToken: (token: string) => boolean
+): boolean {
+  const lower = value.toLowerCase();
+  let searchFrom = 0;
+  while (searchFrom < lower.length) {
+    const start = lower.indexOf(scheme, searchFrom);
+    if (start === -1) return false;
+    const before = value[start - 1];
+    let tokenStart = start + scheme.length;
+    if (!isAsciiAlphaNumeric(before) && isAsciiWhitespace(value[tokenStart])) {
+      while (isAsciiWhitespace(value[tokenStart])) tokenStart += 1;
+      let tokenEnd = tokenStart;
+      const isTokenCharacter = scheme === 'basic' ? isBase64Character : isBearerCharacter;
+      while (tokenEnd < value.length && isTokenCharacter(value[tokenEnd] ?? '')) tokenEnd += 1;
+      if (isValidToken(value.slice(tokenStart, tokenEnd))) return true;
+    }
+    searchFrom = start + scheme.length;
+  }
+  return false;
+}
+
+function containsDatabaseUrl(value: string): boolean {
+  const lower = value.toLowerCase();
+  for (const scheme of DATABASE_URL_SCHEMES) {
+    let searchFrom = 0;
+    while (searchFrom < lower.length) {
+      const start = lower.indexOf(scheme, searchFrom);
+      if (start === -1) break;
+      const firstValueCharacter = value[start + scheme.length];
+      if (firstValueCharacter !== undefined && !isAsciiWhitespace(firstValueCharacter)) return true;
+      searchFrom = start + scheme.length;
+    }
+  }
+  return false;
+}
+
 function isSensitiveString(value: string): boolean {
   const trimmed = value.trim();
-  return /(?:^|\s)(?:mysql|mariadb|postgres(?:ql)?|mongodb(?:\+srv)?|redis):\/\/\S+/i.test(trimmed) ||
-    /^(?:basic|bearer)\s+\S+/i.test(trimmed) ||
-    /\bauthorization\s*[:=]\s*(?:basic|bearer)\s+\S+/i.test(trimmed) ||
+  return containsDatabaseUrl(trimmed) ||
+    containsCredentialToken(trimmed, 'basic', isBasicCredential) ||
+    containsCredentialToken(trimmed, 'bearer', isBearerToken) ||
     /(?:^|[\s;,])(?:set-)?cookie\s*[:=]\s*\S+/i.test(trimmed) ||
     /(?:^|[\s;,])(?:x[-_ ]?api[-_ ]?key|api[-_ ]?key)\s*[:=]\s*\S+/i.test(trimmed) ||
     /\b(?:password|pwd)\s*=\s*[^;\s]+/i.test(trimmed);

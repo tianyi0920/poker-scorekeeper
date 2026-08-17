@@ -130,13 +130,33 @@ describe('audit redaction', () => {
     'Cookie: poker_session=cookie-token',
     'X-API-Key: api-key-token',
     'postgresql://user:password@db.example/internal',
-    'Authorization: Basic basic-token',
+    'Authorization: Basic dXNlcjpwYXNzd29yZA==',
     'agent Authorization: Bearer bearer-token',
     'agent Cookie: poker_session=cookie-token',
     'agent X-API-Key: api-key-token',
     'User ID=db-user;Password=db-password;Server=db.example'
   ])('redacts credential-shaped string values under generic keys: %s', (value) => {
     expect(redactAuditValue({ metadata: value })).toEqual({ metadata: '[REDACTED]' });
+  });
+
+  it.each([
+    'agent Bearer opaque-token-1234567890',
+    'agent Basic dXNlcjpwYXNzd29yZA==',
+    'dsn=mysql://user:password@db.example/internal',
+    'endpoint:postgresql://user:password@db.example/internal',
+    'jdbc:mysql://user:password@db.example/internal',
+    'jdbc:mariadb://user:password@db.example/internal',
+    'jdbc:postgresql://user:password@db.example/internal'
+  ])('redacts embedded credential and database values under generic keys: %s', (value) => {
+    expect(redactAuditValue({ metadata: value })).toEqual({ metadata: '[REDACTED]' });
+  });
+
+  it.each([
+    'basic plan',
+    'bearer animal',
+    'ordinary endpoint status'
+  ])('keeps non-credential text under generic keys: %s', (value) => {
+    expect(redactAuditValue({ metadata: value })).toEqual({ metadata: value });
   });
 
   it('replaces content beyond the maximum traversal depth', () => {

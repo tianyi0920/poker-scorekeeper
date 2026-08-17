@@ -307,9 +307,9 @@ describe.sequential('live rake settings', () => {
         entityId: firstEntityId,
         before: null,
         after: null,
-        requestId: 'agent Authorization: Bearer request-token',
-        sourceIp: 'Authorization: Basic basic-token',
-        userAgent: 'User ID=db-user;Password=db-password;Server=db.example'
+        requestId: 'agent Bearer opaque-request-token-123456',
+        sourceIp: 'agent Basic dXNlcjpwYXNzd29yZA==',
+        userAgent: 'dsn=mysql://user:password@db.example/internal'
       });
       await audit.record(transaction, {
         actorUserId: superUser.id,
@@ -318,9 +318,9 @@ describe.sequential('live rake settings', () => {
         entityId: secondEntityId,
         before: null,
         after: null,
-        requestId: 'mysql://user:password@db.example/internal',
-        sourceIp: 'agent Cookie: poker_session=cookie-token',
-        userAgent: 'agent X-API-Key: api-key-token'
+        requestId: 'endpoint:postgresql://user:password@db.example/internal',
+        sourceIp: 'jdbc:mysql://u:p@db/x',
+        userAgent: 'jdbc:mariadb://user:password@db.example/internal'
       });
       await audit.record(transaction, {
         actorUserId: superUser.id,
