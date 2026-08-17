@@ -7,6 +7,7 @@ import { userResponseSchema } from '@poker/contracts';
 import { GameStatus, Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { AvatarService } from '../src/uploads/avatar.service.js';
 import { UsersService } from '../src/users/users.service.js';
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
@@ -38,6 +39,7 @@ describe.sequential('user administration', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let passwordHash: string;
+  let avatars: AvatarService;
   let usersService: UsersService;
   let superActor: User;
   let adminActor: User;
@@ -54,7 +56,7 @@ describe.sequential('user administration', () => {
   async function seedUser(
     suffix: string,
     role: Role = Role.USER,
-    overrides: Partial<Pick<User, 'isActive' | 'deletedAt' | 'mustChangePassword'>> = {}
+    overrides: Partial<Pick<User, 'id' | 'isActive' | 'deletedAt' | 'mustChangePassword'>> = {}
   ): Promise<User> {
     const username = `${prefix}-${suffix}`;
     const nickname = nextNickname();
@@ -156,6 +158,7 @@ describe.sequential('user administration', () => {
     app = await createApp();
     prisma = app.get(PrismaService);
     await app.init();
+    avatars = app.get(AvatarService);
     usersService = app.get(UsersService);
     passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     const bootstrapped = await prisma.user.findUnique({
@@ -486,6 +489,51 @@ describe.sequential('user administration', () => {
       });
     }
   });
+
+  it('completes a lifecycle change and crossed avatar reset without a database deadlock', async () => {
+    const idSuffix = runId.padEnd(29, '0');
+    const resetActor = await seedUser('cross-lock-s2', Role.SUPER_ADMIN, {
+      id: `1${idSuffix}`
+    });
+    const lifecycleActor = await seedUser('cross-lock-a', Role.SUPER_ADMIN, {
+      id: `2${idSuffix}`
+    });
+    const lifecycleTarget = await seedUser('cross-lock-s1', Role.SUPER_ADMIN, {
+      id: `3${idSuffix}`
+    });
+    let releaseTarget!: () => void;
+    let targetLocked!: () => void;
+    const release = new Promise<void>((resolve) => { releaseTarget = resolve; });
+    const locked = new Promise<void>((resolve) => { targetLocked = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM users WHERE id = ${lifecycleTarget.id} FOR UPDATE
+      `;
+      targetLocked();
+      await release;
+    }, { timeout: 15_000, maxWait: 5_000 });
+    await locked;
+
+    const lifecycle = usersService.update(lifecycleActor, lifecycleTarget.id, {
+      isActive: false
+    }).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
+    await delay(750);
+    const avatarReset = avatars.resetByAdministrator(resetActor, lifecycleActor.id).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
+    await delay(750);
+    releaseTarget();
+    await blocker;
+
+    await expect(Promise.all([lifecycle, avatarReset])).resolves.toEqual([
+      expect.objectContaining({ status: 'fulfilled' }),
+      expect.objectContaining({ status: 'fulfilled' })
+    ]);
+  }, 20_000);
 
   it('allows only a super admin to modify user role and active state', async () => {
     const target = await seedUser('super-edit-target');

@@ -238,13 +238,10 @@ export class UsersService {
       throw conflict('USER_IN_ACTIVE_GAME');
     }
     if (target.role === 'SUPER_ADMIN' && target.isActive && target.deletedAt === null) {
-      const activeSupers = await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT id
-        FROM users
-        WHERE role = 'SUPER_ADMIN' AND is_active = 1 AND deleted_at IS NULL
-        FOR UPDATE
-      `;
-      if (activeSupers.length <= 1) throw conflict('LAST_SUPER_ADMIN');
+      const activeSuperCount = await transaction.user.count({
+        where: { role: 'SUPER_ADMIN', isActive: true, deletedAt: null }
+      });
+      if (activeSuperCount <= 1) throw conflict('LAST_SUPER_ADMIN');
     }
   }
 
