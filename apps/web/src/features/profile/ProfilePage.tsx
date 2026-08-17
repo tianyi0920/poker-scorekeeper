@@ -6,7 +6,7 @@ import { AvatarPicker, type AvatarReference } from './AvatarPicker.js';
 
 export function ProfilePage() {
   const { user } = useAuth();
-  const [avatar, setAvatar] = useState<AvatarReference>({ kind: 'PRESET', value: 'preset-01' });
+  const [avatar, setAvatar] = useState<AvatarReference | null>(null);
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   return <div className="page-stack">
     <div className="page-title"><span className="section-kicker">PROFILE</span><h2>我的</h2><p>{user?.nickname} · @{user?.username}</p></div>

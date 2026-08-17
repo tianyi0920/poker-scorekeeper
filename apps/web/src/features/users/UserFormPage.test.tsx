@@ -1,4 +1,5 @@
 import { screen } from '@testing-library/react';
+import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { App } from '../../app/App.js';
 import { jsonResponse, renderAt, session } from '../../test/app-fixtures.js';
@@ -54,4 +55,63 @@ it('does not expose user or rake management links in a normal profile', async ()
   expect(await screen.findByRole('heading', { name: '我的' })).toBeInTheDocument();
   expect(screen.queryByRole('link', { name: '用户管理' })).not.toBeInTheDocument();
   expect(screen.queryByRole('link', { name: '抽成设置' })).not.toBeInTheDocument();
+});
+
+it('omits role and activation fields when an ADMIN updates a normal user', async () => {
+  // Break caught: ADMIN sends forbidden role/isActive fields even when their values are unchanged.
+  let patchBody: unknown = null;
+  const target = {
+    id: 'user-1', username: 'aming', nickname: '阿明', role: 'USER', rakeEnabled: true,
+    avatarKind: 'PRESET', avatarValue: 'preset-01', isActive: true, mustChangePassword: false,
+    deletedAt: null, createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z'
+  };
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/users') && (!init?.method || init.method === 'GET')) return jsonResponse({ users: [target] });
+    if (url.endsWith('/api/users/user-1') && init?.method === 'PATCH') {
+      patchBody = JSON.parse(String(init.body));
+      return jsonResponse({ ...target, nickname: '新昵称' });
+    }
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  const user = userEvent.setup();
+  renderAt('/users/user-1/edit', <App />);
+
+  const nickname = await screen.findByLabelText('昵称');
+  expect(screen.queryByLabelText('角色')).not.toBeInTheDocument();
+  expect(screen.queryByRole('checkbox', { name: /启用账号/ })).not.toBeInTheDocument();
+  await user.clear(nickname);
+  await user.type(nickname, '新昵称');
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+
+  expect(patchBody).toEqual({ nickname: '新昵称', rakeEnabled: true });
+});
+
+it('includes role and activation fields when a SUPER_ADMIN updates a user', async () => {
+  // Regression caught: narrowing ADMIN bodies must not strip fields from authorized SUPER_ADMIN updates.
+  let patchBody: unknown = null;
+  const target = {
+    id: 'admin-2', username: 'admin2', nickname: '二号管理员', role: 'ADMIN', rakeEnabled: true,
+    avatarKind: 'PRESET', avatarValue: 'preset-01', isActive: true, mustChangePassword: false,
+    deletedAt: null, createdAt: '2026-08-17T00:00:00.000Z', updatedAt: '2026-08-17T00:00:00.000Z'
+  };
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('SUPER_ADMIN'));
+    if (url.endsWith('/api/users') && (!init?.method || init.method === 'GET')) return jsonResponse({ users: [target] });
+    if (url.endsWith('/api/users/admin-2') && init?.method === 'PATCH') {
+      patchBody = JSON.parse(String(init.body));
+      return jsonResponse({ ...target, role: 'USER', isActive: false });
+    }
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  const user = userEvent.setup();
+  renderAt('/users/admin-2/edit', <App />);
+
+  await user.selectOptions(await screen.findByLabelText('角色'), 'USER');
+  await user.click(screen.getByRole('checkbox', { name: /启用账号/ }));
+  await user.click(screen.getByRole('button', { name: '保存修改' }));
+
+  expect(patchBody).toEqual({ nickname: '二号管理员', role: 'USER', rakeEnabled: true, isActive: false });
 });

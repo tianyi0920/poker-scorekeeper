@@ -68,33 +68,59 @@ export const scorekeeperApi = {
   })
 };
 
-export function uploadAvatar(blob: Blob, onProgress: (percent: number) => void): Promise<AvatarMutationResponse> {
+export function uploadAvatar(blob: Blob, onProgress: (percent: number) => void, signal?: AbortSignal): Promise<AvatarMutationResponse> {
   return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new DOMException('Avatar upload aborted', 'AbortError'));
+      return;
+    }
     const request = new XMLHttpRequest();
+    let settled = false;
+    const cleanup = () => {
+      signal?.removeEventListener('abort', abortUpload);
+      request.onload = null;
+      request.onerror = null;
+      request.onabort = null;
+    };
+    const resolveOnce = (response: AvatarMutationResponse) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolve(response);
+    };
+    const rejectOnce = (reason: unknown) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(reason);
+    };
+    const abortUpload = () => request.abort();
     request.open('POST', '/api/me/avatar/upload');
     request.withCredentials = true;
     request.setRequestHeader('Accept', 'application/json');
     if (csrfTokenStore.value) request.setRequestHeader('X-CSRF-Token', csrfTokenStore.value);
     request.upload.addEventListener('progress', (event) => {
-      if (event.lengthComputable && event.total > 0) {
+      if (!settled && event.lengthComputable && event.total > 0) {
         onProgress(Math.round((event.loaded / event.total) * 100));
       }
     });
-    request.onerror = () => reject(new ApiError(0, 'HTTP_ERROR', '上传失败，请检查网络后重试'));
+    request.onerror = () => rejectOnce(new ApiError(0, 'HTTP_ERROR', '上传失败，请检查网络后重试'));
+    request.onabort = () => rejectOnce(new DOMException('Avatar upload aborted', 'AbortError'));
     request.onload = () => {
       if (request.status >= 200 && request.status < 300) {
         try {
-          resolve(JSON.parse(request.responseText) as AvatarMutationResponse);
+          resolveOnce(JSON.parse(request.responseText) as AvatarMutationResponse);
         } catch {
-          reject(new ApiError(request.status, 'HTTP_ERROR', '服务器返回了无效结果'));
+          rejectOnce(new ApiError(request.status, 'HTTP_ERROR', '服务器返回了无效结果'));
         }
         return;
       }
       void ApiError.fromResponse(new Response(request.responseText, {
         status: request.status,
         headers: { 'Content-Type': 'application/json' }
-      })).then(reject);
+      })).then(rejectOnce);
     };
+    signal?.addEventListener('abort', abortUpload, { once: true });
     const form = new FormData();
     form.append('file', blob, 'avatar.webp');
     request.send(form);

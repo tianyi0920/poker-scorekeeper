@@ -10,11 +10,13 @@ class FakeXhr {
   readonly open = vi.fn();
   readonly setRequestHeader = vi.fn();
   readonly send = vi.fn();
+  readonly abort = vi.fn(() => this.onabort?.());
   status = 200;
   responseText = JSON.stringify({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
   withCredentials = false;
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
+  onabort: (() => void) | null = null;
   private progressListener: ((event: ProgressEvent) => void) | null = null;
 
   constructor() { FakeXhr.latest = this; }
@@ -25,6 +27,19 @@ afterEach(() => {
   vi.unstubAllGlobals();
   csrfTokenStore.clear();
   FakeXhr.latest = null;
+});
+
+it('aborts the in-flight XHR when its AbortSignal is cancelled', async () => {
+  // Break caught: leaving the crop dialog allowed a hidden upload to complete and update stale UI.
+  vi.stubGlobal('XMLHttpRequest', FakeXhr);
+  const controller = new AbortController();
+  const promise = uploadAvatar(new Blob(['avatar'], { type: 'image/webp' }), vi.fn(), controller.signal);
+  const xhr = FakeXhr.latest!;
+
+  controller.abort();
+
+  expect(xhr.abort).toHaveBeenCalledOnce();
+  await expect(promise).rejects.toMatchObject({ name: 'AbortError' });
 });
 
 it('reports upload progress and sends the CSRF token with same-origin credentials', async () => {

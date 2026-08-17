@@ -60,7 +60,9 @@ export function UserFormPage({ mode }: { mode: 'create' | 'edit' }) {
       if (mode === 'create') {
         await scorekeeperApi.createUser({ username, nickname, initialPassword, role, rakeEnabled });
       } else if (target !== null) {
-        await scorekeeperApi.updateUser(target.id, { nickname, role, rakeEnabled, isActive });
+        await scorekeeperApi.updateUser(target.id, actor?.role === 'SUPER_ADMIN'
+          ? { nickname, role, rakeEnabled, isActive }
+          : { nickname, rakeEnabled });
       }
       navigate('/users');
     } catch (reason) {
@@ -81,9 +83,9 @@ export function UserFormPage({ mode }: { mode: 'create' | 'edit' }) {
       {mode === 'create' && <label className="field" htmlFor="new-username">用户名<input id="new-username" minLength={3} maxLength={32} pattern="[A-Za-z0-9._-]+" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" required /></label>}
       <label className="field" htmlFor="user-nickname">昵称<input id="user-nickname" minLength={1} maxLength={20} value={nickname} onChange={(event) => setNickname(event.target.value)} required /></label>
       {mode === 'create' && <label className="field" htmlFor="initial-password">初始密码<input id="initial-password" type="password" minLength={8} maxLength={128} value={initialPassword} onChange={(event) => setInitialPassword(event.target.value)} autoComplete="new-password" required /></label>}
-      <label className="field" htmlFor="user-role">角色<select id="user-role" value={role} onChange={(event) => setRole(event.target.value as AuthRole)}>{roleChoices.map((choice) => <option key={choice} value={choice}>{roleLabels[choice]}</option>)}</select></label>
+      {(mode === 'create' || actor?.role === 'SUPER_ADMIN') && <label className="field" htmlFor="user-role">角色<select id="user-role" value={role} onChange={(event) => setRole(event.target.value as AuthRole)}>{roleChoices.map((choice) => <option key={choice} value={choice}>{roleLabels[choice]}</option>)}</select></label>}
       <label className="toggle-row" htmlFor="user-rake"><span><strong>参与抽成</strong><small>对进行中结算实时生效</small></span><input id="user-rake" type="checkbox" checked={rakeEnabled} onChange={(event) => setRakeEnabled(event.target.checked)} /></label>
-      {mode === 'edit' && <label className="toggle-row" htmlFor="user-active"><span><strong>启用账号</strong><small>停用会立即撤销该账号会话</small></span><input id="user-active" type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} /></label>}
+      {mode === 'edit' && actor?.role === 'SUPER_ADMIN' && <label className="toggle-row" htmlFor="user-active"><span><strong>启用账号</strong><small>停用会立即撤销该账号会话</small></span><input id="user-active" type="checkbox" checked={isActive} onChange={(event) => setIsActive(event.target.checked)} /></label>}
       <Button type="submit" unsafe disabled={submitting}>{submitting ? '保存中…' : mode === 'create' ? '创建用户' : '保存修改'}</Button>
       {mode === 'edit' && <Button variant="secondary" unsafe onClick={() => setResetOpen(true)}>重置密码</Button>}
     </form></Card>
