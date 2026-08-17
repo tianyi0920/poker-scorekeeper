@@ -1,6 +1,6 @@
 import type { BuyinEventResponse } from '@poker/contracts';
 import { useEffect, useState, type FormEvent } from 'react';
-import { ApiError } from '../../api/http-client.js';
+import { isDefinitiveMutationRejection } from '../../api/http-client.js';
 import { scorekeeperApi } from '../../api/resources.js';
 import { Button } from '../../components/Button.js';
 import { Modal } from '../../components/Modal.js';
@@ -22,6 +22,7 @@ export function AdjustBuyInDialog({
   playerId,
   currentHands,
   open,
+  canWrite,
   onClose,
   onSuccess
 }: {
@@ -29,6 +30,7 @@ export function AdjustBuyInDialog({
   playerId: string;
   currentHands: number;
   open: boolean;
+  canWrite: boolean;
   onClose: () => void;
   onSuccess: (result: BuyinEventResponse) => void;
 }) {
@@ -54,7 +56,7 @@ export function AdjustBuyInDialog({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !canWrite) return;
     const newHands = pending?.newHands ?? validHands(handsInput);
     if (newHands === null) {
       setError('请输入 0–99 手');
@@ -74,13 +76,13 @@ export function AdjustBuyInDialog({
       onSuccess(result);
       onClose();
     } catch (reason) {
-      if (reason instanceof ApiError) {
+      if (isDefinitiveMutationRejection(reason)) {
         setPending(null);
         setUncertain(false);
         setError(reason.message);
       } else {
         setUncertain(true);
-        setError('网络结果未知，请使用相同请求重试，避免重复更正。');
+        setError('服务器结果未知，请使用相同请求重试，避免重复更正。');
       }
     } finally {
       setBusy(false);
@@ -104,7 +106,7 @@ export function AdjustBuyInDialog({
             max="99"
             step="1"
             value={handsInput}
-            disabled={busy || pending !== null}
+            disabled={busy || pending !== null || !canWrite}
             onChange={(event) => { setHandsInput(event.target.value); setError(null); }}
           />
           <small>允许 0–99 手；改为 0 会追加一笔冲正记录，不删除原记录。</small>
@@ -113,7 +115,7 @@ export function AdjustBuyInDialog({
         <Button
           type="submit"
           unsafe
-          disabled={busy}
+          disabled={busy || !canWrite}
           aria-label={uncertain ? '使用同一请求重试' : displayedHands === null ? '确认更正' : `确认更正为 ${displayedHands} 手`}
         >
           {busy ? '正在确认…' : uncertain ? '使用同一请求重试' : displayedHands === null ? '确认更正' : `确认更正为 ${displayedHands} 手`}

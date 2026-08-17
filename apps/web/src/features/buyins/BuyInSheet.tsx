@@ -1,7 +1,7 @@
 import type { BuyinEventResponse } from '@poker/contracts';
 import { useEffect, useState, type FormEvent } from 'react';
 import { scorekeeperApi } from '../../api/resources.js';
-import { ApiError } from '../../api/http-client.js';
+import { isDefinitiveMutationRejection } from '../../api/http-client.js';
 import { Button } from '../../components/Button.js';
 import { Modal } from '../../components/Modal.js';
 import { Toast } from '../../components/Toast.js';
@@ -23,12 +23,14 @@ export function BuyInSheet({
   gameId,
   handPrice,
   open,
+  canWrite,
   onClose,
   onSuccess
 }: {
   gameId: string;
   handPrice: string;
   open: boolean;
+  canWrite: boolean;
   onClose: () => void;
   onSuccess: (result: BuyinEventResponse) => void;
 }) {
@@ -55,7 +57,7 @@ export function BuyInSheet({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (busy) return;
+    if (busy || !canWrite) return;
     const hands = pending?.hands ?? validHands(handsInput);
     if (hands === null) {
       setError('请输入 1–99 手');
@@ -75,13 +77,13 @@ export function BuyInSheet({
       onSuccess(result);
       onClose();
     } catch (reason) {
-      if (reason instanceof ApiError) {
+      if (isDefinitiveMutationRejection(reason)) {
         setPending(null);
         setUncertain(false);
         setError(reason.message);
       } else {
         setUncertain(true);
-        setError('网络结果未知，请使用相同请求重试，避免重复购买。');
+        setError('服务器结果未知，请使用相同请求重试，避免重复购买。');
       }
     } finally {
       setBusy(false);
@@ -103,7 +105,7 @@ export function BuyInSheet({
               type="button"
               className={handsInput === String(hands) ? 'quick-hand quick-hand--active' : 'quick-hand'}
               aria-label={`购买 ${hands} 手`}
-              disabled={busy || pending !== null}
+              disabled={busy || pending !== null || !canWrite}
               onClick={() => { setHandsInput(String(hands)); setError(null); }}
             >
               <strong>{hands}</strong><span>手</span>
@@ -119,7 +121,7 @@ export function BuyInSheet({
             max="99"
             step="1"
             value={handsInput}
-            disabled={busy || pending !== null}
+            disabled={busy || pending !== null || !canWrite}
             onChange={(event) => { setHandsInput(event.target.value); setError(null); }}
           />
           <small>请输入 1–99 手</small>
@@ -129,7 +131,7 @@ export function BuyInSheet({
         <Button
           type="submit"
           unsafe
-          disabled={busy}
+          disabled={busy || !canWrite}
           aria-label={uncertain ? '使用同一请求重试' : displayedHands === null ? '确认购买' : `确认购买 ${displayedHands} 手`}
         >
           {busy ? '正在确认…' : uncertain ? '使用同一请求重试' : displayedHands === null ? '确认购买' : `确认购买 ${displayedHands} 手`}

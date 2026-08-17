@@ -1,7 +1,7 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
-import { RoundTable } from './RoundTable.js';
+import { RoundTable, seatPosition } from './RoundTable.js';
 
 function makePlayers(count: number): GameSnapshotDto['players'] {
   return Array.from({ length: count }, (_, index) => ({
@@ -42,4 +42,35 @@ it('keeps the bottom self seat clear of the fixed purchase dock', () => {
 
   const selfSeat = screen.getByTestId('seat-self').closest('[data-testid="table-seat"]');
   expect(Number.parseFloat((selfSeat as HTMLElement).style.top)).toBeLessThanOrEqual(80);
+});
+
+it('keeps all twelve readable seat rectangles disjoint at a 360px viewport', () => {
+  // Break caught: unique center points still let adjacent avatar/nickname/money rectangles visibly overlap.
+  const tableWidth = 313;
+  const tableHeight = 403;
+  const seatWidth = 54;
+  const seatHeight = 71;
+  const rectangles = Array.from({ length: 12 }, (_, index) => {
+    const position = seatPosition(index, 12, 0);
+    const centerX = Number.parseFloat(position.left) / 100 * tableWidth;
+    const centerY = Number.parseFloat(position.top) / 100 * tableHeight;
+    return {
+      left: centerX - seatWidth / 2,
+      right: centerX + seatWidth / 2,
+      top: centerY - seatHeight / 2,
+      bottom: centerY + seatHeight / 2
+    };
+  });
+  const overlaps: Array<[number, number]> = [];
+  for (let leftIndex = 0; leftIndex < rectangles.length; leftIndex += 1) {
+    for (let rightIndex = leftIndex + 1; rightIndex < rectangles.length; rightIndex += 1) {
+      const left = rectangles[leftIndex]!;
+      const right = rectangles[rightIndex]!;
+      if (left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top) {
+        overlaps.push([leftIndex + 1, rightIndex + 1]);
+      }
+    }
+  }
+
+  expect(overlaps).toEqual([]);
 });

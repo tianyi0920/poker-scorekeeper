@@ -1,7 +1,7 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
@@ -13,6 +13,10 @@ type Listener = (...args: unknown[]) => void;
 class FakeGameSocket implements GameSocketClient {
   connected = false;
   readonly joined: Array<{ gameId: string; knownVersion: number }> = [];
+  leaves = 0;
+  joinAcknowledgement: ((payload: { gameId: string; knownVersion: number }) => unknown | undefined) = (payload) => ({
+    ok: true, gameId: payload.gameId, version: Math.max(1, payload.knownVersion), snapshotSent: false
+  });
   private readonly listeners = new Map<string, Set<Listener>>();
 
   on(event: string, listener: Listener): this {
@@ -29,9 +33,12 @@ class FakeGameSocket implements GameSocketClient {
 
   emit(event: string, payload: unknown, ack?: (value: unknown) => void): this {
     if (event === 'game.join') {
-      this.joined.push(payload as { gameId: string; knownVersion: number });
-      ack?.({ ok: true, gameId: 'game-1', version: 1, snapshotSent: false });
+      const command = payload as { gameId: string; knownVersion: number };
+      this.joined.push(command);
+      const acknowledgement = this.joinAcknowledgement(command);
+      if (acknowledgement !== undefined) ack?.(acknowledgement);
     }
+    if (event === 'game.leave') this.leaves += 1;
     return this;
   }
 
@@ -48,6 +55,10 @@ class FakeGameSocket implements GameSocketClient {
 
   fire(event: string, ...args: unknown[]): void {
     for (const listener of this.listeners.get(event) ?? []) listener(...args);
+  }
+
+  listenerCount(): number {
+    return [...this.listeners.values()].reduce((total, listeners) => total + listeners.size, 0);
   }
 }
 
@@ -105,6 +116,11 @@ function renderGame(
   return { fetchMock, ...view };
 }
 
+function SwitchableGame({ socketFactory }: { socketFactory: () => GameSocketClient }) {
+  const navigate = useNavigate();
+  return <><button type="button" onClick={() => navigate('/games/game-2')}>切换到第二桌</button><GamePage socketFactory={socketFactory} /></>;
+}
+
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
@@ -126,6 +142,27 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
   expect(screen.getByText('购买 1 手')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '更正我的最后一笔购买' })).toBeInTheDocument();
+});
+
+it('implements linked tabs with roving focus and arrow-key selection', async () => {
+  // Break caught: visual tabs lack programmatic panel ownership or cannot be operated without pointer input.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+  const tableTab = await screen.findByRole('tab', { name: '对战区' });
+  const purchaseTab = screen.getByRole('tab', { name: /^购买记录/ });
+
+  expect(tableTab).toHaveAttribute('aria-controls', 'game-panel-table');
+  expect(tableTab).toHaveAttribute('tabindex', '0');
+  expect(purchaseTab).toHaveAttribute('tabindex', '-1');
+  expect(screen.getByRole('tabpanel', { name: '对战区' })).toHaveAttribute('id', 'game-panel-table');
+
+  tableTab.focus();
+  await userEvent.setup().keyboard('{ArrowRight}');
+  expect(purchaseTab).toHaveFocus();
+  expect(purchaseTab).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tabpanel', { name: /^购买记录/ })).toHaveAttribute('id', 'game-panel-purchases');
+  await userEvent.setup().keyboard('{Home}');
+  expect(tableTab).toHaveFocus();
 });
 
 it('rejoins with the latest known version after a socket reconnect', async () => {
@@ -171,6 +208,76 @@ it('starts HTTP fallback five seconds after disconnect and polls every ten secon
   });
 });
 
+it.each([
+  ['negative', { ok: false, code: 'FORBIDDEN' }],
+  ['invalid', { ok: true, gameId: 'game-1' }]
+])('keeps a %s join acknowledgement unsynchronized, falls back, and later rejoins', async (_kind, firstAck) => {
+  // Break caught: transport connection hides a rejected or malformed room join and leaves the ledger stale.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  socket.joinAcknowledgement = () => firstAck;
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('同步');
+  const initialSnapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length;
+
+  await act(async () => { vi.advanceTimersByTime(5_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('定期同步');
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length).toBeGreaterThan(initialSnapshots);
+
+  socket.joinAcknowledgement = (command) => ({
+    ok: true, gameId: command.gameId, version: command.knownVersion, snapshotSent: false
+  });
+  await act(async () => { vi.advanceTimersByTime(5_000); });
+  expect(socket.joined.length).toBeGreaterThanOrEqual(2);
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+});
+
+it('times out a silent room join and cleans all retry work on unmount', async () => {
+  // Break caught: a connected transport with no join ACK is reported healthy and leaves orphan retry timers after navigation.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  socket.joinAcknowledgement = () => undefined;
+  const { unmount } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  await act(async () => { vi.advanceTimersByTime(3_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('超时');
+  unmount();
+  const joinsAtUnmount = socket.joined.length;
+  await act(async () => { vi.advanceTimersByTime(30_000); });
+
+  expect(socket.joined).toHaveLength(joinsAtUnmount);
+  expect(socket.listenerCount()).toBe(0);
+});
+
+it('ignores malformed realtime events and reacts only to shared-contract payloads', async () => {
+  // Break caught: an arbitrary Socket payload triggers a refresh or disconnect without passing the shared event schema.
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+  const initialSnapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length;
+
+  act(() => {
+    socket.fire('rake-settings.updated', { unexpected: true });
+    socket.fire('player-rake.updated', { unexpected: true });
+    socket.fire('server.error', { code: 'NOT_A_REAL_CODE' });
+  });
+  await act(async () => { await Promise.resolve(); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot'))).toHaveLength(initialSnapshots);
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+
+  act(() => { socket.fire('rake-settings.updated', { version: 2 }); });
+  await waitFor(() => {
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length).toBeGreaterThan(initialSnapshots);
+  });
+  act(() => { socket.fire('server.error', { code: 'INTERNAL_ERROR' }); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeInTheDocument();
+});
+
 it('keeps write controls out of settling games', async () => {
   // Break caught: the UI allows a buy or adjustment after the server has entered SETTLING.
   const socket = new FakeGameSocket();
@@ -181,6 +288,62 @@ it('keeps write controls out of settling games', async () => {
   const user = userEvent.setup();
   await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
   expect(screen.queryByRole('button', { name: '更正我的最后一笔购买' })).not.toBeInTheDocument();
+});
+
+it('closes an open purchase sheet immediately when a realtime snapshot starts settlement', async () => {
+  // Break caught: a sheet opened during ACTIVE survives a SETTLING update and retains stale write controls.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '购买筹码' }));
+  expect(screen.getByRole('dialog', { name: '购买筹码' })).toBeInTheDocument();
+
+  act(() => { socket.fire('game.updated', snapshot({ status: 'SETTLING', version: 2, players: players(1) })); });
+  expect(screen.queryByRole('dialog', { name: '购买筹码' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '购买筹码' })).not.toBeInTheDocument();
+});
+
+it('closes an open adjustment dialog immediately when a realtime snapshot starts settlement', async () => {
+  // Break caught: a correction dialog remains writable after settlement begins.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /^购买记录/ }));
+  await user.click(screen.getByRole('button', { name: '更正我的最后一笔购买' }));
+  expect(screen.getByRole('dialog', { name: '更正最后一笔购买' })).toBeInTheDocument();
+
+  act(() => { socket.fire('game.updated', snapshot({ status: 'SETTLING', version: 2, players: players(1) })); });
+  expect(screen.queryByRole('dialog', { name: '更正最后一笔购买' })).not.toBeInTheDocument();
+});
+
+it('resets snapshot version state before loading a different game route', async () => {
+  // Break caught: a high version from the previous route rejects a valid lower-version snapshot for the new game.
+  const sockets: FakeGameSocket[] = [];
+  const gameOne = snapshot({ id: 'game-1', name: '第一桌', version: 9, players: players(1) });
+  const gameTwo = snapshot({ id: 'game-2', name: '第二桌', version: 1, players: [{ ...players(1)[0]!, id: 'player-game-2' }] });
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session());
+    if (url.endsWith('/api/games/game-1/snapshot')) return jsonResponse(gameOne);
+    if (url.endsWith('/api/games/game-2/snapshot')) return jsonResponse(gameTwo);
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={['/games/game-1']}>
+        <Routes><Route path="/games/:id" element={<SwitchableGame socketFactory={() => {
+          const socket = new FakeGameSocket();
+          sockets.push(socket);
+          return socket;
+        }} />} /></Routes>
+      </MemoryRouter>
+    </AuthProvider>
+  );
+  expect(await screen.findByRole('heading', { name: '第一桌' })).toBeInTheDocument();
+  await userEvent.setup().click(screen.getByRole('button', { name: '切换到第二桌' }));
+
+  expect(await screen.findByRole('heading', { name: '第二桌' })).toBeInTheDocument();
+  await waitFor(() => expect(sockets.at(-1)?.joined.at(-1)).toEqual({ gameId: 'game-2', knownVersion: 1 }));
 });
 
 it('lets only an administrator confirm the ACTIVE to SETTLING transition', async () => {

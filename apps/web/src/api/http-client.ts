@@ -59,6 +59,14 @@ export class ApiError extends Error {
   }
 }
 
+export function isDefinitiveMutationRejection(reason: unknown): reason is ApiError {
+  return reason instanceof ApiError
+    && reason.status >= 400
+    && reason.status < 500
+    && reason.code !== 'HTTP_ERROR'
+    && reason.code !== 'INTERNAL_ERROR';
+}
+
 export const csrfTokenStore = {
   value: '',
   set(value: string): void {
