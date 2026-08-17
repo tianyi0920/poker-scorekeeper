@@ -307,9 +307,9 @@ describe.sequential('live rake settings', () => {
         entityId: firstEntityId,
         before: null,
         after: null,
-        requestId: 'agent Bearer opaque-request-token-123456',
-        sourceIp: 'agent Basic dXNlcjpwYXNzd29yZA==',
-        userAgent: 'dsn=mysql://user:password@db.example/internal'
+        requestId: 'İ Authorization: Bearer abcdefghijk',
+        sourceIp: 'İ Authorization: Basic YTpi',
+        userAgent: 'İ dsn=mysql://x'
       });
       await audit.record(transaction, {
         actorUserId: superUser.id,
@@ -318,9 +318,9 @@ describe.sequential('live rake settings', () => {
         entityId: secondEntityId,
         before: null,
         after: null,
-        requestId: 'endpoint:postgresql://user:password@db.example/internal',
-        sourceIp: 'jdbc:mysql://u:p@db/x',
-        userAgent: 'jdbc:mariadb://user:password@db.example/internal'
+        requestId: 'İ agent Bearer bearer-token',
+        sourceIp: 'İ agent Basic YTpiY2Q=',
+        userAgent: 'İ endpoint:mariadb://x'
       });
       await audit.record(transaction, {
         actorUserId: superUser.id,
@@ -328,7 +328,8 @@ describe.sequential('live rake settings', () => {
         entityType: 'TEST',
         entityId: unsafeEntityId,
         before: { cyclic, invalidDate: new Date('not-a-date'), unreadable, hostileProxy },
-        after: null
+        after: null,
+        userAgent: 'İ jdbc:postgresql://x'
       });
     });
 
@@ -348,6 +349,7 @@ describe.sequential('live rake settings', () => {
       userAgent: '[REDACTED]'
     });
     expect(logs[2]).toMatchObject({
+      userAgent: '[REDACTED]',
       beforeJson: {
         cyclic: { safe: true, self: '[CIRCULAR]' },
         invalidDate: '[INVALID_DATE]',

@@ -103,8 +103,8 @@ function isBase64Character(character: string): boolean {
   return isAsciiAlphaNumeric(character) || character === '+' || character === '/' || character === '=';
 }
 
-function isBasicCredential(token: string): boolean {
-  if (token.length < MIN_BASIC_CREDENTIAL_LENGTH || token.length % 4 === 1) return false;
+function isBasicCredentialSyntax(token: string): boolean {
+  if (token.length === 0 || token.length % 4 === 1) return false;
   let padding = 0;
   for (let index = token.length - 1; index >= 0 && token[index] === '='; index -= 1) padding += 1;
   if (padding > 2 || padding > 0 && token.length % 4 !== 0) return false;
@@ -123,16 +123,111 @@ function isBasicCredential(token: string): boolean {
   }
 }
 
+function isUnlabelledBasicCredential(token: string): boolean {
+  return token.length >= MIN_BASIC_CREDENTIAL_LENGTH && isBasicCredentialSyntax(token);
+}
+
 function isBearerCharacter(character: string): boolean {
   return isAsciiAlphaNumeric(character) || '-._~+/='.includes(character);
 }
 
-function isBearerToken(token: string): boolean {
-  if (token.length < MIN_BEARER_TOKEN_LENGTH) return false;
+function isBearerTokenSyntax(token: string): boolean {
+  if (token.length === 0) return false;
   for (const character of token) {
     if (!isBearerCharacter(character)) return false;
   }
   return true;
+}
+
+function isUnlabelledBearerToken(token: string): boolean {
+  if (token.length < MIN_BEARER_TOKEN_LENGTH || !isBearerTokenSyntax(token)) return false;
+  let hasLower = false;
+  let hasUpper = false;
+  let hasDigit = false;
+  let hasSymbol = false;
+  for (const character of token) {
+    const code = character.charCodeAt(0);
+    if (code >= 97 && code <= 122) hasLower = true;
+    else if (code >= 65 && code <= 90) hasUpper = true;
+    else if (code >= 48 && code <= 57) hasDigit = true;
+    else hasSymbol = true;
+  }
+  return hasDigit || hasSymbol || hasLower && hasUpper;
+}
+
+function asciiCharactersEqual(left: string, lowerAsciiRight: string): boolean {
+  let leftCode = left.charCodeAt(0);
+  if (leftCode >= 65 && leftCode <= 90) leftCode += 32;
+  return leftCode === lowerAsciiRight.charCodeAt(0);
+}
+
+function matchesAsciiCaseInsensitive(value: string, start: number, lowerAsciiNeedle: string): boolean {
+  if (start < 0 || start + lowerAsciiNeedle.length > value.length) return false;
+  for (let offset = 0; offset < lowerAsciiNeedle.length; offset += 1) {
+    if (!asciiCharactersEqual(value[start + offset] ?? '', lowerAsciiNeedle[offset] ?? '')) return false;
+  }
+  return true;
+}
+
+function indexOfAsciiCaseInsensitive(
+  value: string,
+  lowerAsciiNeedle: string,
+  searchFrom: number
+): number {
+  const lastStart = value.length - lowerAsciiNeedle.length;
+  for (let start = Math.max(0, searchFrom); start <= lastStart; start += 1) {
+    if (matchesAsciiCaseInsensitive(value, start, lowerAsciiNeedle)) return start;
+  }
+  return -1;
+}
+
+function skipAsciiWhitespace(value: string, start: number): number {
+  let cursor = start;
+  while (isAsciiWhitespace(value[cursor])) cursor += 1;
+  return cursor;
+}
+
+function readCredentialToken(
+  value: string,
+  start: number,
+  isTokenCharacter: (character: string) => boolean
+): string {
+  let end = start;
+  while (end < value.length && isTokenCharacter(value[end] ?? '')) end += 1;
+  return value.slice(start, end);
+}
+
+function explicitAuthorizationCredentialAt(value: string, start: number): boolean {
+  let cursor = skipAsciiWhitespace(value, start + 'authorization'.length);
+  if (value[cursor] !== ':' && value[cursor] !== '=') return false;
+  cursor = skipAsciiWhitespace(value, cursor + 1);
+
+  if (matchesAsciiCaseInsensitive(value, cursor, 'basic')) {
+    cursor += 'basic'.length;
+    if (!isAsciiWhitespace(value[cursor])) return false;
+    cursor = skipAsciiWhitespace(value, cursor);
+    return isBasicCredentialSyntax(readCredentialToken(value, cursor, isBase64Character));
+  }
+  if (matchesAsciiCaseInsensitive(value, cursor, 'bearer')) {
+    cursor += 'bearer'.length;
+    if (!isAsciiWhitespace(value[cursor])) return false;
+    cursor = skipAsciiWhitespace(value, cursor);
+    return isBearerTokenSyntax(readCredentialToken(value, cursor, isBearerCharacter));
+  }
+  return false;
+}
+
+function containsExplicitAuthorizationCredential(value: string): boolean {
+  let searchFrom = 0;
+  while (searchFrom < value.length) {
+    const start = indexOfAsciiCaseInsensitive(value, 'authorization', searchFrom);
+    if (start === -1) return false;
+    if (!isAsciiAlphaNumeric(value[start - 1]) && explicitAuthorizationCredentialAt(value, start)) {
+      return true;
+    }
+    searchFrom = start + 'authorization'.length;
+  }
+  return false;
 }
 
 function containsCredentialToken(
@@ -140,10 +235,9 @@ function containsCredentialToken(
   scheme: 'basic' | 'bearer',
   isValidToken: (token: string) => boolean
 ): boolean {
-  const lower = value.toLowerCase();
   let searchFrom = 0;
-  while (searchFrom < lower.length) {
-    const start = lower.indexOf(scheme, searchFrom);
+  while (searchFrom < value.length) {
+    const start = indexOfAsciiCaseInsensitive(value, scheme, searchFrom);
     if (start === -1) return false;
     const before = value[start - 1];
     let tokenStart = start + scheme.length;
@@ -160,11 +254,10 @@ function containsCredentialToken(
 }
 
 function containsDatabaseUrl(value: string): boolean {
-  const lower = value.toLowerCase();
   for (const scheme of DATABASE_URL_SCHEMES) {
     let searchFrom = 0;
-    while (searchFrom < lower.length) {
-      const start = lower.indexOf(scheme, searchFrom);
+    while (searchFrom < value.length) {
+      const start = indexOfAsciiCaseInsensitive(value, scheme, searchFrom);
       if (start === -1) break;
       const firstValueCharacter = value[start + scheme.length];
       if (firstValueCharacter !== undefined && !isAsciiWhitespace(firstValueCharacter)) return true;
@@ -177,8 +270,9 @@ function containsDatabaseUrl(value: string): boolean {
 function isSensitiveString(value: string): boolean {
   const trimmed = value.trim();
   return containsDatabaseUrl(trimmed) ||
-    containsCredentialToken(trimmed, 'basic', isBasicCredential) ||
-    containsCredentialToken(trimmed, 'bearer', isBearerToken) ||
+    containsExplicitAuthorizationCredential(trimmed) ||
+    containsCredentialToken(trimmed, 'basic', isUnlabelledBasicCredential) ||
+    containsCredentialToken(trimmed, 'bearer', isUnlabelledBearerToken) ||
     /(?:^|[\s;,])(?:set-)?cookie\s*[:=]\s*\S+/i.test(trimmed) ||
     /(?:^|[\s;,])(?:x[-_ ]?api[-_ ]?key|api[-_ ]?key)\s*[:=]\s*\S+/i.test(trimmed) ||
     /\b(?:password|pwd)\s*=\s*[^;\s]+/i.test(trimmed);

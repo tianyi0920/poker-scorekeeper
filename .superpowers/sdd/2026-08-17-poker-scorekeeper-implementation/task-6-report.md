@@ -13,7 +13,8 @@
 - 新增 `AuditService.record(transaction, entry)`，只接受 Prisma 事务客户端；记录失败会使业务修改整体回滚。
 - 递归脱敏结合语义 token 与紧凑键族，覆盖 camelCase、全大小写、无分隔、下划线和连字符形式，并识别 `auth` 缩写；屏蔽 password/hash/token/cookie/authorization/API key/DB URL/connection string/secret 及其常见前后缀，同时不误杀 `secretSanta`、`monkeyValue`、`tokenizerMode` 等普通字段。
 - 任意键下的 Basic/Bearer Authorization、Cookie、API key、数据库 URL 及 password/pwd 连接赋值，无论位于字符串开头或嵌入文本，都会整值替换；`requestId`、`sourceIp`、`userAgent` 也经同一安全入口清洗后再执行列长度截断。
-- Basic/Bearer 不再依赖字符串开头或 `Authorization` 标签：采用有界逐字符扫描，Basic 校验 Base64 形态及解码后的凭据分隔符，Bearer 校验 RFC 风格字符集及最小长度；MySQL、MariaDB、PostgreSQL（并保留既有数据库方案）通过固定 scheme 表查找，支持 `jdbc:` 前缀及 `dsn=`/`endpoint:` 等任意位置。扫描受 16384 字符上限约束，不使用存在灾难回溯风险的表达式。
+- Basic/Bearer 分为显式 `Authorization:` 与无标签两条有界扫描路径：显式 Basic 只要求合法 Base64 且解码含凭据冒号，显式 Bearer 接受任意非空合法 token；无标签 Basic 保留长度门槛，无标签 Bearer 还要求数字、符号或大小写混合信号，兼顾 opaque token 与普通短语误报。MySQL、MariaDB、PostgreSQL（并保留既有数据库方案）通过固定 scheme 表查找，支持 `jdbc:` 前缀及 `dsn=`/`endpoint:` 等任意位置。
+- 凭据与数据库探针使用原串上的等长 ASCII A–Z fold 比较，完全不以全 Unicode `toLowerCase()` 结果索引原串；`İ` 等长度变化前缀不会使后续 ASCII 探针错位。全部扫描先受 16384 字符上限约束，固定探针逐字符前进，不使用存在灾难回溯风险的表达式。
 - 循环引用、无效日期、抛错 getter 和 hostile Proxy 分别安全降级为 JSON 可序列化占位，不会令审计事务因序列化异常返回 500。
 - 递归脱敏设置深度 32、节点 10000、数组长度 10000、字符串长度 16384 的硬上限，超限内容整值替换为对应占位，避免深层对象或大稀疏数组耗尽资源。
 - `mustChangePassword` 仅在值确为 boolean 时作为安全状态字段保留；密码哈希及非布尔伪装仍被脱敏，密码重置审计可见 `false → true` 状态变化。
@@ -35,6 +36,8 @@
 - 修复轮 2 GREEN：脱敏拆分为 40/40，settings/user-audit 21/21；临时放宽四项资源阈值的 mutation 检查使深度、节点、稀疏数组、长字符串四项各自真实 RED，恢复阈值后全部 GREEN。
 - 修复轮 3 RED：脱敏 49 项中 8 项失败，真实复现 `agent Bearer`、`agent Basic`、`dsn=mysql://`、`endpoint:postgresql://`、JDBC MySQL/MariaDB 漏网，同时证明旧规则会误杀 `basic plan` 与 `bearer animal`；真实 settings DB E2E 1/1 失败并读取到三项原样元数据。
 - 修复轮 3 GREEN：脱敏扩展为 50/50，覆盖 JDBC PostgreSQL 及上述正反例，Mozilla UA 继续保留；真实 settings DB 元数据用例 1/1，存储值全部为整值脱敏占位。
+- 修复轮 4 RED：脱敏 59 项中 9 项失败，复现显式短 `Basic YTpi`/`Bearer abcdefghijk` 漏网、`İ` 前缀使 agent 与三种数据库 scheme 探针错位，以及无标签 `bearer responsibility`/`authentication` 误杀；真实 settings DB 元数据用例 1/1 失败并读取到原值。
+- 修复轮 4 GREEN：脱敏 59/59，显式与无标签策略独立生效；`İ` 前缀下 Basic/Bearer、MySQL/MariaDB/PostgreSQL、JDBC/endpoint/dsn 均整值脱敏，普通短语与 Mozilla UA 保留；真实 settings DB 元数据用例 1/1 存储占位。
 
 ## 验证
 
@@ -42,10 +45,10 @@
 
 | 验证 | 结果 |
 |---|---|
-| Task 6 脱敏单测 | PASS，50/50 |
+| Task 6 脱敏单测 | PASS，59/59 |
 | Task 6 settings HTTP/DB E2E | PASS，20/20 |
 | Task 5 + Task 6 聚焦 HTTP/DB E2E | PASS，62/62 |
-| `pnpm test` | PASS，API 139/139；全仓 172/172 |
+| `pnpm test` | PASS，API 148/148；全仓 181/181 |
 | `pnpm --filter @poker/api test:integration` | PASS，12/12 |
 | `pnpm lint` | PASS |
 | `pnpm typecheck` | PASS |
@@ -63,6 +66,8 @@
 修复轮 2 全仓复验后以相同 `_test`、严格正则、零关系引用且无 active-player lock 守卫，定向清理 health 继承环境产生的 1 行测试 bootstrap；未执行 reset。
 
 修复轮 3 全仓首轮被同类旧 `audit-<10hex>-bootstrap` 零引用夹具阻挡 4 个 auth bootstrap 用例；只读确认后以相同事务守卫定向删除 1 行，复验全绿，并在测试后再次守卫清理 health 继承环境产生的 1 行。未执行 reset，未接触生产库。
+
+修复轮 4 全仓复验后，health 本次继承 settings suite 环境并留下唯一 `settings-<10hex>-bootstrap`。原 `audit-` 专用守卫因前缀不同安全拒绝且未改数据；只读确认后改用该精确 `settings-` 正则，并保持唯一活跃超管、全部关系引用为 0、无 active-player lock 的事务前置条件，定向删除 1 行。未执行 reset，未接触生产库。
 
 ## 文件清单
 

@@ -152,8 +152,27 @@ describe('audit redaction', () => {
   });
 
   it.each([
+    'Authorization: Basic YTpi',
+    'Authorization: Bearer abcdefghijk'
+  ])('redacts short credentials following an explicit authorization label: %s', (value) => {
+    expect(redactAuditValue({ metadata: value })).toEqual({ metadata: '[REDACTED]' });
+  });
+
+  it.each([
+    'İ agent Basic YTpiY2Q=',
+    'İ agent Bearer bearer-token',
+    'İ dsn=mysql://x',
+    'İ endpoint:mariadb://x',
+    'İ jdbc:postgresql://x'
+  ])('redacts ASCII credential probes after a length-changing Unicode prefix: %s', (value) => {
+    expect(redactAuditValue({ metadata: value })).toEqual({ metadata: '[REDACTED]' });
+  });
+
+  it.each([
     'basic plan',
     'bearer animal',
+    'bearer responsibility',
+    'bearer authentication',
     'ordinary endpoint status'
   ])('keeps non-credential text under generic keys: %s', (value) => {
     expect(redactAuditValue({ metadata: value })).toEqual({ metadata: value });
