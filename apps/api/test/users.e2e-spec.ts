@@ -184,6 +184,9 @@ describe.sequential('user administration', () => {
       });
       const ids = owned.map(({ id }) => id);
       if (ids.length > 0) {
+        await prisma.auditLog.deleteMany({
+          where: { OR: [{ actorUserId: { in: ids } }, { entityId: { in: ids } }] }
+        });
         await prisma.activePlayerLock.deleteMany({ where: { userId: { in: ids } } });
         await prisma.gamePlayer.deleteMany({ where: { userId: { in: ids } } });
         await prisma.game.deleteMany({ where: { createdById: { in: ids } } });

@@ -9,6 +9,7 @@ import type {
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { conflict, notFound } from '../common/errors/app-error.js';
 import { Prisma, type Role, type User } from '../generated/prisma/client.js';
+import { AuditService } from '../audit/audit.service.js';
 import { PasswordService } from '../auth/password.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import {
@@ -44,11 +45,29 @@ function isUniqueConstraint(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2002';
 }
 
+function toAuditUser(user: User | UserResponse): Record<string, unknown> {
+  return {
+    id: user.id,
+    username: user.username,
+    nickname: user.nickname,
+    role: user.role,
+    rakeEnabled: user.rakeEnabled,
+    avatarKind: user.avatarKind,
+    avatarValue: user.avatarValue,
+    isActive: user.isActive,
+    mustChangePassword: user.mustChangePassword,
+    deletedAt: user.deletedAt,
+    createdAt: user.createdAt,
+    updatedAt: user.updatedAt
+  };
+}
+
 @Injectable()
 export class UsersService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(PasswordService) private readonly passwords: PasswordService
+    @Inject(PasswordService) private readonly passwords: PasswordService,
+    @Inject(AuditService) private readonly audit: AuditService
   ) {}
 
   async list(): Promise<{ users: UserResponse[] }> {
@@ -76,7 +95,7 @@ export class UsersService {
         if (await transaction.user.findUnique({ where: { activeNormalizedNickname } })) {
           throw conflict('NICKNAME_TAKEN');
         }
-        return transaction.user.create({
+        const created = await transaction.user.create({
           data: {
             username: input.username,
             normalizedUsername,
@@ -91,6 +110,15 @@ export class UsersService {
           },
           select: publicUserSelect
         });
+        await this.audit.record(transaction, {
+          actorUserId: currentActor.id,
+          action: 'USER_CREATED',
+          entityType: 'USER',
+          entityId: created.id,
+          before: null,
+          after: toAuditUser(created)
+        });
+        return created;
       });
     } catch (error) {
       if (!isUniqueConstraint(error)) throw error;
@@ -144,6 +172,14 @@ export class UsersService {
             data: { revokedAt: new Date() }
           });
         }
+        await this.audit.record(transaction, {
+          actorUserId: currentActor.id,
+          action: 'USER_UPDATED',
+          entityType: 'USER',
+          entityId: updated.id,
+          before: toAuditUser(target),
+          after: toAuditUser(updated)
+        });
         return updated;
       });
     } catch (error) {
@@ -175,6 +211,14 @@ export class UsersService {
         where: { userId: id, revokedAt: null },
         data: { revokedAt: now }
       });
+      await this.audit.record(transaction, {
+        actorUserId: currentActor.id,
+        action: 'USER_DELETED',
+        entityType: 'USER',
+        entityId: deleted.id,
+        before: toAuditUser(target),
+        after: toAuditUser(deleted)
+      });
       return deleted;
     });
   }
@@ -192,11 +236,20 @@ export class UsersService {
         if (await transaction.user.findUnique({ where: { activeNormalizedNickname } })) {
           throw conflict('NICKNAME_TAKEN');
         }
-        return transaction.user.update({
+        const restored = await transaction.user.update({
           where: { id },
           data: { nickname, deletedAt: null, isActive: true, activeNormalizedNickname },
           select: publicUserSelect
         });
+        await this.audit.record(transaction, {
+          actorUserId: currentActor.id,
+          action: 'USER_RESTORED',
+          entityType: 'USER',
+          entityId: restored.id,
+          before: toAuditUser(target),
+          after: toAuditUser(restored)
+        });
+        return restored;
       });
     } catch (error) {
       if (isUniqueConstraint(error)) throw conflict('NICKNAME_TAKEN');
@@ -225,6 +278,14 @@ export class UsersService {
       await transaction.authSession.updateMany({
         where: { userId: id, revokedAt: null },
         data: { revokedAt: now }
+      });
+      await this.audit.record(transaction, {
+        actorUserId: currentActor.id,
+        action: 'USER_PASSWORD_RESET',
+        entityType: 'USER',
+        entityId: updated.id,
+        before: toAuditUser(target),
+        after: toAuditUser(updated)
       });
       return updated;
     });

@@ -113,6 +113,9 @@ describe.sequential('avatar pipeline', () => {
       });
       const ids = owned.map(({ id }) => id);
       if (ids.length > 0) {
+        await prisma.auditLog.deleteMany({
+          where: { OR: [{ actorUserId: { in: ids } }, { entityId: { in: ids } }] }
+        });
         await prisma.authSession.deleteMany({ where: { userId: { in: ids } } });
         await prisma.user.deleteMany({ where: { id: { in: ids } } });
       }

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { mkdir, rename, rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import sharp from 'sharp';
+import { AuditService } from '../audit/audit.service.js';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import {
   badRequest,
@@ -51,6 +52,7 @@ export class AvatarService {
 
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
+    @Inject(AuditService) private readonly audit: AuditService,
     @Inject(ConfigService) config: ConfigService
   ) {
     this.avatarRoot = resolve(
@@ -130,10 +132,21 @@ export class AvatarService {
         const currentActor = requireCurrentActor(locked, actor.id);
         assertCanManageUser(currentActor, target, { operation: 'reset-avatar' });
       }
-      await transaction.user.update({
+      const updated = await transaction.user.update({
         where: { id: userId },
-        data: { avatarKind: AvatarKind.PRESET, avatarValue: presetId }
+        data: { avatarKind: AvatarKind.PRESET, avatarValue: presetId },
+        select: { avatarKind: true, avatarValue: true }
       });
+      if (actor !== undefined) {
+        await this.audit.record(transaction, {
+          actorUserId: actor.id,
+          action: 'USER_AVATAR_RESET',
+          entityType: 'USER',
+          entityId: userId,
+          before: { avatarKind: target.avatarKind, avatarValue: target.avatarValue },
+          after: updated
+        });
+      }
       return { kind: target.avatarKind, value: target.avatarValue };
     });
     await this.deleteUploadedFile(userId, previous.kind, previous.value);
