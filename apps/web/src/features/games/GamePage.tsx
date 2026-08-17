@@ -1,0 +1,409 @@
+import {
+  gameJoinAckSchema,
+  gameSnapshotSchema,
+  gameSnapshotEventSchema,
+  gameUpdatedEventSchema,
+  playerRakeUpdatedEventSchema,
+  presenceUpdatedEventSchema,
+  rakeSettingsUpdatedEventSchema,
+  serverErrorEventSchema,
+  type GameSnapshotDto
+} from '@poker/contracts';
+import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
+import { Link, useParams } from 'react-router-dom';
+import { createGameSocket, type GameSocketClient, type GameSocketListener } from '../../api/game-socket.js';
+import { mutationMessage, scorekeeperApi } from '../../api/resources.js';
+import { useAuth } from '../../auth/AuthProvider.js';
+import { Button } from '../../components/Button.js';
+import { Modal } from '../../components/Modal.js';
+import { Toast } from '../../components/Toast.js';
+import { AdjustBuyInDialog } from '../buyins/AdjustBuyInDialog.js';
+import { BuyInSheet } from '../buyins/BuyInSheet.js';
+import { GameTimer } from './GameTimer.js';
+import { PurchaseTimeline } from './PurchaseTimeline.js';
+import { RoundTable } from './RoundTable.js';
+import { SpectatorBar } from './SpectatorBar.js';
+
+type GameTab = 'table' | 'purchases';
+type SocketFactory = () => GameSocketClient;
+
+function totalBuyIn(snapshot: GameSnapshotDto): bigint {
+  return snapshot.players.reduce((total, player) => total + BigInt(player.buyInAmount), 0n);
+}
+
+export function GamePage({ socketFactory = createGameSocket }: { socketFactory?: SocketFactory }) {
+  const { id: gameId = '' } = useParams();
+  const { user } = useAuth();
+  const [snapshot, setSnapshot] = useState<GameSnapshotDto | null>(null);
+  const snapshotRef = useRef<GameSnapshotDto | null>(null);
+  const activeGameIdRef = useRef(gameId);
+  activeGameIdRef.current = gameId;
+  const tableTabRef = useRef<HTMLButtonElement>(null);
+  const purchaseTabRef = useRef<HTMLButtonElement>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [socketReady, setSocketReady] = useState(false);
+  const [transportConnected, setTransportConnected] = useState(false);
+  const [roomSynchronized, setRoomSynchronized] = useState(false);
+  const [polling, setPolling] = useState(false);
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [tab, setTab] = useState<GameTab>('table');
+  const [buyOpen, setBuyOpen] = useState(false);
+  const [adjustment, setAdjustment] = useState<{ playerId: string; currentHands: number } | null>(null);
+  const [endOpen, setEndOpen] = useState(false);
+  const [ending, setEnding] = useState(false);
+  const [endError, setEndError] = useState<string | null>(null);
+  const hasSnapshot = snapshot?.id === gameId;
+
+  const applySnapshot = useCallback((candidate: unknown): boolean => {
+    const parsed = gameSnapshotSchema.safeParse(candidate);
+    if (!parsed.success || parsed.data.id !== activeGameIdRef.current) return false;
+    const current = snapshotRef.current;
+    if (current !== null && parsed.data.version < current.version) return false;
+    snapshotRef.current = parsed.data;
+    setSnapshot(parsed.data);
+    return true;
+  }, []);
+
+  const loadSnapshot = useCallback(async (background = false) => {
+    const requestedGameId = gameId;
+    if (!background) setLoadError(null);
+    try {
+      const response = await scorekeeperApi.gameSnapshot(requestedGameId);
+      if (activeGameIdRef.current !== requestedGameId) return;
+      if (!applySnapshot(response)) throw new Error('Invalid game snapshot');
+    } catch {
+      if (!background && activeGameIdRef.current === requestedGameId) {
+        setLoadError('对局暂时无法加载，请稍后重试');
+      }
+    } finally {
+      if (!background && activeGameIdRef.current === requestedGameId) setLoading(false);
+    }
+  }, [applySnapshot, gameId]);
+
+  useEffect(() => {
+    snapshotRef.current = null;
+    setSnapshot(null);
+    setLoading(true);
+    setLoadError(null);
+    setTab('table');
+    setBuyOpen(false);
+    setAdjustment(null);
+    setEndOpen(false);
+    if (gameId === '') {
+      setLoadError('对局不存在');
+      setLoading(false);
+      return;
+    }
+    void loadSnapshot();
+  }, [gameId, loadSnapshot]);
+
+  useEffect(() => {
+    if (snapshot !== null && snapshot.status !== 'ACTIVE') {
+      setBuyOpen(false);
+      setAdjustment(null);
+      setEndOpen(false);
+    }
+  }, [snapshot]);
+
+  useEffect(() => {
+    if (!hasSnapshot) return;
+    const socket = socketFactory();
+    let disposed = false;
+    let joinTimeout: number | undefined;
+    let retryTimeout: number | undefined;
+    setSocketReady(true);
+
+    const clearJoinTimers = () => {
+      if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
+      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      joinTimeout = undefined;
+      retryTimeout = undefined;
+    };
+    const scheduleJoinRetry = () => {
+      if (disposed || !socket.connected) return;
+      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      retryTimeout = window.setTimeout(() => attemptJoin(), 5_000);
+    };
+    const failJoin = (message: string) => {
+      if (disposed) return;
+      if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
+      joinTimeout = undefined;
+      setRoomSynchronized(false);
+      setConnectionError(message);
+      scheduleJoinRetry();
+    };
+    const attemptJoin = () => {
+      if (disposed || !socket.connected) return;
+      if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
+      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      retryTimeout = undefined;
+      setRoomSynchronized(false);
+      setConnectionError('正在同步实时房间…');
+      let acknowledged = false;
+      joinTimeout = window.setTimeout(() => {
+        if (acknowledged) return;
+        acknowledged = true;
+        failJoin('实时房间响应超时，正在尝试恢复。');
+      }, 3_000);
+      socket.emit('game.join', {
+        gameId,
+        knownVersion: snapshotRef.current?.version ?? 0
+      }, (value) => {
+        if (disposed || acknowledged) return;
+        acknowledged = true;
+        if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
+        joinTimeout = undefined;
+        const acknowledgement = gameJoinAckSchema.safeParse(value);
+        if (!acknowledgement.success
+          || !acknowledgement.data.ok
+          || acknowledgement.data.gameId !== gameId) {
+          failJoin('实时房间同步失败，正在尝试恢复。');
+          return;
+        }
+        setRoomSynchronized(true);
+        setPolling(false);
+        setConnectionError(null);
+      });
+    };
+    const connect = () => {
+      setTransportConnected(true);
+      attemptJoin();
+    };
+    const disconnect = () => {
+      clearJoinTimers();
+      setTransportConnected(false);
+      setRoomSynchronized(false);
+      setConnectionError('实时连接中断，正在尝试恢复。');
+    };
+    const receiveSnapshot = (value: unknown) => {
+      const parsed = gameSnapshotEventSchema.safeParse(value);
+      if (parsed.success) applySnapshot(parsed.data);
+    };
+    const receiveGameUpdate = (value: unknown) => {
+      const parsed = gameUpdatedEventSchema.safeParse(value);
+      if (parsed.success) applySnapshot(parsed.data);
+    };
+    const receivePresence = (value: unknown) => {
+      const parsed = presenceUpdatedEventSchema.safeParse(value);
+      if (!parsed.success || parsed.data.gameId !== gameId) return;
+      setSnapshot((current) => {
+        if (current === null) return current;
+        const next = { ...current, spectators: parsed.data.spectators };
+        snapshotRef.current = next;
+        return next;
+      });
+    };
+    const refreshRakeSettings = (value: unknown) => {
+      if (rakeSettingsUpdatedEventSchema.safeParse(value).success) void loadSnapshot(true);
+    };
+    const refreshPlayerRake = (value: unknown) => {
+      if (playerRakeUpdatedEventSchema.safeParse(value).success) void loadSnapshot(true);
+    };
+    const socketError = () => {
+      setTransportConnected(false);
+      failJoin('实时连接中断，正在尝试恢复。');
+    };
+    const receiveServerError = (value: unknown) => {
+      if (serverErrorEventSchema.safeParse(value).success) {
+        failJoin('实时房间同步失败，正在尝试恢复。');
+      }
+    };
+
+    const listeners: Array<[string, GameSocketListener]> = [
+      ['connect', connect],
+      ['disconnect', disconnect],
+      ['connect_error', socketError],
+      ['game.snapshot', receiveSnapshot],
+      ['game.updated', receiveGameUpdate],
+      ['presence.updated', receivePresence],
+      ['rake-settings.updated', refreshRakeSettings],
+      ['player-rake.updated', refreshPlayerRake],
+      ['server.error', receiveServerError]
+    ];
+    for (const [event, listener] of listeners) socket.on(event, listener);
+    socket.connect();
+
+    return () => {
+      disposed = true;
+      clearJoinTimers();
+      if (socket.connected) socket.emit('game.leave', { gameId });
+      for (const [event, listener] of listeners) socket.off(event, listener);
+      socket.disconnect();
+      setSocketReady(false);
+      setTransportConnected(false);
+      setRoomSynchronized(false);
+    };
+  }, [applySnapshot, gameId, hasSnapshot, loadSnapshot, socketFactory]);
+
+  useEffect(() => {
+    if (!socketReady || roomSynchronized) {
+      setPolling(false);
+      return;
+    }
+    const fallback = window.setTimeout(() => setPolling(true), 5_000);
+    return () => window.clearTimeout(fallback);
+  }, [roomSynchronized, socketReady]);
+
+  useEffect(() => {
+    if (!polling) return;
+    void loadSnapshot(true);
+    const interval = window.setInterval(() => { void loadSnapshot(true); }, 10_000);
+    return () => window.clearInterval(interval);
+  }, [loadSnapshot, polling]);
+
+  const refreshAfterWrite = () => {
+    void loadSnapshot(true);
+  };
+
+  const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    let next: GameTab | null = null;
+    if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+      next = tab === 'table' ? 'purchases' : 'table';
+    } else if (event.key === 'Home') {
+      next = 'table';
+    } else if (event.key === 'End') {
+      next = 'purchases';
+    }
+    if (next === null) return;
+    event.preventDefault();
+    setTab(next);
+    (next === 'table' ? tableTabRef.current : purchaseTabRef.current)?.focus();
+  };
+
+  if (loading || (snapshot !== null && snapshot.id !== gameId)) return <div className="page-status">正在摆好牌桌…</div>;
+  if (snapshot === null) {
+    return <section className="page-stack"><Toast tone="error" message={loadError ?? '对局不存在'} /><Link className="action-link" to="/">返回首页</Link></section>;
+  }
+
+  const selfPlayer = snapshot.players.find(({ userId }) => user?.id === userId);
+  const active = snapshot.status === 'ACTIVE';
+  const fullForViewer = snapshot.players.length >= 12 && selfPlayer === undefined;
+  const canManage = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+
+  const beginSettlement = async () => {
+    if (!active || !canManage || ending) return;
+    setEnding(true);
+    setEndError(null);
+    try {
+      const next = await scorekeeperApi.beginSettlement(snapshot.id);
+      if (!applySnapshot(next)) throw new Error('Invalid game snapshot');
+      setEndOpen(false);
+    } catch (reason) {
+      setEndError(mutationMessage(reason, '暂时无法结束对局，请刷新后重试'));
+    } finally {
+      setEnding(false);
+    }
+  };
+
+  return (
+    <section className="game-page" aria-labelledby="game-title">
+      <header className="game-heading">
+        <div><span className="section-kicker">LIVE TABLE</span><h2 id="game-title">{snapshot.name}</h2></div>
+        <div className="game-heading-actions">
+          <span className={active ? 'live-pill' : 'status-pill status-pill--settling'}>{active ? '进行中' : '结算中'}</span>
+          {active && canManage && <Button variant="ghost" unsafe onClick={() => setEndOpen(true)}>结束对局</Button>}
+        </div>
+      </header>
+
+      {!roomSynchronized && socketReady && (
+        <div className="connection-banner" role="status" aria-label="实时连接状态">
+          <span className="connection-dot" aria-hidden="true" />
+          {polling
+            ? '实时连接中断，已启用每 10 秒定期同步'
+            : connectionError ?? (transportConnected ? '正在同步实时牌桌…' : '正在连接实时牌桌…')}
+        </div>
+      )}
+
+      <div className="game-tabs" role="tablist" aria-label="对局内容">
+        <button
+          ref={tableTabRef}
+          id="game-tab-table"
+          role="tab"
+          aria-controls="game-panel-table"
+          aria-selected={tab === 'table'}
+          tabIndex={tab === 'table' ? 0 : -1}
+          onKeyDown={onTabKeyDown}
+          onClick={() => setTab('table')}
+        >对战区</button>
+        <button
+          ref={purchaseTabRef}
+          id="game-tab-purchases"
+          role="tab"
+          aria-controls="game-panel-purchases"
+          aria-selected={tab === 'purchases'}
+          tabIndex={tab === 'purchases' ? 0 : -1}
+          onKeyDown={onTabKeyDown}
+          onClick={() => setTab('purchases')}
+        >
+          购买记录 <span>{snapshot.purchases.length}</span>
+        </button>
+      </div>
+
+      {tab === 'table' ? (
+        <div id="game-panel-table" role="tabpanel" aria-labelledby="game-tab-table" tabIndex={0} className="battle-panel">
+          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''}>
+            <span>已开局</span>
+            <strong><GameTimer startedAt={snapshot.startedAt} stoppedAt={snapshot.stoppedAt} serverNow={snapshot.serverNow} /></strong>
+            <dl>
+              <div><dt>每手</dt><dd>¥{snapshot.handPrice}</dd></div>
+              <div><dt>全桌总买入</dt><dd>¥{totalBuyIn(snapshot).toString()}</dd></div>
+            </dl>
+          </RoundTable>
+          <SpectatorBar spectators={snapshot.spectators} />
+        </div>
+      ) : (
+        <div id="game-panel-purchases" role="tabpanel" aria-labelledby="game-tab-purchases" tabIndex={0} className="timeline-panel">
+          <PurchaseTimeline
+            purchases={snapshot.purchases}
+            players={snapshot.players}
+            selfUserId={user?.id ?? ''}
+            handPrice={snapshot.handPrice}
+            canAdjust={active}
+            onAdjust={(playerId, currentHands) => setAdjustment({ playerId, currentHands })}
+          />
+        </div>
+      )}
+
+      {active && (
+        <div className="game-action-dock">
+          <Button unsafe disabled={fullForViewer} onClick={() => setBuyOpen(true)}>
+            {fullForViewer ? '本桌已满' : '购买筹码'}
+          </Button>
+        </div>
+      )}
+
+      <BuyInSheet
+        gameId={snapshot.id}
+        handPrice={snapshot.handPrice}
+        open={buyOpen}
+        canWrite={active}
+        onClose={() => setBuyOpen(false)}
+        onSuccess={refreshAfterWrite}
+      />
+      {adjustment !== null && (
+        <AdjustBuyInDialog
+          gameId={snapshot.id}
+          playerId={adjustment.playerId}
+          currentHands={adjustment.currentHands}
+          open
+          canWrite={active}
+          onClose={() => setAdjustment(null)}
+          onSuccess={refreshAfterWrite}
+        />
+      )}
+      {endOpen && active && canManage && (
+        <Modal title="确认结束对局" onClose={() => { if (!ending) setEndOpen(false); }}>
+          <div className="modal-body end-game-confirmation">
+            <Toast tone="info" message="确认后立即停止计时并禁止购买与更正，随后进入结算。" />
+            {endError !== null && <Toast tone="error" message={endError} />}
+            <Button variant="danger" unsafe disabled={ending} onClick={() => void beginSettlement()}>
+              {ending ? '正在结束…' : '确认结束并进入结算'}
+            </Button>
+            <Button variant="ghost" disabled={ending} onClick={() => setEndOpen(false)}>继续对局</Button>
+          </div>
+        </Modal>
+      )}
+    </section>
+  );
+}

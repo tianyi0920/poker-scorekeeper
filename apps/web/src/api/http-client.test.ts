@@ -60,6 +60,10 @@ it.each([
   ['ACTIVE_GAME_LIMIT', '最多同时开启两场对局，请先完成现有对局'],
   ['ACTIVE_GAME_NAME_TAKEN', '已有进行中对局使用该名称，请更换名称'],
   ['GAME_STATE_CONFLICT', '对局状态已变化，请刷新后重试'],
+  ['GAME_PLAYER_LIMIT', '本桌已满 12 人，无法继续加入'],
+  ['BUYIN_NOT_LATEST', '购买记录已变化，请刷新后再更正'],
+  ['BUYIN_AMOUNT_OVERFLOW', '购买金额超出系统范围，请减少手数'],
+  ['BUYIN_IDEMPOTENCY_CONFLICT', '该请求已用于其他购买，请刷新后重试'],
   ['GAME_HAS_BUYINS', '对局已有购买记录，必须完成结算'],
   ['GAME_HAS_RELATIONS', '草稿已关联业务记录，无法删除']
 ])('maps real backend code %s to actionable local feedback', async (code, message) => {
