@@ -1,4 +1,5 @@
 import type { ExecutionContext, INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import * as argon2 from 'argon2';
 import request, { type Response } from 'supertest';
@@ -10,6 +11,8 @@ import { Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { SessionService } from '../src/auth/session.service.js';
+import { BootstrapAdminService } from '../src/auth/bootstrap-admin.service.js';
+import { PasswordService } from '../src/auth/password.service.js';
 
 const SESSION_COOKIE_NAME = 'poker_session';
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
@@ -37,6 +40,18 @@ function cookieFrom(response: Response): string {
   return serializedCookieFrom(response).split(';', 1)[0]!;
 }
 
+function cookieMaxAge(serializedCookie: string): number {
+  const match = /(?:^|; )Max-Age=(\d+)/.exec(serializedCookie);
+  expect(match).not.toBeNull();
+  return Number(match![1]);
+}
+
+function cookieExpiresAt(serializedCookie: string): number {
+  const match = /(?:^|; )Expires=([^;]+)/.exec(serializedCookie);
+  expect(match).not.toBeNull();
+  return new Date(match![1]!).getTime();
+}
+
 function rawTokenFrom(cookie: string): string {
   const prefix = `${SESSION_COOKIE_NAME}=`;
   expect(cookie.startsWith(prefix)).toBe(true);
@@ -56,7 +71,7 @@ function guardContext(
   return {
     getHandler: () => handler,
     getClass: () => controller,
-    switchToHttp: () => ({ getRequest: () => authRequest })
+    switchToHttp: () => ({ getRequest: () => authRequest, getResponse: () => ({}) })
   } as unknown as ExecutionContext;
 }
 
@@ -196,6 +211,62 @@ describe.sequential('session authentication', () => {
         expect(body.user.role).toBe('ADMIN');
         expect(body.csrfToken).toMatch(/^[a-f0-9]{64}$/);
       });
+  });
+
+  it('renews the same browser session cookie after authenticated activity', async () => {
+    const loginResponse = await login(users.standard).expect(201);
+    const cookie = cookieFrom(loginResponse);
+    const rawToken = rawTokenFrom(cookie);
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const before = await prisma.authSession.findUniqueOrThrow({ where: { tokenHash } });
+    await prisma.authSession.update({
+      where: { id: before.id },
+      data: { expiresAt: new Date(Date.now() + 60_000) }
+    });
+
+    const response = await request(app.getHttpServer())
+      .get('/api/auth/session')
+      .set('Cookie', cookie)
+      .expect(200);
+    const renewedCookie = serializedCookieFrom(response);
+
+    expect(cookieFrom(response)).toBe(cookie);
+    expect(cookieMaxAge(renewedCookie)).toBeGreaterThanOrEqual(7 * 24 * 60 * 60 - 5);
+    expect(cookieMaxAge(renewedCookie)).toBeLessThanOrEqual(7 * 24 * 60 * 60);
+    const after = await prisma.authSession.findUniqueOrThrow({ where: { tokenHash } });
+    expect(after.id).toBe(before.id);
+    expect(after.tokenHash).toBe(before.tokenHash);
+  });
+
+  it('renews a browser cookie only up to the session absolute expiry', async () => {
+    const loginResponse = await login(users.standard).expect(201);
+    const cookie = cookieFrom(loginResponse);
+    const rawToken = rawTokenFrom(cookie);
+    const tokenHash = createHash('sha256').update(rawToken).digest('hex');
+    const absoluteExpiresAt = new Date(Date.now() + 120_000);
+    await prisma.authSession.update({
+      where: { tokenHash },
+      data: {
+        expiresAt: new Date(Date.now() + 60_000),
+        absoluteExpiresAt
+      }
+    });
+
+    const requestedAt = Date.now();
+    const response = await request(app.getHttpServer())
+      .get('/api/auth/session')
+      .set('Cookie', cookie)
+      .expect(200);
+    const renewedCookie = serializedCookieFrom(response);
+    const maximumSeconds = Math.ceil((absoluteExpiresAt.getTime() - requestedAt) / 1000);
+
+    expect(cookieFrom(response)).toBe(cookie);
+    expect(cookieMaxAge(renewedCookie)).toBeGreaterThan(0);
+    expect(cookieMaxAge(renewedCookie)).toBeLessThanOrEqual(maximumSeconds);
+    expect(cookieExpiresAt(renewedCookie)).toBeLessThanOrEqual(absoluteExpiresAt.getTime());
+    const stored = await prisma.authSession.findUniqueOrThrow({ where: { tokenHash } });
+    expect(stored.expiresAt.getTime()).toBeLessThanOrEqual(absoluteExpiresAt.getTime());
+    expect(stored.tokenHash).toBe(tokenHash);
   });
 
   it('rejects an expired session from the real session table', async () => {
@@ -384,6 +455,86 @@ describe.sequential('session authentication', () => {
       where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
     })).resolves.toBe(1);
   });
+
+  it('serializes concurrent bootstrap calls using the same configuration', async () => {
+    const original = await prisma.user.findUniqueOrThrow({
+      where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
+    });
+    const concurrentUsername = `${usernamePrefix}-concurrent-same`;
+    const makeService = (): BootstrapAdminService => new BootstrapAdminService(
+      prisma,
+      app.get(PasswordService),
+      new ConfigService({
+        NODE_ENV: 'test',
+        BOOTSTRAP_ADMIN_USERNAME: concurrentUsername,
+        BOOTSTRAP_ADMIN_NICKNAME: `${usernamePrefix}-concurrent-root`,
+        BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword
+      })
+    );
+    await prisma.user.update({ where: { id: original.id }, data: { isActive: false } });
+
+    try {
+      const results = await Promise.allSettled([
+        makeService().onApplicationBootstrap(),
+        makeService().onApplicationBootstrap()
+      ]);
+
+      expect(results.map(({ status }) => status)).toEqual(['fulfilled', 'fulfilled']);
+      await expect(prisma.user.count({
+        where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
+      })).resolves.toBe(1);
+      await expect(prisma.user.count({
+        where: { normalizedUsername: normalized(concurrentUsername) }
+      })).resolves.toBe(1);
+    } finally {
+      await prisma.user.deleteMany({
+        where: { normalizedUsername: normalized(concurrentUsername) }
+      });
+      await prisma.user.update({ where: { id: original.id }, data: { isActive: true } });
+    }
+  }, 15_000);
+
+  it('serializes concurrent bootstrap calls using different configurations', async () => {
+    const original = await prisma.user.findUniqueOrThrow({
+      where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
+    });
+    const usernames = [
+      `${usernamePrefix}-concurrent-first`,
+      `${usernamePrefix}-concurrent-second`
+    ];
+    const makeService = (username: string, sequence: number): BootstrapAdminService =>
+      new BootstrapAdminService(
+        prisma,
+        app.get(PasswordService),
+        new ConfigService({
+          NODE_ENV: 'test',
+          BOOTSTRAP_ADMIN_USERNAME: username,
+          BOOTSTRAP_ADMIN_NICKNAME: `${usernamePrefix}-concurrent-${sequence}`,
+          BOOTSTRAP_ADMIN_PASSWORD: bootstrapPassword
+        })
+      );
+    await prisma.user.update({ where: { id: original.id }, data: { isActive: false } });
+
+    try {
+      const results = await Promise.allSettled([
+        makeService(usernames[0]!, 1).onApplicationBootstrap(),
+        makeService(usernames[1]!, 2).onApplicationBootstrap()
+      ]);
+
+      expect(results.map(({ status }) => status)).toEqual(['fulfilled', 'fulfilled']);
+      await expect(prisma.user.count({
+        where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
+      })).resolves.toBe(1);
+      await expect(prisma.user.count({
+        where: { normalizedUsername: { in: usernames.map(normalized) } }
+      })).resolves.toBe(1);
+    } finally {
+      await prisma.user.deleteMany({
+        where: { normalizedUsername: { in: usernames.map(normalized) } }
+      });
+      await prisma.user.update({ where: { id: original.id }, data: { isActive: true } });
+    }
+  }, 15_000);
 
   it('refuses production startup when no active super admin or complete bootstrap configuration exists', async () => {
     const bootstrap = await prisma.user.findUniqueOrThrow({

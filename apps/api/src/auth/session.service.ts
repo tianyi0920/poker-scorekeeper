@@ -16,6 +16,10 @@ export interface SessionCookieOptions {
   maxAge: number;
 }
 
+interface CookieResponse {
+  cookie(name: string, value: string, options: SessionCookieOptions): void;
+}
+
 function toAuthUser(user: {
   id: string;
   username: string;
@@ -51,18 +55,23 @@ function hashToken(rawToken: string): string {
 
 @Injectable()
 export class SessionService {
+  private readonly browserRenewals = new WeakMap<
+    AuthenticatedSession,
+    { rawToken: string; expiresAt: Date }
+  >();
+
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(CsrfService) private readonly csrf: CsrfService
   ) {}
 
-  cookieOptions(): SessionCookieOptions {
+  cookieOptions(maxAge = SESSION_IDLE_MILLISECONDS): SessionCookieOptions {
     return {
       httpOnly: true,
       secure: process.env.NODE_ENV === 'production',
       sameSite: 'lax',
       path: '/',
-      maxAge: SESSION_IDLE_MILLISECONDS
+      maxAge: Math.max(0, Math.min(maxAge, SESSION_IDLE_MILLISECONDS))
     };
   }
 
@@ -93,7 +102,9 @@ export class SessionService {
     };
   }
 
-  async authenticateCookie(cookieHeader: string | string[] | undefined): Promise<AuthenticatedSession | null> {
+  async authenticateCookie(
+    cookieHeader: string | string[] | undefined
+  ): Promise<AuthenticatedSession | null> {
     const rawToken = readCookie(cookieHeader, SESSION_COOKIE_NAME);
     if (rawToken === null || !/^[a-f0-9]{64}$/.test(rawToken)) return null;
 
@@ -129,11 +140,30 @@ export class SessionService {
     if (refresh.count !== 1) return null;
 
     const user = toAuthUser(session.user);
-    return {
+    const authSession: AuthenticatedSession = {
       id: session.id,
       user,
       csrfToken: this.csrf.createToken(session.id, user.id)
     };
+    this.browserRenewals.set(authSession, {
+      rawToken,
+      expiresAt: refreshedExpiry
+    });
+    return authSession;
+  }
+
+  renewBrowserCookie(authSession: AuthenticatedSession, response: unknown): void {
+    const renewal = this.browserRenewals.get(authSession);
+    if (renewal === undefined) return;
+    this.browserRenewals.delete(authSession);
+    if (!this.isCookieResponse(response)) return;
+    const remainingMilliseconds = Math.max(0, renewal.expiresAt.getTime() - Date.now());
+    const maxAge = Math.floor(remainingMilliseconds / 1000) * 1000;
+    response.cookie(
+      SESSION_COOKIE_NAME,
+      renewal.rawToken,
+      this.cookieOptions(maxAge)
+    );
   }
 
   async revoke(sessionId: string): Promise<void> {
@@ -141,5 +171,12 @@ export class SessionService {
       where: { id: sessionId, revokedAt: null },
       data: { revokedAt: new Date() }
     });
+  }
+
+  private isCookieResponse(response: unknown): response is CookieResponse {
+    return typeof response === 'object' &&
+      response !== null &&
+      'cookie' in response &&
+      typeof response.cookie === 'function';
   }
 }

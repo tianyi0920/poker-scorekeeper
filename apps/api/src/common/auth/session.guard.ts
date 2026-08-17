@@ -9,8 +9,10 @@ export class SessionGuard implements CanActivate {
   constructor(@Inject(SessionService) private readonly sessions: SessionService) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<RequestWithAuth>();
-    const authSession = await this.sessions.authenticateCookie(request.headers.cookie);
+    const http = context.switchToHttp();
+    const request = http.getRequest<RequestWithAuth>();
+    const authSession = request.authSession ??
+      await this.sessions.authenticateCookie(request.headers.cookie);
     if (authSession === null) throw unauthorized('UNAUTHENTICATED');
     if (
       authSession.user.mustChangePassword &&
@@ -20,6 +22,9 @@ export class SessionGuard implements CanActivate {
     }
     request.authSession = authSession;
     request.user = authSession.user;
+    if (request.path !== '/api/auth/logout') {
+      this.sessions.renewBrowserCookie(authSession, http.getResponse<unknown>());
+    }
     return true;
   }
 }

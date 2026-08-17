@@ -15,7 +15,8 @@ export class CsrfGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest<RequestWithAuth>();
+    const http = context.switchToHttp();
+    const request = http.getRequest<RequestWithAuth>();
     if (SAFE_METHODS.has(request.method.toUpperCase()) || request.path === '/api/auth/login') {
       return true;
     }
@@ -30,6 +31,9 @@ export class CsrfGuard implements CanActivate {
     const provided = Array.isArray(csrfHeader) ? csrfHeader[0] : csrfHeader;
     if (!this.csrf.matches(provided, authSession.csrfToken)) {
       throw forbidden('CSRF_INVALID');
+    }
+    if (request.path !== '/api/auth/logout') {
+      this.sessions.renewBrowserCookie(authSession, http.getResponse<unknown>());
     }
     return true;
   }

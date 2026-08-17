@@ -5,14 +5,11 @@ import { tooManyRequests, unauthorized } from '../common/errors/app-error.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PasswordService } from './password.service.js';
 import { SessionService } from './session.service.js';
+import { LoginAttemptLimiter } from './login-attempt-limiter.js';
 
 const LOGIN_WINDOW_MILLISECONDS = 15 * 60 * 1000;
 const LOGIN_FAILURE_LIMIT = 10;
-
-interface LoginFailureState {
-  count: number;
-  resetAt: number;
-}
+const LOGIN_FAILURE_CAPACITY = 10_000;
 
 interface LoginMetadata {
   ipAddress: string;
@@ -41,7 +38,11 @@ function toAuthUser(user: {
 
 @Injectable()
 export class AuthService {
-  private readonly failures = new Map<string, LoginFailureState>();
+  private readonly failures = new LoginAttemptLimiter({
+    limit: LOGIN_FAILURE_LIMIT,
+    ttlMilliseconds: LOGIN_WINDOW_MILLISECONDS,
+    capacity: LOGIN_FAILURE_CAPACITY
+  });
   private readonly dummyHash: Promise<string>;
 
   constructor(
@@ -59,7 +60,9 @@ export class AuthService {
   ): Promise<{ rawToken: string; authSession: AuthenticatedSession }> {
     const normalizedUsername = normalizeUsername(username);
     const throttleKey = `${metadata.ipAddress}:${normalizedUsername}`;
-    this.assertLoginAllowed(throttleKey);
+    if (!this.failures.isAllowed(throttleKey)) {
+      throw tooManyRequests('TOO_MANY_REQUESTS');
+    }
 
     const user = await this.prisma.user.findUnique({ where: { normalizedUsername } });
     const passwordMatches = await this.passwords.verify(
@@ -72,11 +75,11 @@ export class AuthService {
       !user.isActive ||
       user.deletedAt !== null
     ) {
-      this.recordFailure(throttleKey);
+      this.failures.recordFailure(throttleKey);
       throw unauthorized('INVALID_CREDENTIALS');
     }
 
-    this.failures.delete(throttleKey);
+    this.failures.reset(throttleKey);
     return this.sessions.create(toAuthUser(user), metadata.ipAddress, metadata.userAgent);
   }
 
@@ -115,26 +118,4 @@ export class AuthService {
     return toAuthUser(updated);
   }
 
-  private assertLoginAllowed(key: string): void {
-    const now = Date.now();
-    const state = this.failures.get(key);
-    if (state === undefined) return;
-    if (state.resetAt <= now) {
-      this.failures.delete(key);
-      return;
-    }
-    if (state.count >= LOGIN_FAILURE_LIMIT) {
-      throw tooManyRequests('TOO_MANY_REQUESTS');
-    }
-  }
-
-  private recordFailure(key: string): void {
-    const now = Date.now();
-    const state = this.failures.get(key);
-    if (state === undefined || state.resetAt <= now) {
-      this.failures.set(key, { count: 1, resetAt: now + LOGIN_WINDOW_MILLISECONDS });
-      return;
-    }
-    state.count += 1;
-  }
 }

@@ -19,6 +19,16 @@ export class BootstrapAdminService implements OnApplicationBootstrap {
 
   async onApplicationBootstrap(): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
+      const settingsLock = await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id
+        FROM system_settings
+        WHERE id = ${'singleton'}
+        FOR UPDATE
+      `;
+      if (settingsLock.length !== 1) {
+        throw new Error('System settings singleton is required');
+      }
+
       const activeSuperAdmins = await transaction.user.count({
         where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
       });
