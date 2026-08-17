@@ -22,6 +22,9 @@ export const ERROR_CODES = {
   GAME_PLAYER_LIMIT: 'GAME_PLAYER_LIMIT',
   BUYIN_NOT_LATEST: 'BUYIN_NOT_LATEST',
   BUYIN_AMOUNT_OVERFLOW: 'BUYIN_AMOUNT_OVERFLOW',
+  DRAFT_VERSION_CONFLICT: 'DRAFT_VERSION_CONFLICT',
+  DRAFT_EDITOR_CONFLICT: 'DRAFT_EDITOR_CONFLICT',
+  DRAFT_LEASE_ACTIVE: 'DRAFT_LEASE_ACTIVE',
   NOT_FOUND: 'NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR'
 } as const;
@@ -52,6 +55,9 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   GAME_PLAYER_LIMIT: 'A game can have at most 12 players',
   BUYIN_NOT_LATEST: 'Only the latest logical purchase can be adjusted',
   BUYIN_AMOUNT_OVERFLOW: 'Buy-in amount exceeds the supported money range',
+  DRAFT_VERSION_CONFLICT: 'Settlement draft was updated by another request',
+  DRAFT_EDITOR_CONFLICT: 'Settlement draft is owned by another administrator',
+  DRAFT_LEASE_ACTIVE: 'Settlement draft editor lease is still active',
   NOT_FOUND: 'Not found',
   INTERNAL_ERROR: 'Internal server error'
 };
