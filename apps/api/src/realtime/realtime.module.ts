@@ -4,11 +4,18 @@ import { GameEventsService } from './game-events.service.js';
 import { GameGateway } from './game.gateway.js';
 import { PresenceService } from './presence.service.js';
 import { SocketSessionAdapter } from './socket-session.adapter.js';
+import { WebSocketOriginPolicy } from './websocket-origin.policy.js';
 
 @Global()
 @Module({
   imports: [AuthModule],
-  providers: [PresenceService, SocketSessionAdapter, GameEventsService, GameGateway],
+  providers: [
+    PresenceService,
+    SocketSessionAdapter,
+    GameEventsService,
+    WebSocketOriginPolicy,
+    GameGateway
+  ],
   exports: [PresenceService, SocketSessionAdapter, GameEventsService]
 })
 export class RealtimeModule {}

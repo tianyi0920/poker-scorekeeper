@@ -105,7 +105,10 @@ export class GameEventsService {
       const socket = server.sockets.sockets.get(socketId) as GameSocket | undefined;
       if (socket === undefined) continue;
       const authSession = await this.socketSessions.revalidate(socket);
-      if (authSession === null) continue;
+      if (authSession === null) {
+        socket.disconnect(true);
+        continue;
+      }
       try {
         assertCanViewGameSnapshot(authSession.user, game);
         emit(socket);

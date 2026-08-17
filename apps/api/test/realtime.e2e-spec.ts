@@ -6,9 +6,17 @@ import { io, type Socket } from 'socket.io-client';
 import { afterEach, vi } from 'vitest';
 import type {
   GameJoinAck,
-  GameLeaveAck,
-  GameSnapshotDto,
-  ServerErrorEvent
+  GameLeaveAck
+} from '@poker/contracts';
+import {
+  gameJoinAckSchema,
+  gameLeaveAckSchema,
+  gameSnapshotEventSchema,
+  gameUpdatedEventSchema,
+  playerRakeUpdatedEventSchema,
+  presenceUpdatedEventSchema,
+  rakeSettingsUpdatedEventSchema,
+  serverErrorEventSchema
 } from '@poker/contracts';
 import {
   GameStatus,
@@ -20,6 +28,8 @@ import {
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { GameEventsService } from '../src/realtime/game-events.service.js';
+import { PresenceService } from '../src/realtime/presence.service.js';
+import { SocketSessionAdapter } from '../src/realtime/socket-session.adapter.js';
 
 const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
 if (!databaseName.endsWith('_test')) {
@@ -29,6 +39,8 @@ if (!databaseName.endsWith('_test')) {
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `realtime-${runId}`;
 const password = `${randomBytes(18).toString('base64url')}Aa1!`;
+const publicOrigin = 'https://poker.example.test';
+const proxyOrigin = 'https://lan-poker.example.test';
 
 interface AuthContext {
   cookie: string;
@@ -58,6 +70,15 @@ function waitForEvent<T>(socket: Socket, event: string, timeout = 5_000): Promis
     };
     socket.once(event, onEvent);
   });
+}
+
+function waitForContractEvent<T>(
+  socket: Socket,
+  event: string,
+  schema: { parse(value: unknown): T },
+  timeout = 5_000
+): Promise<T> {
+  return waitForEvent<unknown>(socket, event, timeout).then((payload) => schema.parse(payload));
 }
 
 function expectNoEvent(socket: Socket, event: string, duration = 250): Promise<void> {
@@ -113,12 +134,18 @@ describe.sequential('realtime game rooms', () => {
     return { cookie: cookieFrom(response), csrfToken: response.body.csrfToken };
   }
 
-  function socketFor(cookie?: string): Socket {
+  function socketFor(
+    cookie?: string,
+    options: { origin?: string; omitOrigin?: boolean } = {}
+  ): Socket {
+    const extraHeaders: Record<string, string> = {};
+    if (cookie !== undefined) extraHeaders.Cookie = cookie;
+    if (options.omitOrigin !== true) extraHeaders.Origin = options.origin ?? publicOrigin;
     const socket = io(serverUrl, {
       autoConnect: false,
       transports: ['websocket'],
       reconnection: false,
-      ...(cookie === undefined ? {} : { extraHeaders: { Cookie: cookie } })
+      extraHeaders
     });
     sockets.add(socket);
     return socket;
@@ -131,15 +158,71 @@ describe.sequential('realtime game rooms', () => {
   }
 
   async function connectError(socket: Socket): Promise<Error> {
-    const failed = waitForEvent<Error>(socket, 'connect_error', 10_000);
-    socket.connect();
-    return failed;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        socket.off('connect_error', onError);
+        socket.off('connect', onConnect);
+        reject(new Error('Timed out waiting for connect_error'));
+      }, 10_000);
+      const cleanup = () => {
+        clearTimeout(timer);
+        socket.off('connect_error', onError);
+        socket.off('connect', onConnect);
+      };
+      const onError = (error: Error) => {
+        cleanup();
+        resolve(error);
+      };
+      const onConnect = () => {
+        cleanup();
+        socket.disconnect();
+        reject(new Error('Socket unexpectedly connected'));
+      };
+      socket.once('connect_error', onError);
+      socket.once('connect', onConnect);
+      socket.connect();
+    });
   }
 
   function join(socket: Socket, gameId: string, knownVersion: number): Promise<GameJoinAck> {
     return new Promise((resolve) => {
-      socket.emit('game.join', { gameId, knownVersion }, resolve);
+      socket.emit('game.join', { gameId, knownVersion }, (ack: unknown) => {
+        resolve(gameJoinAckSchema.parse(ack));
+      });
     });
+  }
+
+  function emitWithExactlyOneAck<T>(
+    socket: Socket,
+    event: 'game.join' | 'game.leave',
+    payload: object
+  ): Promise<T> {
+    return new Promise((resolve, reject) => {
+      const acknowledgements: T[] = [];
+      const timeout = setTimeout(() => reject(new Error(`Timed out waiting for ${event} ack`)), 5_000);
+      socket.emit(event, payload, (ack: unknown) => {
+        const parsed = event === 'game.join'
+          ? gameJoinAckSchema.parse(ack)
+          : gameLeaveAckSchema.parse(ack);
+        acknowledgements.push(parsed as T);
+        setTimeout(() => {
+          clearTimeout(timeout);
+          if (acknowledgements.length !== 1) {
+            reject(new Error(`${event} acknowledged ${acknowledgements.length} times`));
+            return;
+          }
+          resolve(acknowledgements[0]!);
+        }, 50);
+      });
+    });
+  }
+
+  async function spectatorIds(gameId: string): Promise<string[]> {
+    const response = await request(app.getHttpServer())
+      .get(`/api/games/${gameId}/snapshot`)
+      .set('Cookie', superAuth.cookie)
+      .expect(200);
+    return response.body.spectators.map(({ userId }: { userId: string }) => userId);
   }
 
   async function seedGame(suffix: string, status: GameStatus = GameStatus.ACTIVE): Promise<Game> {
@@ -201,6 +284,8 @@ describe.sequential('realtime game rooms', () => {
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
     process.env.CSRF_SECRET = randomBytes(32).toString('hex');
+    process.env.PUBLIC_ORIGIN = publicOrigin;
+    process.env.WS_ALLOWED_ORIGINS = proxyOrigin;
     process.env.BOOTSTRAP_ADMIN_USERNAME = `${prefix}-bootstrap`;
     process.env.BOOTSTRAP_ADMIN_NICKNAME = `实时根-${runId}`;
     process.env.BOOTSTRAP_ADMIN_PASSWORD = password;
@@ -277,6 +362,31 @@ describe.sequential('realtime game rooms', () => {
     expect(JSON.stringify(error)).not.toContain('tokenHash');
   });
 
+  it('accepts an exact configured reverse-proxy Origin with a valid cookie', async () => {
+    const socket = socketFor(viewerAuth.cookie, { origin: proxyOrigin });
+    await connect(socket);
+    expect(socket.connected).toBe(true);
+  });
+
+  it.each([
+    ['evil subdomain', 'https://evil.poker.example.test'],
+    ['evil suffix', 'https://poker.example.test.evil'],
+    ['wrong port', 'https://poker.example.test:8443'],
+    ['wrong scheme', 'http://poker.example.test'],
+    ['null origin', 'null'],
+    ['malformed origin', 'not a valid origin']
+  ])('rejects %s even when the Cookie is valid', async (_label, origin) => {
+    const error = await connectError(socketFor(viewerAuth.cookie, { origin }));
+    expect(error.message).toBe('FORBIDDEN');
+    expect(JSON.stringify(error)).not.toContain(viewer.id);
+  });
+
+  it('rejects a missing Origin even when the Cookie is valid', async () => {
+    const error = await connectError(socketFor(viewerAuth.cookie, { omitOrigin: true }));
+    expect(error.message).toBe('FORBIDDEN');
+    expect(JSON.stringify(error)).not.toContain(viewer.id);
+  });
+
   it.each(['expired', 'revoked', 'disabled'] as const)(
     'rejects a %s authenticated session at the handshake boundary',
     async (state) => {
@@ -303,7 +413,7 @@ describe.sequential('realtime game rooms', () => {
     const game = await seedGame('version');
     const socket = socketFor(viewerAuth.cookie);
     await connect(socket);
-    const snapshotPromise = waitForEvent<GameSnapshotDto>(socket, 'game.snapshot');
+    const snapshotPromise = waitForContractEvent(socket, 'game.snapshot', gameSnapshotEventSchema);
     await expect(join(socket, game.id, 0)).resolves.toMatchObject({
       ok: true,
       gameId: game.id,
@@ -320,12 +430,154 @@ describe.sequential('realtime game rooms', () => {
     });
     await noSnapshot;
 
-    const serverError = waitForEvent<ServerErrorEvent>(socket, 'server.error');
+    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
     await expect(join(socket, game.id.toUpperCase(), 0)).resolves.toMatchObject({
       ok: false,
       code: 'VALIDATION_ERROR'
     });
     await expect(serverError).resolves.toEqual({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('delivers one UNAUTHENTICATED ack and server.error before disconnecting an invalid session', async () => {
+    const game = await seedGame('invalid-command-session');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    await prisma.authSession.updateMany({
+      where: { userId: viewer.id, revokedAt: null },
+      data: { revokedAt: new Date() }
+    });
+
+    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
+    const disconnected = waitForEvent(socket, 'disconnect');
+    const ack = await emitWithExactlyOneAck<GameJoinAck>(socket, 'game.join', {
+      gameId: game.id,
+      knownVersion: 0
+    });
+
+    expect(ack).toEqual({ ok: false, code: 'UNAUTHENTICATED' });
+    await expect(serverError).resolves.toEqual({ code: 'UNAUTHENTICATED' });
+    await disconnected;
+  });
+
+  it('maps an unexpected command failure to one non-leaking INTERNAL_ERROR and tolerates no callback', async () => {
+    const game = await seedGame('internal-command-error');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    vi.spyOn(app.get(SocketSessionAdapter), 'revalidate')
+      .mockRejectedValue(new Error('synthetic-private-database-detail'));
+
+    const firstError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
+    const ack = await emitWithExactlyOneAck<GameJoinAck>(socket, 'game.join', {
+      gameId: game.id,
+      knownVersion: 0
+    });
+    expect(ack).toEqual({ ok: false, code: 'INTERNAL_ERROR' });
+    expect(await firstError).toEqual({ code: 'INTERNAL_ERROR' });
+
+    const secondError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
+    socket.emit('game.leave', { gameId: game.id });
+    expect(await secondError).toEqual({ code: 'INTERNAL_ERROR' });
+    expect(socket.connected).toBe(true);
+  });
+
+  it('rolls a room switch back when the second snapshot fails and receives only old-room events', async () => {
+    const firstGame = await seedGame('switch-snapshot-old');
+    const secondGame = await seedGame('switch-snapshot-new');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    await join(socket, firstGame.id, 0);
+
+    const events = app.get(GameEventsService);
+    const originalSnapshotFor = events.snapshotFor.bind(events);
+    let targetCalls = 0;
+    vi.spyOn(events, 'snapshotFor').mockImplementation(async (actor, gameId) => {
+      if (gameId === secondGame.id && ++targetCalls === 2) {
+        throw new Error('synthetic-private-second-snapshot');
+      }
+      return originalSnapshotFor(actor, gameId);
+    });
+
+    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
+    await expect(join(socket, secondGame.id, 0)).resolves.toEqual({
+      ok: false,
+      code: 'INTERNAL_ERROR'
+    });
+    await expect(serverError).resolves.toEqual({ code: 'INTERNAL_ERROR' });
+    expect(await spectatorIds(firstGame.id)).toContain(viewer.id);
+    expect(await spectatorIds(secondGame.id)).not.toContain(viewer.id);
+
+    const noNewRoomEvent = expectNoEvent(socket, 'game.updated');
+    await events.publishCommittedGame(secondGame.id);
+    await noNewRoomEvent;
+    const oldRoomEvent = waitForContractEvent(socket, 'game.updated', gameUpdatedEventSchema);
+    await events.publishCommittedGame(firstGame.id);
+    await expect(oldRoomEvent).resolves.toMatchObject({ id: firstGame.id });
+  });
+
+  it('rolls a room switch back when target presence publication fails without a ghost spectator', async () => {
+    const firstGame = await seedGame('switch-publish-old');
+    const secondGame = await seedGame('switch-publish-new');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    await join(socket, firstGame.id, 0);
+
+    const events = app.get(GameEventsService);
+    const originalPublishPresence = events.publishPresence.bind(events);
+    let failed = false;
+    vi.spyOn(events, 'publishPresence').mockImplementation(async (gameId) => {
+      if (gameId === secondGame.id && !failed) {
+        failed = true;
+        throw new Error('synthetic-private-presence-publication');
+      }
+      return originalPublishPresence(gameId);
+    });
+
+    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
+    await expect(join(socket, secondGame.id, 0)).resolves.toEqual({
+      ok: false,
+      code: 'INTERNAL_ERROR'
+    });
+    await expect(serverError).resolves.toEqual({ code: 'INTERNAL_ERROR' });
+    expect(await spectatorIds(firstGame.id)).toContain(viewer.id);
+    expect(await spectatorIds(secondGame.id)).not.toContain(viewer.id);
+
+    const noNewRoomEvent = expectNoEvent(socket, 'game.updated');
+    await events.publishCommittedGame(secondGame.id);
+    await noNewRoomEvent;
+    const oldRoomEvent = waitForContractEvent(socket, 'game.updated', gameUpdatedEventSchema);
+    await events.publishCommittedGame(firstGame.id);
+    await expect(oldRoomEvent).resolves.toMatchObject({ id: firstGame.id });
+  });
+
+  it('compensates a leave failure, preserving presence and old-room delivery', async () => {
+    const game = await seedGame('leave-compensation');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    await join(socket, game.id, 0);
+    vi.spyOn(app.get(PresenceService), 'remove')
+      .mockImplementationOnce(() => { throw new Error('synthetic-private-leave-failure'); });
+
+    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
+    const ack = await emitWithExactlyOneAck<GameLeaveAck>(socket, 'game.leave', { gameId: game.id });
+    expect(ack).toEqual({ ok: false, code: 'INTERNAL_ERROR' });
+    await expect(serverError).resolves.toEqual({ code: 'INTERNAL_ERROR' });
+    expect(await spectatorIds(game.id)).toContain(viewer.id);
+
+    const roomEvent = waitForContractEvent(socket, 'game.updated', gameUpdatedEventSchema);
+    await app.get(GameEventsService).publishCommittedGame(game.id);
+    await expect(roomEvent).resolves.toMatchObject({ id: game.id });
+  });
+
+  it('keeps repeated joins to the same room idempotent', async () => {
+    const game = await seedGame('same-room-idempotent');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    await join(socket, game.id, 0);
+    await join(socket, game.id, 1);
+    expect((await spectatorIds(game.id)).filter((id) => id === viewer.id)).toHaveLength(1);
+
+    await emitWithExactlyOneAck<GameLeaveAck>(socket, 'game.leave', { gameId: game.id });
+    expect(await spectatorIds(game.id)).not.toContain(viewer.id);
   });
 
   it('reference-counts two tabs and cleans leave, disconnect, and room switches', async () => {
@@ -360,7 +612,9 @@ describe.sequential('realtime game rooms', () => {
     expect(oldRoom.body.spectators).not.toContainEqual(expect.objectContaining({ userId: viewer.id }));
 
     const leaveAck = await new Promise<GameLeaveAck>((resolve) => {
-      second.emit('game.leave', { gameId: secondGame.id }, resolve);
+      second.emit('game.leave', { gameId: secondGame.id }, (ack: unknown) => {
+        resolve(gameLeaveAckSchema.parse(ack));
+      });
     });
     expect(leaveAck).toMatchObject({ ok: true, gameId: secondGame.id });
     const newRoom = await request(app.getHttpServer())
@@ -378,7 +632,7 @@ describe.sequential('realtime game rooms', () => {
     }).expect(201);
     const socket = socketFor(playerAuth.cookie);
     await connect(socket);
-    const snapshotPromise = waitForEvent<GameSnapshotDto>(socket, 'game.snapshot');
+    const snapshotPromise = waitForContractEvent(socket, 'game.snapshot', gameSnapshotEventSchema);
     await join(socket, game.id, 0);
     const snapshot = await snapshotPromise;
     expect(snapshot.players).toContainEqual(expect.objectContaining({ userId: player.id }));
@@ -393,7 +647,8 @@ describe.sequential('realtime game rooms', () => {
     await join(observer, game.id, 0);
 
     const arrived = new Promise<{ spectators: Array<{ userId: string }> }>((resolve) => {
-      observer.on('presence.updated', (event: { spectators: Array<{ userId: string }> }) => {
+      observer.on('presence.updated', (payload: unknown) => {
+        const event = presenceUpdatedEventSchema.parse(payload);
         if (event.spectators.some(({ userId }) => userId === viewer.id)) resolve(event);
       });
     });
@@ -404,7 +659,8 @@ describe.sequential('realtime game rooms', () => {
     });
 
     const departed = new Promise<{ spectators: Array<{ userId: string }> }>((resolve) => {
-      observer.on('presence.updated', (event: { spectators: Array<{ userId: string }> }) => {
+      observer.on('presence.updated', (payload: unknown) => {
+        const event = presenceUpdatedEventSchema.parse(payload);
         if (!event.spectators.some(({ userId }) => userId === viewer.id)) resolve(event);
       });
     });
@@ -420,7 +676,7 @@ describe.sequential('realtime game rooms', () => {
     await connect(socket);
     await join(socket, game.id, 0);
     const noTick = expectNoEvent(socket, 'timer.tick');
-    const forbidden = waitForEvent<ServerErrorEvent>(socket, 'server.error');
+    const forbidden = waitForContractEvent(socket, 'server.error', serverErrorEventSchema);
     await prisma.game.update({
       where: { id: game.id },
       data: { status: GameStatus.COMPLETED, stoppedAt: new Date(), completedAt: new Date() }
@@ -448,7 +704,7 @@ describe.sequential('realtime game rooms', () => {
 
     const reconnected = socketFor(playerAuth.cookie);
     await connect(reconnected);
-    const snapshotPromise = waitForEvent<GameSnapshotDto>(reconnected, 'game.snapshot');
+    const snapshotPromise = waitForContractEvent(reconnected, 'game.snapshot', gameSnapshotEventSchema);
     const ack = await join(reconnected, game.id, 1);
     expect(ack).toMatchObject({ ok: true, version: 2, snapshotSent: true });
     const snapshot = await snapshotPromise;
@@ -472,7 +728,7 @@ describe.sequential('realtime game rooms', () => {
     }).expect(201);
     await isolated;
 
-    const updated = waitForEvent<GameSnapshotDto>(socket, 'game.updated');
+    const updated = waitForContractEvent(socket, 'game.updated', gameUpdatedEventSchema);
     await post(viewerAuth, `/api/games/${firstGame.id}/buyins`, {
       hands: 1,
       idempotencyKey: `${prefix}-same-room`
@@ -516,7 +772,7 @@ describe.sequential('realtime game rooms', () => {
       .get('/api/settings/rake')
       .set('Cookie', superAuth.cookie)
       .expect(200);
-    const globalEvent = waitForEvent<{ version: number }>(socket, 'rake-settings.updated');
+    const globalEvent = waitForContractEvent(socket, 'rake-settings.updated', rakeSettingsUpdatedEventSchema);
     await patch(superAuth, '/api/settings/rake', {
       threshold: before.body.threshold,
       bps: before.body.bps,
@@ -524,7 +780,7 @@ describe.sequential('realtime game rooms', () => {
     }).expect(200);
     expect(await globalEvent).toEqual({ version: before.body.version + 1 });
 
-    const playerEvent = waitForEvent<{ userId: string }>(socket, 'player-rake.updated');
+    const playerEvent = waitForContractEvent(socket, 'player-rake.updated', playerRakeUpdatedEventSchema);
     await patch(superAuth, `/api/users/${player.id}`, { rakeEnabled: false }).expect(200);
     expect(await playerEvent).toEqual({ userId: player.id });
   });

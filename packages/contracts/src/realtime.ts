@@ -26,35 +26,35 @@ export const gameJoinAckSchema = z.discriminatedUnion('ok', [
     gameId: canonicalPublicIdSchema,
     version: z.number().int().positive(),
     snapshotSent: z.boolean()
-  }),
+  }).strict(),
   z.object({
     ok: z.literal(false),
     code: realtimeErrorCodeSchema
-  })
+  }).strict()
 ]);
 
 export const gameLeaveAckSchema = z.discriminatedUnion('ok', [
-  z.object({ ok: z.literal(true), gameId: canonicalPublicIdSchema }),
-  z.object({ ok: z.literal(false), code: realtimeErrorCodeSchema })
+  z.object({ ok: z.literal(true), gameId: canonicalPublicIdSchema }).strict(),
+  z.object({ ok: z.literal(false), code: realtimeErrorCodeSchema }).strict()
 ]);
 
 export const presenceUpdatedEventSchema = z.object({
   gameId: canonicalPublicIdSchema,
   spectators: z.array(gameSpectatorSnapshotSchema)
-});
+}).strict();
 
 export const rakeSettingsUpdatedEventSchema = z.object({
   version: z.number().int().positive()
-});
+}).strict();
 
 export const playerRakeUpdatedEventSchema = z.object({
-  userId: z.string()
-});
+  userId: canonicalPublicIdSchema
+}).strict();
 
-export const serverErrorEventSchema = z.object({ code: realtimeErrorCodeSchema });
+export const serverErrorEventSchema = z.object({ code: realtimeErrorCodeSchema }).strict();
 
-export const gameSnapshotEventSchema = gameSnapshotSchema;
-export const gameUpdatedEventSchema = gameSnapshotSchema;
+export const gameSnapshotEventSchema = gameSnapshotSchema.strict();
+export const gameUpdatedEventSchema = gameSnapshotSchema.strict();
 
 export type GameJoinCommand = z.infer<typeof gameJoinCommandSchema>;
 export type GameLeaveCommand = z.infer<typeof gameLeaveCommandSchema>;

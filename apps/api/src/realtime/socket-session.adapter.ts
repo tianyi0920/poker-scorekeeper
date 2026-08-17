@@ -66,7 +66,6 @@ export class SocketSessionAdapter implements OnModuleInit, OnModuleDestroy {
     if (rawToken === undefined) return null;
     const authSession = await this.sessions.authenticateRawToken(rawToken);
     if (authSession === null || authSession.user.mustChangePassword) {
-      socket.disconnect(true);
       return null;
     }
     socket.data.authSession = authSession;

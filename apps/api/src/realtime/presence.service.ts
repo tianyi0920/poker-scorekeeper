@@ -31,6 +31,10 @@ export class PresenceService {
     return firstConnection;
   }
 
+  hasConnection(gameId: string, userId: string, socketId: string): boolean {
+    return this.rooms.get(gameId)?.get(userId)?.has(socketId) ?? false;
+  }
+
   remove(gameId: string, userId: string, socketId: string): boolean {
     const users = this.rooms.get(gameId);
     const connections = users?.get(userId);

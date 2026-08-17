@@ -2,18 +2,21 @@
 
 ## 状态
 
-完成。已交付同源 Socket.IO Gateway、Cookie 会话握手鉴权、按对局隔离的房间、按 `(game, user)` 连接引用计数的内存观战状态、完整数据库快照重连，以及牌局/购买/抽成规则提交后的实时事件。广播是事务提交后的尽力通知；广播失败不会把已经提交的 HTTP 写入改成 500，重连始终从数据库完整快照恢复。
+完成。已交付严格 Origin 同源校验的 Socket.IO Gateway、Cookie 会话握手鉴权、按对局隔离的房间、按 `(game, user)` 连接引用计数的内存观战状态、完整数据库快照重连，以及牌局/购买/抽成规则提交后的实时事件。广播是事务提交后的尽力通知；广播失败不会把已经提交的 HTTP 写入改成 500，重连始终从数据库完整快照恢复。
 
-实施提交：本任务使用单一实现提交，提交号见 Git 历史。
+基础实现提交：`eed3145`。本轮安全/原子性审查修复使用独立提交，提交号见 Git 历史。
 
 ## 实现内容
 
 - 新增共享 realtime contracts：严格的 `game.join { gameId, knownVersion }`、`game.leave { gameId }`、显式成功/失败 ack，以及 `game.snapshot`、`game.updated`、`presence.updated`、`rake-settings.updated`、`player-rake.updated`、`server.error` 事件结构。
-- Gateway 使用默认同源 Socket.IO 端点，不配置跨域；握手从 `poker_session` Cookie 读取原始令牌，复用 `SessionService.authenticateRawToken` 的 SHA-256 token hash、撤销/闲置/绝对过期、用户启用/逻辑删除校验。缺失、伪造、过期、撤销、停用和强制改密会统一以 `UNAUTHENTICATED` 拒绝，不返回内部查询或 token 信息。
+- Gateway 在 Cookie 鉴权前严格校验浏览器 `Origin`：仅精确接受 `PUBLIC_ORIGIN` 和可选、逗号分隔的 `WS_ALLOWED_ORIGINS`；端口、scheme、子域/后缀均不做模糊匹配。缺配置时 fail closed，missing/null/malformed Origin 统一拒绝，且支持 NAS 反代公网和内网入口的显式允许列表。
+- 握手从 `poker_session` Cookie 读取原始令牌，复用 `SessionService.authenticateRawToken` 的 SHA-256 token hash、撤销/闲置/绝对过期、用户启用/逻辑删除校验。缺失、伪造、过期、撤销、停用和强制改密会统一以 `UNAUTHENTICATED` 拒绝，不返回内部查询或 token 信息。
 - Socket 只读命令不要求 CSRF；每次 join/leave 和每次服务端广播前重新验证数据库会话。角色变化、停用、删除、密码重置、注销以及修改密码撤销其他会话时，通过 SessionService 的进程内失效通知立即断开对应 session/user 的全部 socket。
 - `PresenceService` 仅保存 `(gameId -> userId -> socketId set)`，不写财务表。同一用户两个 tab 只显示一次，关闭一个 tab 仍在线，最后一个连接离开才删除；leave、disconnect 和单 socket 换房都会清理旧引用。
 - 观战列表每次读取当前启用用户资料，并查询 `game_players` 排除已入座玩家；HTTP `/games/current`、`/:id/snapshot` 和 WebSocket 完整快照共用同一真实 presence 数据。
 - join 先复用 Task 7 的 `assertCanViewGameSnapshot` 权限，再加入 `game:<id>` 房间。`knownVersion` 与当前版本不同时发送完整 `game.snapshot`；相等时不重复快照，但 ack 明确返回当前版本和 `snapshotSent: false`，不会悬挂。
+- join/leave 命令的 revalidate、payload parse、房间、presence 和快照异常全部收口为单次 ack；未知异常只返回 `INTERNAL_ERROR`。失效会话先可靠发出 ack 和 `server.error`，再延迟断开；没有 callback 的命令也不会抛出未控异常。
+- 换房保留旧房间/在线状态快照，只在新局权限、二次快照和 presence 发布成功后切换；任一步失败均清理新局引用并恢复旧局，不会幽灵订阅新房间。重复 join 同一局是幂等操作，不会增加 ref-count；leave 异常同样补偿恢复。
 - `GameEventsService` 在每次发事件前逐 socket 重验会话和 viewer 权限。对局完成后，非参战普通观战者会收到受控 `FORBIDDEN` 并被移出房间；参战者和管理员边界沿用 Task 7 策略，不泄漏已完成牌局。
 - 游戏创建/开启/进入结算/作废、购买/更正、全局抽成更新和用户抽成开关更新都在数据库事务成功返回后广播；事务抛错不广播。广播自身异常被隔离，不改变已提交 HTTP 结果。
 - 全局抽成更新向全部 `ACTIVE`/`SETTLING` 房间发送 `{ version }`；个人抽成更新通过 `active_player_lock` 定位所在牌局并发送 `{ userId }`。
@@ -27,18 +30,22 @@
 - 修复测试绑定和 fixture 恢复后，realtime 14/14；随后新增过期/撤销/停用握手、显式 presence 到达/离开、无 timer tick、COMPLETED 权限边界，最终 realtime 17/17。
 - 买入回归与 realtime 合跑 37/37；确认 600 元断线恢复、房间隔离、回滚不广播、广播失败 HTTP 仍成功。
 - integration 首轮 30/31：schema 基线发现 singleton version 为 3。只读核对确认这是本任务早期 rake 事件测试在加入 settings 恢复前遗留；仅在已硬断言 `_test` 的测试库把该 singleton 恢复 migration 默认值，未 reset。重跑 integration 31/31。
+- 审查修复 Origin RED：7/7 个恶意/缺失 Origin 在修复前均可带合法 Cookie 连接；GREEN 后合法公网/反代 Origin 通过，恶意子域、后缀、端口、scheme、null、malformed 和 no-origin 均受控拒绝。
+- 审查修复命令/补偿 RED：聚焦 6 项中 5 失败、1 通过；失效 session、未知异常和 leave 异常均无 ack，二次快照/发布失败丢失旧 presence。GREEN 后聚焦 6/6，完整 realtime 31/31。
+- 审查修复 contracts RED：13 个 strict/canonical 断言失败；GREEN 后 realtime contracts 19/19，实际 Socket 发出的 ack/快照/presence/rake/player/error payload 均经共享 schema 验证。
 
 ## 验证
 
-所有数据库测试在连接前硬断言目标数据库名以 `_test` 结尾；未执行 reset，未输出连接串或凭据。测试 suite 保存并恢复全局 settings，最终核对 migration 默认值、`realtime-*` 用户和牌局残留均为零。
+所有数据库测试在连接前硬断言目标数据库名以 `_test` 结尾；未执行 reset，未输出连接串或凭据。并行 suite 中断后曾通过 `information_schema` 证据定位到三个仅连接 `_test` 的旧池连接和一个未结事务；仅终止已验证的测试库连接并按当轮唯一前缀清理自身夹具，未改生产逻辑。随后 isolated games 23/23、integration 31/31、根级全仓 369/369。最终只读核对 `openTransactions=0`、`realtime-*` 用户和牌局残留均为零。
 
 | 验证 | 结果 |
 |---|---|
-| Realtime shared contracts | PASS，30/30 contracts 全包，其中 realtime 6/6 |
-| Task 9 真实 Socket.IO E2E | PASS，17/17 |
-| Realtime + buy-in 回归 | PASS，37/37（增加握手场景前的聚焦轮次） |
+| Realtime shared contracts | PASS，contracts 全包 43/43，其中 realtime 19/19 |
+| Task 9 真实 Socket.IO E2E | PASS，31/31 |
+| Realtime + buy-in 回归 | PASS，54/54 |
+| Games isolated E2E | PASS，23/23；运行后 `openTransactions=0` |
 | 全部 API integration | PASS，31/31 |
-| 根级 `pnpm test` | PASS，contracts 30、web 55、settlement 14、API 240，共 339/339 |
+| 根级 `pnpm test` | PASS，contracts 43、web 55、settlement 14、API 257，共 369/369 |
 | `pnpm lint` | PASS |
 | `pnpm typecheck` | PASS |
 | `pnpm build` | PASS；PWA generateSW，21 个 precache 项 |
@@ -48,6 +55,7 @@
 ## 文件清单
 
 - `apps/api/src/realtime/`：Gateway、会话适配器、presence 引用计数、提交后事件发布器和全局 realtime module。
+- `apps/api/src/realtime/websocket-origin.policy.ts` 及单元测试：可配置精确 Origin 允许集与 fail-closed 校验。
 - `packages/contracts/src/realtime.ts`、`realtime.test.ts`：命令、ack、事件共享契约及 canonical/strict 测试。
 - `apps/api/src/auth/session.service.ts`、`auth.service.ts`：原始令牌复用验证和会话失效通知。
 - `apps/api/src/games/`：HTTP/Socket 快照接入真实 presence，生命周期提交后广播。
@@ -55,6 +63,7 @@
 - `apps/api/src/settings/settings.service.ts`：全局抽成版本广播。
 - `apps/api/src/users/users.service.ts`：个人抽成事件与用户会话失效后的 socket 断开。
 - `apps/api/test/realtime.e2e-spec.ts`：真实 Socket.IO、HTTP 和 MariaDB 端到端覆盖。
+- `.env.example`：`PUBLIC_ORIGIN` 和可选 `WS_ALLOWED_ORIGINS` 的无敏感示例。
 
 ## Concerns
 
