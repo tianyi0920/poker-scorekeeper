@@ -1,4 +1,7 @@
 import type {
+  AdjustLatestBuyinRequest,
+  BuyHandsRequest,
+  BuyinEventResponse,
   CreateGameRequest,
   CreateUserRequest,
   CurrentGamesResponse,
@@ -38,11 +41,19 @@ export interface AvatarMutationResponse {
 
 export const scorekeeperApi = {
   currentGames: () => apiFetch<CurrentGamesResponse>('/games/current'),
+  gameSnapshot: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`),
+  buyIn: (gameId: string, body: BuyHandsRequest) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/buyins`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
+  adjustLatestBuyIn: (gameId: string, playerId: string, body: AdjustLatestBuyinRequest) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(playerId)}/buyins/latest/adjust`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
   recentHistory: (limit = 10) => apiFetch<HistoryListResponse>(`/history?limit=${limit}`),
   createGame: (body: CreateGameRequest) => apiFetch<GameSnapshotDto>('/games', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   startGame: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/start`, { method: 'POST' }),
+  beginSettlement: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/begin-settlement`, { method: 'POST' }),
   listUsers: () => apiFetch<{ users: UserResponse[] }>('/users'),
   createUser: (body: CreateUserRequest) => apiFetch<UserResponse>('/users', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)

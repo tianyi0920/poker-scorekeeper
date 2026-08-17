@@ -1,8 +1,14 @@
 import react from '@vitejs/plugin-react';
 import { defineConfig } from 'vite';
 import { VitePWA } from 'vite-plugin-pwa';
+import { fileURLToPath } from 'node:url';
 
 export default defineConfig({
+  resolve: {
+    alias: {
+      '@poker/contracts': fileURLToPath(new URL('../../packages/contracts/src/index.ts', import.meta.url))
+    }
+  },
   plugins: [
     react(),
     VitePWA({
