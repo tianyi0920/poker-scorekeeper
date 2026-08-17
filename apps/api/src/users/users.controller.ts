@@ -12,10 +12,12 @@ import {
 } from '@nestjs/common';
 import {
   createUserSchema,
+  restoreUserSchema,
   resetUserPasswordSchema,
   updateUserSchema,
   type CreateUserRequest,
   type ResetUserPasswordRequest,
+  type RestoreUserRequest,
   type UpdateUserRequest,
   type UserResponse
 } from '@poker/contracts';
@@ -68,9 +70,10 @@ export class UsersController {
   @HttpCode(200)
   restore(
     @CurrentUser() actor: AuthUser,
-    @Param('id') id: string
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(restoreUserSchema)) body: RestoreUserRequest
   ): Promise<UserResponse> {
-    return this.users.restore(actor, id);
+    return this.users.restore(actor, id, body);
   }
 
   @Post(':id/reset-password')

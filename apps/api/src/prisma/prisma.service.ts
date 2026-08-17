@@ -13,7 +13,7 @@ export class PrismaService extends PrismaClient implements OnModuleDestroy {
       user: decodeURIComponent(url.username),
       password: decodeURIComponent(url.password),
       database: url.pathname.slice(1),
-      connectionLimit: 10
+      connectionLimit: config.get<string>('NODE_ENV') === 'test' ? 3 : 10
     });
     super({ adapter });
   }

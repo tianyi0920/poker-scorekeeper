@@ -20,6 +20,10 @@ export const resetUserPasswordSchema = z.object({
   newPassword: z.string().min(8).max(128)
 });
 
+export const restoreUserSchema = z.object({
+  nickname: z.string().trim().min(1).max(20).optional()
+}).default({});
+
 export const userResponseSchema = z.object({
   id: z.string(),
   username: z.string(),
@@ -38,4 +42,5 @@ export const userResponseSchema = z.object({
 export type CreateUserRequest = z.infer<typeof createUserSchema>;
 export type UpdateUserRequest = z.infer<typeof updateUserSchema>;
 export type ResetUserPasswordRequest = z.infer<typeof resetUserPasswordSchema>;
+export type RestoreUserRequest = z.infer<typeof restoreUserSchema>;
 export type UserResponse = z.infer<typeof userResponseSchema>;

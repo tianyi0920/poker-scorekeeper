@@ -36,6 +36,7 @@ describe.sequential('avatar pipeline', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let avatarRoot: string;
+  let legacyAvatarRoot: string;
   let passwordHash: string;
   let avatars: AvatarService;
   let user: User;
@@ -81,16 +82,18 @@ describe.sequential('avatar pipeline', () => {
 
   beforeAll(async () => {
     avatarRoot = await mkdtemp(join(tmpdir(), 'poker-avatar-e2e-'));
+    legacyAvatarRoot = await mkdtemp(join(tmpdir(), 'poker-avatar-legacy-e2e-'));
     process.env.NODE_ENV = 'test';
-    process.env.AVATAR_UPLOAD_ROOT = avatarRoot;
+    process.env.AVATAR_ROOT = avatarRoot;
+    process.env.AVATAR_UPLOAD_ROOT = legacyAvatarRoot;
     process.env.CSRF_SECRET = randomBytes(32).toString('hex');
     process.env.BOOTSTRAP_ADMIN_USERNAME = `${prefix}-bootstrap`;
     process.env.BOOTSTRAP_ADMIN_NICKNAME = `头像-${prefix}-bootstrap`;
     process.env.BOOTSTRAP_ADMIN_PASSWORD = password;
 
     app = await createApp();
-    await app.init();
     prisma = app.get(PrismaService);
+    await app.init();
     avatars = app.get(AvatarService);
     passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     user = await seedUser('user', Role.USER);
@@ -116,6 +119,7 @@ describe.sequential('avatar pipeline', () => {
     }
     if (app !== undefined) await app.close();
     if (avatarRoot !== undefined) await rm(avatarRoot, { recursive: true, force: true });
+    if (legacyAvatarRoot !== undefined) await rm(legacyAvatarRoot, { recursive: true, force: true });
   }, 30_000);
 
   it('returns twelve stable controlled preset identifiers', async () => {
@@ -215,6 +219,45 @@ describe.sequential('avatar pipeline', () => {
     sharp.cache(false);
   });
 
+  it('keeps the old avatar and removes new files when the database commit is rejected', async () => {
+    const target = await seedUser('commit-failure-target', Role.USER);
+    const oldFilename = `${target.id}-${randomUUID()}.webp`;
+    await writeFile(join(avatarRoot, oldFilename), validPng);
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { avatarKind: AvatarKind.UPLOAD, avatarValue: oldFilename }
+    });
+    const before = (await readdir(avatarRoot)).sort();
+    let rowLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM users WHERE id = ${target.id} FOR UPDATE
+      `;
+      rowLocked();
+      await delay(1_500);
+      await transaction.user.update({ where: { id: target.id }, data: { deletedAt: new Date() } });
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await locked;
+    const result = avatars.upload(target.id, {
+      buffer: validPng,
+      mimetype: 'image/png',
+      originalname: 'replacement.png',
+      size: validPng.length
+    }).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
+
+    await blocker;
+    await expect(result).resolves.toMatchObject({
+      status: 'rejected',
+      reason: { code: 'NOT_FOUND' }
+    });
+    expect((await readdir(avatarRoot)).sort()).toEqual(before);
+    await expect(readFile(join(avatarRoot, oldFilename))).resolves.toEqual(validPng);
+  }, 15_000);
+
   it('re-authorizes an administrator avatar reset after a concurrent promotion', async () => {
     const target = await seedUser('avatar-race', Role.USER);
     let rowLocked!: () => void;
@@ -235,6 +278,32 @@ describe.sequential('avatar pipeline', () => {
 
     await blocker;
     await expect(resetPromise).rejects.toMatchObject({ code: 'FORBIDDEN' });
+  }, 15_000);
+
+  it('re-authorizes avatar reset after the administrator is demoted mid-request', async () => {
+    const actor = await seedUser('avatar-actor-race', Role.ADMIN);
+    const target = await seedUser('avatar-actor-target', Role.USER);
+    let rowLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM users WHERE id = ${actor.id} FOR UPDATE
+      `;
+      rowLocked();
+      await delay(1_500);
+      await transaction.user.update({ where: { id: actor.id }, data: { role: Role.USER } });
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await locked;
+    const result = avatars.resetByAdministrator(actor, target.id).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
+
+    await blocker;
+    await expect(result).resolves.toMatchObject({
+      status: 'rejected',
+      reason: { code: 'FORBIDDEN' }
+    });
   }, 15_000);
 
   it('lets an administrator reset an avatar without following a stored traversal path', async () => {

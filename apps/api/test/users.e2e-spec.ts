@@ -114,11 +114,36 @@ describe.sequential('user administration', () => {
       .set('X-CSRF-Token', actor.csrfToken);
   }
 
-  function restoreUserAs(actor: AuthContext, id: string) {
+  function restoreUserAs(actor: AuthContext, id: string, body: Record<string, unknown> = {}) {
     return request(app.getHttpServer())
       .post(`/api/users/${id}/restore`)
       .set('Cookie', actor.cookie)
-      .set('X-CSRF-Token', actor.csrfToken);
+      .set('X-CSRF-Token', actor.csrfToken)
+      .send(body);
+  }
+
+  async function duringActorChange<T>(
+    actorId: string,
+    data: { role?: Role; isActive?: boolean },
+    action: () => Promise<T>
+  ): Promise<PromiseSettledResult<T>> {
+    let rowLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { rowLocked = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM users WHERE id = ${actorId} FOR UPDATE
+      `;
+      rowLocked();
+      await delay(1_500);
+      await transaction.user.update({ where: { id: actorId }, data });
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await locked;
+    const result = action().then(
+      (value): PromiseFulfilledResult<T> => ({ status: 'fulfilled', value }),
+      (reason: unknown): PromiseRejectedResult => ({ status: 'rejected', reason })
+    );
+    await blocker;
+    return result;
   }
 
   beforeAll(async () => {
@@ -129,8 +154,8 @@ describe.sequential('user administration', () => {
     process.env.BOOTSTRAP_ADMIN_PASSWORD = password;
 
     app = await createApp();
-    await app.init();
     prisma = app.get(PrismaService);
+    await app.init();
     usersService = app.get(UsersService);
     passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     const bootstrapped = await prisma.user.findUnique({
@@ -277,6 +302,26 @@ describe.sequential('user administration', () => {
       .expect(({ body }) => expect(body.code).toBe('NICKNAME_TAKEN'));
   });
 
+  it('restores a deleted user with an alternative nickname after its old nickname was reused', async () => {
+    const original = await seedUser('restore-renamed');
+    await deleteUserAs(superAuth, original.id).expect(200);
+    await createUserAs(adminAuth, {
+      username: `${prefix}-restore-new`,
+      nickname: original.nickname,
+      role: 'USER'
+    }).expect(201);
+    const replacementNickname = nextNickname();
+
+    await restoreUserAs(superAuth, original.id, { nickname: replacementNickname })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        id: original.id,
+        nickname: replacementNickname,
+        isActive: true,
+        deletedAt: null
+      }));
+  });
+
   it('rejects deleting a player locked into an active game', async () => {
     const player = await seedUser('active-player');
     const game = await prisma.game.create({
@@ -290,6 +335,23 @@ describe.sequential('user administration', () => {
     await prisma.activePlayerLock.create({ data: { userId: player.id, gameId: game.id } });
 
     await deleteUserAs(superAuth, player.id)
+      .expect(409)
+      .expect(({ body }) => expect(body.code).toBe('USER_IN_ACTIVE_GAME'));
+  });
+
+  it('rejects demoting an active-game administrator to user', async () => {
+    const target = await seedUser('active-admin', Role.ADMIN);
+    const game = await prisma.game.create({
+      data: {
+        name: `${prefix}-active-admin-game`,
+        handPrice: 100n,
+        status: GameStatus.ACTIVE,
+        createdById: superActor.id
+      }
+    });
+    await prisma.activePlayerLock.create({ data: { userId: target.id, gameId: game.id } });
+
+    await patchUserAs(superAuth, target.id, { role: 'USER' })
       .expect(409)
       .expect(({ body }) => expect(body.code).toBe('USER_IN_ACTIVE_GAME'));
   });
@@ -317,10 +379,16 @@ describe.sequential('user administration', () => {
       });
     }, { timeout: 10_000, maxWait: 5_000 });
     await locked;
-    const updatePromise = usersService.update(superActor, player.id, { isActive: false });
+    const updateResult = usersService.update(superActor, player.id, { isActive: false }).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
 
     await blocker;
-    await expect(updatePromise).rejects.toMatchObject({ code: 'USER_IN_ACTIVE_GAME' });
+    await expect(updateResult).resolves.toMatchObject({
+      status: 'rejected',
+      reason: { code: 'USER_IN_ACTIVE_GAME' }
+    });
     await expect(prisma.user.findUniqueOrThrow({ where: { id: player.id } }))
       .resolves.toMatchObject({ isActive: true });
   }, 15_000);
@@ -439,6 +507,63 @@ describe.sequential('user administration', () => {
         rakeEnabled: false
       }));
   });
+
+  it('lets an administrator edit nickname and rake only for an ordinary user', async () => {
+    const target = await seedUser('admin-edit-user');
+    const changedNickname = nextNickname();
+    await patchUserAs(adminAuth, target.id, {
+      nickname: changedNickname,
+      rakeEnabled: false
+    })
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        id: target.id,
+        nickname: changedNickname,
+        rakeEnabled: false,
+        role: 'USER'
+      }));
+  });
+
+  it.each([
+    ['ordinary user role', () => seedUser('admin-edit-role'), { role: 'ADMIN' }],
+    ['ordinary user active state', () => seedUser('admin-edit-active'), { isActive: false }],
+    ['administrator nickname', () => seedUser('admin-edit-admin', Role.ADMIN), { nickname: '不可修改' }]
+  ] as const)('rejects an administrator changing %s', async (_name, createTarget, body) => {
+    const target = await createTarget();
+    await patchUserAs(adminAuth, target.id, body)
+      .expect(403)
+      .expect(({ body: responseBody }) => expect(responseBody.code).toBe('FORBIDDEN'));
+  });
+
+  it('re-authorizes user creation after the administrator is disabled mid-request', async () => {
+    const actor = await seedUser('create-race-actor', Role.ADMIN);
+    const result = await duringActorChange(actor.id, { isActive: false }, () => usersService.create(actor, {
+      username: `${prefix}-create-race-target`,
+      nickname: nextNickname(),
+      initialPassword: replacementPassword,
+      role: 'USER',
+      rakeEnabled: true
+    }));
+    expect(result).toMatchObject({ status: 'rejected', reason: { code: 'FORBIDDEN' } });
+  }, 15_000);
+
+  it('re-authorizes user update after the super admin is demoted mid-request', async () => {
+    const actor = await seedUser('update-race-actor', Role.SUPER_ADMIN);
+    const target = await seedUser('update-race-target');
+    const result = await duringActorChange(actor.id, { role: Role.ADMIN }, () =>
+      usersService.update(actor, target.id, { role: 'ADMIN' })
+    );
+    expect(result).toMatchObject({ status: 'rejected', reason: { code: 'FORBIDDEN' } });
+  }, 15_000);
+
+  it('re-authorizes password reset after the administrator is demoted mid-request', async () => {
+    const actor = await seedUser('password-actor-race', Role.ADMIN);
+    const target = await seedUser('password-actor-target');
+    const result = await duringActorChange(actor.id, { role: Role.USER }, () =>
+      usersService.resetPassword(actor, target.id, { newPassword: replacementPassword })
+    );
+    expect(result).toMatchObject({ status: 'rejected', reason: { code: 'FORBIDDEN' } });
+  }, 15_000);
 
   it('forces password change after an administrator reset', async () => {
     const target = await seedUser('password-reset');

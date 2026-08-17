@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type {
   CreateUserRequest,
+  RestoreUserRequest,
   ResetUserPasswordRequest,
   UpdateUserRequest,
   UserResponse
@@ -10,10 +11,19 @@ import { conflict, notFound } from '../common/errors/app-error.js';
 import { Prisma, type Role, type User } from '../generated/prisma/client.js';
 import { PasswordService } from '../auth/password.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { assertCanManageUser } from './user-policy.js';
+import {
+  assertCanManageUser,
+  lockUsersInOrder,
+  requireCurrentActor
+} from './user-policy.js';
 import { normalizeNickname, normalizeUsername } from './user-normalization.js';
 
 const DEFAULT_AVATAR = 'preset-01';
+const ROLE_RANK: Readonly<Record<Role, number>> = {
+  USER: 0,
+  ADMIN: 1,
+  SUPER_ADMIN: 2
+};
 
 const publicUserSelect = {
   id: true,
@@ -51,13 +61,15 @@ export class UsersService {
 
   async create(actor: AuthUser, input: CreateUserRequest): Promise<UserResponse> {
     const role = input.role as Role;
-    assertCanManageUser(actor, null, { operation: 'create', role });
     const normalizedUsername = normalizeUsername(input.username);
     const activeNormalizedNickname = normalizeNickname(input.nickname);
     const passwordHash = await this.passwords.hash(input.initialPassword);
 
     try {
       return await this.prisma.$transaction(async (transaction) => {
+        const locked = await lockUsersInOrder(transaction, [actor.id]);
+        const currentActor = requireCurrentActor(locked, actor.id);
+        assertCanManageUser(currentActor, null, { operation: 'create', role });
         if (await transaction.user.findUnique({ where: { normalizedUsername } })) {
           throw conflict('USERNAME_TAKEN');
         }
@@ -75,7 +87,7 @@ export class UsersService {
             rakeEnabled: input.rakeEnabled,
             avatarValue: DEFAULT_AVATAR,
             mustChangePassword: true,
-            createdById: actor.id
+            createdById: currentActor.id
           },
           select: publicUserSelect
         });
@@ -99,13 +111,14 @@ export class UsersService {
         if (input.role !== undefined || input.isActive !== undefined) {
           await this.lockLifecycleCoordinator(transaction);
         }
-        const target = await this.lockAndFindUser(transaction, id);
+        const locked = await lockUsersInOrder(transaction, [actor.id, id]);
+        const currentActor = requireCurrentActor(locked, actor.id);
+        const target = locked.get(id) ?? null;
         if (target === null || target.deletedAt !== null) throw notFound('NOT_FOUND');
         const nextRole = input.role as Role | undefined;
-        assertCanManageUser(actor, target, { operation: 'update', role: nextRole });
+        assertCanManageUser(currentActor, target, { operation: 'update', ...input, role: nextRole });
 
-        const demoting = target.role === 'SUPER_ADMIN' &&
-          nextRole !== undefined && nextRole !== 'SUPER_ADMIN';
+        const demoting = nextRole !== undefined && ROLE_RANK[nextRole] < ROLE_RANK[target.role];
         const disabling = target.isActive && input.isActive === false;
         if (demoting || disabling) {
           await this.assertLifecycleChangeAllowed(transaction, target);
@@ -142,9 +155,11 @@ export class UsersService {
   async softDelete(actor: AuthUser, id: string): Promise<UserResponse> {
     return this.prisma.$transaction(async (transaction) => {
       await this.lockLifecycleCoordinator(transaction);
-      const target = await this.lockAndFindUser(transaction, id);
+      const locked = await lockUsersInOrder(transaction, [actor.id, id]);
+      const currentActor = requireCurrentActor(locked, actor.id);
+      const target = locked.get(id) ?? null;
       if (target === null || target.deletedAt !== null) throw notFound('NOT_FOUND');
-      assertCanManageUser(actor, target, { operation: 'delete' });
+      assertCanManageUser(currentActor, target, { operation: 'delete' });
       await this.assertLifecycleChangeAllowed(transaction, target);
       const now = new Date();
       const deleted = await transaction.user.update({
@@ -164,19 +179,22 @@ export class UsersService {
     });
   }
 
-  async restore(actor: AuthUser, id: string): Promise<UserResponse> {
+  async restore(actor: AuthUser, id: string, input: RestoreUserRequest): Promise<UserResponse> {
     try {
       return await this.prisma.$transaction(async (transaction) => {
-        const target = await this.lockAndFindUser(transaction, id);
+        const locked = await lockUsersInOrder(transaction, [actor.id, id]);
+        const currentActor = requireCurrentActor(locked, actor.id);
+        const target = locked.get(id) ?? null;
         if (target === null || target.deletedAt === null) throw notFound('NOT_FOUND');
-        assertCanManageUser(actor, target, { operation: 'restore' });
-        const activeNormalizedNickname = normalizeNickname(target.nickname);
+        assertCanManageUser(currentActor, target, { operation: 'restore' });
+        const nickname = input.nickname ?? target.nickname;
+        const activeNormalizedNickname = normalizeNickname(nickname);
         if (await transaction.user.findUnique({ where: { activeNormalizedNickname } })) {
           throw conflict('NICKNAME_TAKEN');
         }
         return transaction.user.update({
           where: { id },
-          data: { deletedAt: null, isActive: true, activeNormalizedNickname },
+          data: { nickname, deletedAt: null, isActive: true, activeNormalizedNickname },
           select: publicUserSelect
         });
       });
@@ -194,9 +212,11 @@ export class UsersService {
     const passwordHash = await this.passwords.hash(input.newPassword);
     const now = new Date();
     return this.prisma.$transaction(async (transaction) => {
-      const target = await this.lockAndFindUser(transaction, id);
+      const locked = await lockUsersInOrder(transaction, [actor.id, id]);
+      const currentActor = requireCurrentActor(locked, actor.id);
+      const target = locked.get(id) ?? null;
       if (target === null || target.deletedAt !== null) throw notFound('NOT_FOUND');
-      assertCanManageUser(actor, target, { operation: 'reset-password' });
+      assertCanManageUser(currentActor, target, { operation: 'reset-password' });
       const updated = await transaction.user.update({
         where: { id },
         data: { passwordHash, mustChangePassword: true },
@@ -226,17 +246,6 @@ export class UsersService {
       `;
       if (activeSupers.length <= 1) throw conflict('LAST_SUPER_ADMIN');
     }
-  }
-
-  private async lockAndFindUser(
-    transaction: Prisma.TransactionClient,
-    id: string
-  ): Promise<User | null> {
-    const locked = await transaction.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM users WHERE id = ${id} FOR UPDATE
-    `;
-    if (locked.length === 0) return null;
-    return transaction.user.findUnique({ where: { id } });
   }
 
   private async lockLifecycleCoordinator(transaction: Prisma.TransactionClient): Promise<void> {

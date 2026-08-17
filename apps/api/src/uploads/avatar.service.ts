@@ -12,9 +12,13 @@ import {
   payloadTooLarge,
   unsupportedMediaType
 } from '../common/errors/app-error.js';
-import { AvatarKind, type User } from '../generated/prisma/client.js';
+import { AvatarKind } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { assertCanManageUser } from '../users/user-policy.js';
+import {
+  assertCanManageUser,
+  lockUsersInOrder,
+  requireCurrentActor
+} from '../users/user-policy.js';
 import { DEFAULT_PRESET_AVATAR } from './preset-avatars.js';
 
 export const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
@@ -50,7 +54,7 @@ export class AvatarService {
     @Inject(ConfigService) config: ConfigService
   ) {
     this.avatarRoot = resolve(
-      config.get<string>('AVATAR_UPLOAD_ROOT') ?? join(process.cwd(), 'data', 'avatars')
+      config.get<string>('AVATAR_ROOT') ?? join(process.cwd(), 'data', 'avatars')
     );
   }
 
@@ -79,11 +83,10 @@ export class AvatarService {
       finalExists = true;
 
       const previous = await this.prisma.$transaction(async (transaction) => {
-        await transaction.$queryRaw<Array<{ id: string }>>`
-          SELECT id FROM users WHERE id = ${userId} FOR UPDATE
-        `;
-        const target = await transaction.user.findUnique({ where: { id: userId } });
+        const locked = await lockUsersInOrder(transaction, [userId]);
+        const target = locked.get(userId) ?? null;
         if (target === null || target.deletedAt !== null) throw notFound('NOT_FOUND');
+        requireCurrentActor(locked, userId);
         await transaction.user.update({
           where: { id: userId },
           data: { avatarKind: AvatarKind.UPLOAD, avatarValue: filename }
@@ -106,22 +109,27 @@ export class AvatarService {
     return this.replaceWithPreset(
       userId,
       DEFAULT_PRESET_AVATAR,
-      (target) => assertCanManageUser(actor, target, { operation: 'reset-avatar' })
+      actor
     );
   }
 
   private async replaceWithPreset(
     userId: string,
     presetId: PresetAvatarId,
-    authorize?: (target: User) => void
+    actor?: AuthUser
   ): Promise<AvatarResponse> {
     const previous = await this.prisma.$transaction(async (transaction) => {
-      await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM users WHERE id = ${userId} FOR UPDATE
-      `;
-      const target = await transaction.user.findUnique({ where: { id: userId } });
+      const locked = await lockUsersInOrder(transaction, actor === undefined
+        ? [userId]
+        : [actor.id, userId]);
+      const target = locked.get(userId) ?? null;
       if (target === null || target.deletedAt !== null) throw notFound('NOT_FOUND');
-      authorize?.(target);
+      if (actor === undefined) {
+        requireCurrentActor(locked, userId);
+      } else {
+        const currentActor = requireCurrentActor(locked, actor.id);
+        assertCanManageUser(currentActor, target, { operation: 'reset-avatar' });
+      }
       await transaction.user.update({
         where: { id: userId },
         data: { avatarKind: AvatarKind.PRESET, avatarValue: presetId }
