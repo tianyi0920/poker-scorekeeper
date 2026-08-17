@@ -14,7 +14,7 @@ const apiErrorMessages = {
 type ApiErrorCode = keyof typeof apiErrorMessages;
 
 function isApiErrorCode(value: unknown): value is ApiErrorCode {
-  return typeof value === 'string' && value in apiErrorMessages;
+  return typeof value === 'string' && Object.hasOwn(apiErrorMessages, value);
 }
 
 export class ApiError extends Error {
