@@ -21,3 +21,9 @@ export function ProtectedRoute({ children, roles }: { children: ReactNode; roles
 export function RoleGate({ children, roles }: { children: ReactNode; roles: AuthRole[] }) {
   return <ProtectedRoute roles={roles}>{children}</ProtectedRoute>;
 }
+
+export function PublicOnlyRoute({ children }: { children: ReactNode }) {
+  const { user } = useAuth();
+  if (user === null) return <>{children}</>;
+  return <Navigate to={user.mustChangePassword ? '/change-password' : '/'} replace />;
+}

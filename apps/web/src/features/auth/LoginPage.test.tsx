@@ -55,4 +55,28 @@ it('shows the global offline banner on the sign-in route', async () => {
   expect(await screen.findByText('当前离线，写入操作已禁用。')).toBeInTheDocument();
 });
 
+it('redirects an authenticated forced-change user away from login', async () => {
+  // Break caught: a forced-change account can bypass its required-password route via /login.
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+    user: { id: 'user-1', username: 'tianyi', nickname: '天一', role: 'USER', mustChangePassword: true },
+    csrfToken
+  })));
+  renderAppAt('/login');
+
+  expect(await screen.findByRole('heading', { name: '修改初始密码' })).toBeInTheDocument();
+  expect(screen.queryByLabelText('用户名')).not.toBeInTheDocument();
+});
+
+it('redirects an authenticated regular user away from login', async () => {
+  // Break caught: a normal authenticated account can remain on the sign-in route.
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse({
+    user: { id: 'user-1', username: 'tianyi', nickname: '天一', role: 'USER', mustChangePassword: false },
+    csrfToken
+  })));
+  renderAppAt('/login');
+
+  expect(await screen.findByLabelText('主页基础框架')).toBeInTheDocument();
+  expect(screen.queryByLabelText('用户名')).not.toBeInTheDocument();
+});
+
 void csrfToken;
