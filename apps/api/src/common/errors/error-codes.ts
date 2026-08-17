@@ -18,6 +18,10 @@ export const ERROR_CODES = {
   GAME_STATE_CONFLICT: 'GAME_STATE_CONFLICT',
   GAME_HAS_BUYINS: 'GAME_HAS_BUYINS',
   GAME_HAS_RELATIONS: 'GAME_HAS_RELATIONS',
+  BUYIN_IDEMPOTENCY_CONFLICT: 'BUYIN_IDEMPOTENCY_CONFLICT',
+  GAME_PLAYER_LIMIT: 'GAME_PLAYER_LIMIT',
+  BUYIN_NOT_LATEST: 'BUYIN_NOT_LATEST',
+  BUYIN_AMOUNT_OVERFLOW: 'BUYIN_AMOUNT_OVERFLOW',
   NOT_FOUND: 'NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR'
 } as const;
@@ -44,6 +48,10 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   GAME_STATE_CONFLICT: 'Game state changed or does not allow this action',
   GAME_HAS_BUYINS: 'A game with purchases cannot be voided',
   GAME_HAS_RELATIONS: 'A draft with related records cannot be deleted',
+  BUYIN_IDEMPOTENCY_CONFLICT: 'Idempotency key is already bound to another buy-in request',
+  GAME_PLAYER_LIMIT: 'A game can have at most 12 players',
+  BUYIN_NOT_LATEST: 'Only the latest logical purchase can be adjusted',
+  BUYIN_AMOUNT_OVERFLOW: 'Buy-in amount exceeds the supported money range',
   NOT_FOUND: 'Not found',
   INTERNAL_ERROR: 'Internal server error'
 };

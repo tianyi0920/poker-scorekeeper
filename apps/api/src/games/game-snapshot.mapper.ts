@@ -4,6 +4,7 @@ import type {
   BuyinEventType,
   GameStatus
 } from '../generated/prisma/client.js';
+import { foldBuyinEvents } from '../buyins/buyin-ledger.js';
 
 export interface SnapshotGameRecord {
   id: string;
@@ -26,6 +27,7 @@ export interface SnapshotGameRecord {
     id: string;
     gamePlayerId: string;
     type: BuyinEventType;
+    logicalBuyId: string;
     previousHands: number | null;
     newHands: number;
     handsDelta: number;
@@ -47,17 +49,25 @@ export function mapGameSnapshot(
   const orderedEvents = [...game.buyinEvents].sort((left, right) =>
     left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id)
   );
-  const handsByPlayer = new Map<string, number>();
+  const eventsByPlayer = new Map<string, typeof orderedEvents>();
   for (const event of orderedEvents) {
-    handsByPlayer.set(
-      event.gamePlayerId,
-      (handsByPlayer.get(event.gamePlayerId) ?? 0) + event.handsDelta
-    );
+    const events = eventsByPlayer.get(event.gamePlayerId) ?? [];
+    events.push(event);
+    eventsByPlayer.set(event.gamePlayerId, events);
   }
   const players = [...game.players]
     .sort((left, right) => left.seatNo - right.seatNo || left.id.localeCompare(right.id))
     .map((player) => {
-      const effectiveHands = handsByPlayer.get(player.id) ?? 0;
+      const effectiveHands = foldBuyinEvents(
+        (eventsByPlayer.get(player.id) ?? []).map((event) => ({
+          id: event.id,
+          type: event.type,
+          logicalBuyId: event.logicalBuyId,
+          previousHands: event.previousHands,
+          newHands: event.newHands,
+          handsDelta: event.handsDelta
+        }))
+      ).reduce((total, buy) => total + buy.effectiveHands, 0);
       return {
         id: player.id,
         userId: player.userId,
