@@ -75,7 +75,10 @@ export class GamesController {
   }
 
   @Get(':id/snapshot')
-  snapshot(@Param('id') id: string): Promise<GameSnapshotDto> {
-    return this.games.snapshot(id);
+  snapshot(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string
+  ): Promise<GameSnapshotDto> {
+    return this.games.snapshot(id, actor);
   }
 }

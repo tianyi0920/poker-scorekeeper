@@ -74,6 +74,7 @@ describe.sequential('session authentication', () => {
   let prisma: PrismaService;
   let passwordHash: string;
   let users: Record<SeedName, User>;
+  let preexistingActiveSuperAdminIds: string[] = [];
 
   beforeAll(async () => {
     process.env.NODE_ENV = 'test';
@@ -83,8 +84,29 @@ describe.sequential('session authentication', () => {
     process.env.BOOTSTRAP_ADMIN_PASSWORD = bootstrapPassword;
 
     app = await createApp();
-    await app.init();
     prisma = app.get(PrismaService);
+    preexistingActiveSuperAdminIds = (await prisma.user.findMany({
+      where: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null },
+      select: { id: true }
+    })).map(({ id }) => id);
+    if (preexistingActiveSuperAdminIds.length > 0) {
+      await prisma.user.updateMany({
+        where: { id: { in: preexistingActiveSuperAdminIds } },
+        data: { isActive: false }
+      });
+    }
+
+    try {
+      await app.init();
+    } catch (error: unknown) {
+      if (preexistingActiveSuperAdminIds.length > 0) {
+        await prisma.user.updateMany({
+          where: { id: { in: preexistingActiveSuperAdminIds } },
+          data: { isActive: true }
+        });
+      }
+      throw error;
+    }
     passwordHash = await argon2.hash(fixturePassword, { type: argon2.argon2id });
 
     const seed = async (
@@ -118,18 +140,30 @@ describe.sequential('session authentication', () => {
   }, 30_000);
 
   afterAll(async () => {
-    if (prisma !== undefined) {
-      const ownedUsers = await prisma.user.findMany({
-        where: { normalizedUsername: { startsWith: normalized(usernamePrefix) } },
-        select: { id: true }
-      });
-      const ownedIds = ownedUsers.map(({ id }) => id);
-      if (ownedIds.length > 0) {
-        await prisma.authSession.deleteMany({ where: { userId: { in: ownedIds } } });
-        await prisma.user.deleteMany({ where: { id: { in: ownedIds } } });
+    try {
+      if (prisma !== undefined) {
+        try {
+          const ownedUsers = await prisma.user.findMany({
+            where: { normalizedUsername: { startsWith: normalized(usernamePrefix) } },
+            select: { id: true }
+          });
+          const ownedIds = ownedUsers.map(({ id }) => id);
+          if (ownedIds.length > 0) {
+            await prisma.authSession.deleteMany({ where: { userId: { in: ownedIds } } });
+            await prisma.user.deleteMany({ where: { id: { in: ownedIds } } });
+          }
+        } finally {
+          if (preexistingActiveSuperAdminIds.length > 0) {
+            await prisma.user.updateMany({
+              where: { id: { in: preexistingActiveSuperAdminIds } },
+              data: { isActive: true }
+            });
+          }
+        }
       }
+    } finally {
+      if (app !== undefined) await app.close();
     }
-    if (app !== undefined) await app.close();
   }, 30_000);
 
   function login(user: User, password = fixturePassword) {

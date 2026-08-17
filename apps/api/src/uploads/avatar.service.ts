@@ -194,8 +194,26 @@ export class AvatarService {
     value: string
   ): Promise<void> {
     if (kind !== AvatarKind.UPLOAD || !this.isControlledFilename(userId, value)) return;
+    if (await this.isHistoricalAvatar(value)) return;
     sharp.cache(false);
     await this.cleanupFile(join(this.avatarRoot, value));
+  }
+
+  private async isHistoricalAvatar(value: string): Promise<boolean> {
+    try {
+      return await this.prisma.gamePlayer.count({
+        where: {
+          avatarKindSnapshot: AvatarKind.UPLOAD,
+          avatarValueSnapshot: value
+        }
+      }) > 0;
+    } catch (error) {
+      const code = typeof error === 'object' && error !== null && 'code' in error
+        ? String(error.code)
+        : 'UNKNOWN';
+      this.logger.warn(`Avatar reference check failed for ${basename(value)} (${code})`);
+      return true;
+    }
   }
 
   private isControlledFilename(userId: string, value: string): boolean {

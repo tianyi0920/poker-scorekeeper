@@ -14,6 +14,19 @@ export function assertGameManager(actor: Pick<AuthUser, 'role'>): void {
   if (actor.role !== 'ADMIN' && actor.role !== 'SUPER_ADMIN') throw forbidden('FORBIDDEN');
 }
 
+export function assertCanViewGameSnapshot(
+  actor: Pick<AuthUser, 'id' | 'role'>,
+  game: { status: GameStatus; players: ReadonlyArray<{ userId: string }> }
+): void {
+  if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') return;
+  if (game.status === 'ACTIVE' || game.status === 'SETTLING') return;
+  if (
+    (game.status === 'COMPLETED' || game.status === 'VOIDED') &&
+    game.players.some(({ userId }) => userId === actor.id)
+  ) return;
+  throw forbidden('FORBIDDEN');
+}
+
 export function assertGameTransition(from: GameStatus, to: GameStatus): void {
   if (!ALLOWED_GAME_TRANSITIONS[from].includes(to)) throw conflict('GAME_STATE_CONFLICT');
 }

@@ -7,7 +7,7 @@ import { setTimeout as delay } from 'node:timers/promises';
 import * as argon2 from 'argon2';
 import sharp from 'sharp';
 import request, { type Response } from 'supertest';
-import { AvatarKind, Role, type User } from '../src/generated/prisma/client.js';
+import { AvatarKind, GameStatus, Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { AvatarService } from '../src/uploads/avatar.service.js';
@@ -220,6 +220,119 @@ describe.sequential('avatar pipeline', () => {
     expect(second.body.path).not.toBe(first.body.path);
     await expect(readFile(join(avatarRoot, first.body.path))).rejects.toMatchObject({ code: 'ENOENT' });
     sharp.cache(false);
+  });
+
+  it('keeps an uploaded file referenced by a historical game snapshot after replacement', async () => {
+    const first = await uploadAvatar(validPng).expect(201);
+    const game = await prisma.game.create({
+      data: {
+        name: `${prefix}-historical-replacement`,
+        handPrice: 300n,
+        rakeEnabled: true,
+        status: GameStatus.COMPLETED,
+        version: 3,
+        createdById: admin.id,
+        startedAt: new Date('2026-08-17T10:00:00.000Z'),
+        stoppedAt: new Date('2026-08-17T12:00:00.000Z'),
+        completedAt: new Date('2026-08-17T12:10:00.000Z')
+      }
+    });
+    await prisma.gamePlayer.create({
+      data: {
+        gameId: game.id,
+        userId: user.id,
+        nicknameSnapshot: user.nickname,
+        avatarKindSnapshot: AvatarKind.UPLOAD,
+        avatarValueSnapshot: first.body.path,
+        seatNo: 1,
+        firstBuyinAt: new Date('2026-08-17T10:05:00.000Z')
+      }
+    });
+
+    try {
+      const second = await uploadAvatar(validPng).expect(201);
+      expect(second.body.path).not.toBe(first.body.path);
+      await expect(readFile(join(avatarRoot, first.body.path))).resolves.toBeInstanceOf(Buffer);
+      await request(app.getHttpServer())
+        .get(`/api/games/${game.id}/snapshot`)
+        .set('Cookie', userAuth.cookie)
+        .expect(200)
+        .expect(({ body }) => expect(body.players).toEqual([
+          expect.objectContaining({
+            userId: user.id,
+            avatarUrl: `/avatars/uploads/${first.body.path}`
+          })
+        ]));
+      await expect(readFile(join(avatarRoot, basename(first.body.path))))
+        .resolves.toBeInstanceOf(Buffer);
+    } finally {
+      await prisma.gamePlayer.deleteMany({ where: { gameId: game.id } });
+      await prisma.game.delete({ where: { id: game.id } });
+    }
+  });
+
+  it('keeps an uploaded file referenced by history after an administrator reset', async () => {
+    const target = await seedUser('historical-reset-target', Role.USER);
+    const oldFilename = `${target.id}-${randomUUID()}.webp`;
+    await writeFile(join(avatarRoot, oldFilename), validPng);
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { avatarKind: AvatarKind.UPLOAD, avatarValue: oldFilename }
+    });
+    const game = await prisma.game.create({
+      data: {
+        name: `${prefix}-historical-reset`,
+        handPrice: 300n,
+        rakeEnabled: true,
+        status: GameStatus.COMPLETED,
+        version: 3,
+        createdById: admin.id,
+        startedAt: new Date(),
+        stoppedAt: new Date(),
+        completedAt: new Date()
+      }
+    });
+    await prisma.gamePlayer.create({
+      data: {
+        gameId: game.id,
+        userId: target.id,
+        nicknameSnapshot: target.nickname,
+        avatarKindSnapshot: AvatarKind.UPLOAD,
+        avatarValueSnapshot: oldFilename,
+        seatNo: 1,
+        firstBuyinAt: new Date()
+      }
+    });
+
+    try {
+      await request(app.getHttpServer())
+        .post(`/api/users/${target.id}/avatar/reset`)
+        .set('Cookie', adminAuth.cookie)
+        .set('X-CSRF-Token', adminAuth.csrfToken)
+        .expect(200);
+      await expect(readFile(join(avatarRoot, oldFilename))).resolves.toEqual(validPng);
+    } finally {
+      await prisma.gamePlayer.deleteMany({ where: { gameId: game.id } });
+      await prisma.game.delete({ where: { id: game.id } });
+    }
+  });
+
+  it('deletes an unreferenced controlled upload after an administrator reset', async () => {
+    const target = await seedUser('unreferenced-reset-target', Role.USER);
+    const oldFilename = `${target.id}-${randomUUID()}.webp`;
+    await writeFile(join(avatarRoot, oldFilename), validPng);
+    await prisma.user.update({
+      where: { id: target.id },
+      data: { avatarKind: AvatarKind.UPLOAD, avatarValue: oldFilename }
+    });
+
+    await request(app.getHttpServer())
+      .post(`/api/users/${target.id}/avatar/reset`)
+      .set('Cookie', adminAuth.cookie)
+      .set('X-CSRF-Token', adminAuth.csrfToken)
+      .expect(200);
+    await expect(readFile(join(avatarRoot, oldFilename)))
+      .rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('keeps the old avatar and removes new files when the database commit is rejected', async () => {

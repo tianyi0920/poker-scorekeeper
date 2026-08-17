@@ -12,6 +12,7 @@ import { GameStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 import {
+  assertCanViewGameSnapshot,
   assertGameManager,
   assertGameTransition,
   defaultShanghaiGameName,
@@ -191,8 +192,12 @@ export class GamesService {
     return { games: games.map((game) => mapGameSnapshot(game, serverNow)) };
   }
 
-  async snapshot(id: string): Promise<GameSnapshotDto> {
-    return this.snapshotIn(this.prisma, id, new Date());
+  async snapshot(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
+    const serverNow = new Date();
+    const game = await this.prisma.game.findUnique({ where: { id }, include: snapshotInclude });
+    if (game === null) throw notFound('NOT_FOUND');
+    assertCanViewGameSnapshot(actor, game);
+    return mapGameSnapshot(game, serverNow);
   }
 
   private async snapshotIn(

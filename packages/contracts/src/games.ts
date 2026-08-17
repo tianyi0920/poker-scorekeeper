@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { moneyJsonSchema } from './money.js';
 import { nonNegativeMoneyJsonSchema } from './settings.js';
 
 export const gameStatusSchema = z.enum([
@@ -23,6 +24,11 @@ export const gameNameSchema = z.string()
 export const positiveMoneyJsonSchema = nonNegativeMoneyJsonSchema
   .refine((value) => value !== '0', { message: 'Money value must be positive' });
 
+export const nonNegativeComputedMoneyJsonSchema = moneyJsonSchema
+  .refine((value) => !value.startsWith('-'), { message: 'Money value must be non-negative' });
+
+const offsetDateTimeSchema = z.iso.datetime({ offset: true });
+
 export const createGameSchema = z.object({
   name: gameNameSchema.optional(),
   handPrice: positiveMoneyJsonSchema.default('300'),
@@ -36,7 +42,7 @@ export const gamePlayerSnapshotSchema = z.object({
   avatarUrl: z.string(),
   seatNo: z.number().int().min(1).max(12),
   effectiveHands: z.number().int().nonnegative(),
-  buyInAmount: nonNegativeMoneyJsonSchema
+  buyInAmount: nonNegativeComputedMoneyJsonSchema
 });
 
 export const gamePurchaseSnapshotSchema = z.object({
@@ -47,7 +53,7 @@ export const gamePurchaseSnapshotSchema = z.object({
   previousHands: z.number().int().nullable(),
   newHands: z.number().int().nonnegative(),
   handsDelta: z.number().int(),
-  createdAt: z.string()
+  createdAt: offsetDateTimeSchema
 });
 
 export const gameSpectatorSnapshotSchema = z.object({
@@ -63,9 +69,9 @@ export const gameSnapshotSchema = z.object({
   version: z.number().int().positive(),
   handPrice: positiveMoneyJsonSchema,
   rakeEnabled: z.boolean(),
-  startedAt: z.string().nullable(),
-  stoppedAt: z.string().nullable(),
-  serverNow: z.string(),
+  startedAt: offsetDateTimeSchema.nullable(),
+  stoppedAt: offsetDateTimeSchema.nullable(),
+  serverNow: offsetDateTimeSchema,
   players: z.array(gamePlayerSnapshotSchema),
   purchases: z.array(gamePurchaseSnapshotSchema),
   spectators: z.array(gameSpectatorSnapshotSchema)

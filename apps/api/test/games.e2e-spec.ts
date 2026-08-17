@@ -348,6 +348,52 @@ describe.sequential('game lifecycle and snapshots', () => {
       .expect(({ body }) => expect(body.code).toBe('GAME_STATE_CONFLICT'));
   });
 
+  it('enforces snapshot visibility for drafts and historical games', async () => {
+    const draft = await seedGame(`${prefix}-private-draft`, GameStatus.DRAFT);
+    const completed = await seedGame(`${prefix}-unplayed-completed`, GameStatus.COMPLETED, {
+      stoppedAt: new Date()
+    });
+    const voided = await seedGame(`${prefix}-unplayed-voided`, GameStatus.VOIDED, {
+      stoppedAt: new Date()
+    });
+    const participated = await seedGame(`${prefix}-played-completed`, GameStatus.COMPLETED, {
+      stoppedAt: new Date()
+    });
+    await prisma.gamePlayer.create({
+      data: {
+        gameId: participated.id,
+        userId: regularUser.id,
+        nicknameSnapshot: regularUser.nickname,
+        avatarKindSnapshot: regularUser.avatarKind,
+        avatarValueSnapshot: regularUser.avatarValue,
+        seatNo: 1,
+        firstBuyinAt: new Date()
+      }
+    });
+
+    for (const game of [draft, completed, voided]) {
+      await get(userAuth, `/api/games/${game.id}/snapshot`)
+        .expect(403)
+        .expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    }
+    await get(userAuth, `/api/games/${participated.id}/snapshot`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        id: participated.id,
+        status: GameStatus.COMPLETED,
+        players: [{ userId: regularUser.id }]
+      }));
+
+    for (const auth of [adminAuth, superAuth]) {
+      for (const game of [draft, completed, voided, participated]) {
+        await get(auth, `/api/games/${game.id}/snapshot`).expect(200);
+      }
+    }
+    await get(userAuth, `/api/games/missing-${runId}/snapshot`)
+      .expect(404)
+      .expect(({ body }) => expect(body.code).toBe('NOT_FOUND'));
+  });
+
   it('lets every logged-in role see current games and a full-table snapshot', async () => {
     const startedAt = new Date('2026-08-17T10:00:00.000Z');
     const game = await seedGame(`${prefix}-snapshot`, GameStatus.ACTIVE, {
@@ -434,6 +480,8 @@ describe.sequential('game lifecycle and snapshots', () => {
           {
             id: regularPlayer.id,
             userId: regularUser.id,
+            nickname: regularUser.nickname,
+            avatarUrl: '/avatars/preset-01.webp',
             seatNo: 1,
             effectiveHands: 3,
             buyInAmount: '900'
@@ -441,6 +489,8 @@ describe.sequential('game lifecycle and snapshots', () => {
           {
             id: actorPlayer.id,
             userId: actor.id,
+            nickname: actor.nickname,
+            avatarUrl: '/avatars/preset-01.webp',
             seatNo: 2,
             effectiveHands: 2,
             buyInAmount: '600'

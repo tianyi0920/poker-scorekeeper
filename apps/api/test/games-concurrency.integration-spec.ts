@@ -7,6 +7,7 @@ import { lockGameForUpdate } from '../src/games/game-lock.js';
 import { GamesService } from '../src/games/games.service.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { lockUsersInOrder } from '../src/users/user-policy.js';
 
 const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
 if (!databaseName.endsWith('_test')) {
@@ -168,6 +169,42 @@ describe.sequential('game lifecycle concurrency', () => {
     actor = await prisma.user.update({ where: { id: actor.id }, data: { role: Role.ADMIN } });
   }, 15_000);
 
+  it('re-authorizes begin-settlement after its actor row is concurrently demoted', async () => {
+    const active = await seedGame('actor-row-demotion', GameStatus.ACTIVE);
+    let actorLocked!: () => void;
+    let releaseActor!: () => void;
+    const locked = new Promise<void>((resolve) => { actorLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseActor = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM users WHERE id = ${actor.id} FOR UPDATE
+      `;
+      actorLocked();
+      await release;
+      await transaction.user.update({ where: { id: actor.id }, data: { role: Role.USER } });
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await locked;
+
+    let settled = false;
+    const settlement = games.beginSettlement(active.id, authUser(actor))
+      .finally(() => { settled = true; });
+    await delay(200);
+    expect(settled).toBe(false);
+    releaseActor();
+    await blocker;
+
+    try {
+      await expect(settlement).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(prisma.game.findUniqueOrThrow({ where: { id: active.id } }))
+        .resolves.toMatchObject({ status: GameStatus.ACTIVE, version: 1, stoppedAt: null });
+      await expect(prisma.auditLog.count({
+        where: { action: 'GAME_SETTLEMENT_BEGUN', entityId: active.id }
+      })).resolves.toBe(0);
+    } finally {
+      actor = await prisma.user.update({ where: { id: actor.id }, data: { role: Role.ADMIN } });
+    }
+  }, 15_000);
+
   it('keeps simultaneous start and begin-settlement transitions in a valid serial order', async () => {
     const draft = await seedGame('transition-race');
 
@@ -194,38 +231,54 @@ describe.sequential('game lifecycle concurrency', () => {
     })).resolves.toBe(1);
   });
 
-  it('shares a game FOR UPDATE helper that re-reads state after acquiring the lock', async () => {
+  it('returns current game state after a consistent read established an older snapshot', async () => {
     const active = await seedGame('task8-lock-protocol', GameStatus.ACTIVE);
-    let gameLocked!: () => void;
-    let releaseGame!: () => void;
-    const locked = new Promise<void>((resolve) => { gameLocked = resolve; });
-    const release = new Promise<void>((resolve) => { releaseGame = resolve; });
-    const blocker = prisma.$transaction(async (transaction) => {
-      await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM games WHERE id = ${active.id} FOR UPDATE
-      `;
-      gameLocked();
-      await release;
-      await transaction.game.update({
-        where: { id: active.id },
-        data: { status: GameStatus.VOIDED, stoppedAt: new Date(), version: { increment: 1 } }
-      });
+    let snapshotRead!: () => void;
+    let acquireLock!: () => void;
+    const read = new Promise<void>((resolve) => { snapshotRead = resolve; });
+    const proceed = new Promise<void>((resolve) => { acquireLock = resolve; });
+    const consumer = prisma.$transaction(async (transaction) => {
+      const stale = await transaction.game.findUniqueOrThrow({ where: { id: active.id } });
+      expect(stale).toMatchObject({ status: GameStatus.ACTIVE, version: 1 });
+      snapshotRead();
+      await proceed;
+      return lockGameForUpdate(transaction, active.id);
     }, { timeout: 10_000, maxWait: 5_000 });
-    await locked;
-
-    let consumerSettled = false;
-    const consumer = prisma.$transaction(async (transaction) =>
-      lockGameForUpdate(transaction, active.id)
-    ).finally(() => { consumerSettled = true; });
-    await delay(200);
-    expect(consumerSettled).toBe(false);
-    releaseGame();
-    await blocker;
+    await read;
+    await prisma.game.update({
+      where: { id: active.id },
+      data: { status: GameStatus.VOIDED, stoppedAt: new Date(), version: { increment: 1 } }
+    });
+    acquireLock();
 
     await expect(consumer).resolves.toMatchObject({
       id: active.id,
       status: GameStatus.VOIDED,
       version: 2
     });
+  }, 15_000);
+
+  it('returns current actor fields after a consistent read established an older snapshot', async () => {
+    const active = await seedGame('actor-lock-protocol', GameStatus.ACTIVE);
+    let snapshotRead!: () => void;
+    let acquireLock!: () => void;
+    const read = new Promise<void>((resolve) => { snapshotRead = resolve; });
+    const proceed = new Promise<void>((resolve) => { acquireLock = resolve; });
+    const consumer = prisma.$transaction(async (transaction) => {
+      await transaction.game.findUniqueOrThrow({ where: { id: active.id } });
+      snapshotRead();
+      await proceed;
+      return lockUsersInOrder(transaction, [actor.id]);
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await read;
+    await prisma.user.update({ where: { id: actor.id }, data: { role: Role.USER } });
+    acquireLock();
+
+    try {
+      const locked = await consumer;
+      expect(locked.get(actor.id)).toMatchObject({ id: actor.id, role: Role.USER });
+    } finally {
+      actor = await prisma.user.update({ where: { id: actor.id }, data: { role: Role.ADMIN } });
+    }
   }, 15_000);
 });
