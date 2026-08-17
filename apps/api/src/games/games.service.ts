@@ -10,6 +10,8 @@ import { conflict, notFound } from '../common/errors/app-error.js';
 import type { Game, Prisma } from '../generated/prisma/client.js';
 import { GameStatus } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { GameEventsService } from '../realtime/game-events.service.js';
+import { PresenceService } from '../realtime/presence.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 import {
   assertCanViewGameSnapshot,
@@ -49,11 +51,13 @@ function auditGame(game: Game): Record<string, unknown> {
 export class GamesService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(AuditService) private readonly audit: AuditService
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(PresenceService) private readonly presence: PresenceService,
+    @Inject(GameEventsService) private readonly events: GameEventsService
   ) {}
 
   async create(actor: AuthUser, input: CreateGameRequest): Promise<GameSnapshotDto> {
-    return this.prisma.$transaction(async (transaction) => {
+    const snapshot = await this.prisma.$transaction(async (transaction) => {
       const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
       const now = new Date();
       const created = await transaction.game.create({
@@ -74,10 +78,12 @@ export class GamesService {
       });
       return this.snapshotIn(transaction, created.id, now);
     });
+    await this.publishSafely(snapshot.id);
+    return snapshot;
   }
 
   async start(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
-    return this.prisma.$transaction(async (transaction) => {
+    const snapshot = await this.prisma.$transaction(async (transaction) => {
       await this.lockLifecycleCoordinator(transaction);
       const before = await lockGameForUpdate(transaction, id);
       const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
@@ -107,10 +113,12 @@ export class GamesService {
       await this.recordTransition(transaction, currentActor.id, 'GAME_STARTED', before, after);
       return this.snapshotIn(transaction, id, now);
     });
+    await this.publishSafely(id);
+    return snapshot;
   }
 
   async beginSettlement(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
-    return this.prisma.$transaction(async (transaction) => {
+    const snapshot = await this.prisma.$transaction(async (transaction) => {
       const before = await lockGameForUpdate(transaction, id);
       const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
       assertGameTransition(before.status, GameStatus.SETTLING);
@@ -130,6 +138,8 @@ export class GamesService {
       );
       return this.snapshotIn(transaction, id, now);
     });
+    await this.publishSafely(id);
+    return snapshot;
   }
 
   async deleteDraft(id: string, actor: AuthUser): Promise<void> {
@@ -163,7 +173,7 @@ export class GamesService {
   }
 
   async void(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
-    return this.prisma.$transaction(async (transaction) => {
+    const snapshot = await this.prisma.$transaction(async (transaction) => {
       const before = await lockGameForUpdate(transaction, id);
       const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
       assertGameTransition(before.status, GameStatus.VOIDED);
@@ -180,6 +190,8 @@ export class GamesService {
       await this.recordTransition(transaction, currentActor.id, 'GAME_VOIDED', before, after);
       return this.snapshotIn(transaction, id, now);
     });
+    await this.publishSafely(id);
+    return snapshot;
   }
 
   async current(): Promise<CurrentGamesResponse> {
@@ -189,7 +201,13 @@ export class GamesService {
       include: snapshotInclude,
       orderBy: [{ startedAt: 'desc' }, { id: 'asc' }]
     });
-    return { games: games.map((game) => mapGameSnapshot(game, serverNow)) };
+    return {
+      games: await Promise.all(games.map(async (game) => mapGameSnapshot(
+        game,
+        serverNow,
+        await this.presence.list(game.id)
+      )))
+    };
   }
 
   async snapshot(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
@@ -197,7 +215,7 @@ export class GamesService {
     const game = await this.prisma.game.findUnique({ where: { id }, include: snapshotInclude });
     if (game === null) throw notFound('NOT_FOUND');
     assertCanViewGameSnapshot(actor, game);
-    return mapGameSnapshot(game, serverNow);
+    return mapGameSnapshot(game, serverNow, await this.presence.list(id));
   }
 
   private async snapshotIn(
@@ -207,7 +225,15 @@ export class GamesService {
   ): Promise<GameSnapshotDto> {
     const game = await client.game.findUnique({ where: { id }, include: snapshotInclude });
     if (game === null) throw notFound('NOT_FOUND');
-    return mapGameSnapshot(game as SnapshotGameRecord, serverNow);
+    return mapGameSnapshot(
+      game as SnapshotGameRecord,
+      serverNow,
+      await this.presence.list(id, client)
+    );
+  }
+
+  private async publishSafely(gameId: string): Promise<void> {
+    await this.events.publishCommittedGame(gameId).catch(() => undefined);
   }
 
   private async lockLifecycleCoordinator(transaction: Prisma.TransactionClient): Promise<void> {

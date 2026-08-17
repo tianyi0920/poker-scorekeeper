@@ -32,6 +32,12 @@ interface CookieResponse {
   ): void;
 }
 
+export type SessionInvalidation =
+  | { kind: 'session'; sessionId: string }
+  | { kind: 'user'; userId: string; exceptSessionId?: string };
+
+type SessionInvalidationListener = (invalidation: SessionInvalidation) => void;
+
 function toAuthUser(user: {
   id: string;
   username: string;
@@ -71,6 +77,7 @@ export class SessionService {
     AuthenticatedSession,
     { rawToken: string; expiresAt: Date }
   >();
+  private readonly invalidationListeners = new Set<SessionInvalidationListener>();
 
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
@@ -120,6 +127,19 @@ export class SessionService {
     const rawToken = readCookie(cookieHeader, SESSION_COOKIE_NAME);
     if (rawToken === null || !/^[a-f0-9]{64}$/.test(rawToken)) return null;
 
+    return this.authenticateToken(rawToken, true);
+  }
+
+  async authenticateRawToken(rawToken: string): Promise<AuthenticatedSession | null> {
+    if (!/^[a-f0-9]{64}$/.test(rawToken)) return null;
+    return this.authenticateToken(rawToken, false);
+  }
+
+  private async authenticateToken(
+    rawToken: string,
+    renewBrowser: boolean
+  ): Promise<AuthenticatedSession | null> {
+
     const now = new Date();
     const session = await this.prisma.authSession.findUnique({
       where: { tokenHash: hashToken(rawToken) },
@@ -136,31 +156,29 @@ export class SessionService {
       return null;
     }
 
-    const refreshedExpiry = new Date(Math.min(
-      now.getTime() + SESSION_IDLE_MILLISECONDS,
-      session.absoluteExpiresAt.getTime()
-    ));
-    const refresh = await this.prisma.authSession.updateMany({
-      where: {
-        id: session.id,
-        revokedAt: null,
-        expiresAt: { gt: now },
-        absoluteExpiresAt: { gt: now }
-      },
-      data: { lastSeenAt: now, expiresAt: refreshedExpiry }
-    });
-    if (refresh.count !== 1) return null;
-
     const user = toAuthUser(session.user);
     const authSession: AuthenticatedSession = {
       id: session.id,
       user,
       csrfToken: this.csrf.createToken(session.id, user.id)
     };
-    this.browserRenewals.set(authSession, {
-      rawToken,
-      expiresAt: refreshedExpiry
-    });
+    if (renewBrowser) {
+      const refreshedExpiry = new Date(Math.min(
+        now.getTime() + SESSION_IDLE_MILLISECONDS,
+        session.absoluteExpiresAt.getTime()
+      ));
+      const refresh = await this.prisma.authSession.updateMany({
+        where: {
+          id: session.id,
+          revokedAt: null,
+          expiresAt: { gt: now },
+          absoluteExpiresAt: { gt: now }
+        },
+        data: { lastSeenAt: now, expiresAt: refreshedExpiry }
+      });
+      if (refresh.count !== 1) return null;
+      this.browserRenewals.set(authSession, { rawToken, expiresAt: refreshedExpiry });
+    }
     return authSession;
   }
 
@@ -184,10 +202,30 @@ export class SessionService {
   }
 
   async revoke(sessionId: string): Promise<void> {
-    await this.prisma.authSession.updateMany({
+    const revoked = await this.prisma.authSession.updateMany({
       where: { id: sessionId, revokedAt: null },
       data: { revokedAt: new Date() }
     });
+    if (revoked.count > 0) this.notifyInvalidation({ kind: 'session', sessionId });
+  }
+
+  onInvalidated(listener: SessionInvalidationListener): () => void {
+    this.invalidationListeners.add(listener);
+    return () => this.invalidationListeners.delete(listener);
+  }
+
+  notifyUserSessionsInvalidated(userId: string, exceptSessionId?: string): void {
+    this.notifyInvalidation({ kind: 'user', userId, ...(exceptSessionId ? { exceptSessionId } : {}) });
+  }
+
+  private notifyInvalidation(invalidation: SessionInvalidation): void {
+    for (const listener of this.invalidationListeners) {
+      try {
+        listener(invalidation);
+      } catch {
+        // Database revocation remains authoritative even if a socket listener fails.
+      }
+    }
   }
 
   private isCookieResponse(response: unknown): response is CookieResponse {

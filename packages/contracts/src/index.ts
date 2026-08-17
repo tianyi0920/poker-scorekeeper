@@ -3,6 +3,7 @@ export * from './avatars.js';
 export * from './buyins.js';
 export * from './games.js';
 export * from './money.js';
+export * from './realtime.js';
 export * from './settings.js';
 export * from './settlement.js';
 export * from './users.js';

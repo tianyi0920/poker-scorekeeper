@@ -17,6 +17,7 @@ import {
 } from '../generated/prisma/client.js';
 import { lockGameForUpdate } from '../games/game-lock.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 import {
   assertLatestLogicalBuy,
@@ -141,10 +142,21 @@ function auditEvent(event: BuyinEvent): Record<string, unknown> {
 export class BuyinsService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(AuditService) private readonly audit: AuditService
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(GameEventsService) private readonly events: GameEventsService
   ) {}
 
   async buy(
+    gameId: string,
+    actor: AuthUser,
+    input: BuyHandsRequest
+  ): Promise<BuyinEventResponse> {
+    const result = await this.buyCommitted(gameId, actor, input);
+    await this.events.publishCommittedGame(result.gameId).catch(() => undefined);
+    return result;
+  }
+
+  private async buyCommitted(
     gameId: string,
     actor: AuthUser,
     input: BuyHandsRequest
@@ -261,6 +273,17 @@ export class BuyinsService {
   }
 
   async adjust(
+    gameId: string,
+    playerId: string,
+    actor: AuthUser,
+    input: AdjustLatestBuyinRequest
+  ): Promise<BuyinEventResponse> {
+    const result = await this.adjustCommitted(gameId, playerId, actor, input);
+    await this.events.publishCommittedGame(result.gameId).catch(() => undefined);
+    return result;
+  }
+
+  private async adjustCommitted(
     gameId: string,
     playerId: string,
     actor: AuthUser,

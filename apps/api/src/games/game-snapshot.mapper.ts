@@ -1,4 +1,4 @@
-import type { GameSnapshotDto } from '@poker/contracts';
+import type { GameSnapshotDto, GameSpectatorSnapshotDto } from '@poker/contracts';
 import type {
   AvatarKind,
   BuyinEventType,
@@ -44,7 +44,8 @@ function avatarUrl(kind: AvatarKind, value: string): string {
 
 export function mapGameSnapshot(
   game: SnapshotGameRecord,
-  serverNow = new Date()
+  serverNow = new Date(),
+  spectators: GameSpectatorSnapshotDto[] = []
 ): GameSnapshotDto {
   const orderedEvents = [...game.buyinEvents].sort((left, right) =>
     left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id)
@@ -100,6 +101,6 @@ export function mapGameSnapshot(
       handsDelta: event.handsDelta,
       createdAt: event.createdAt.toISOString()
     })),
-    spectators: []
+    spectators
   };
 }

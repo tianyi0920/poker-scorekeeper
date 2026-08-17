@@ -82,5 +82,6 @@ export const currentGamesResponseSchema = z.object({
 });
 
 export type CreateGameRequest = z.infer<typeof createGameSchema>;
+export type GameSpectatorSnapshotDto = z.infer<typeof gameSpectatorSnapshotSchema>;
 export type GameSnapshotDto = z.infer<typeof gameSnapshotSchema>;
 export type CurrentGamesResponse = z.infer<typeof currentGamesResponseSchema>;

@@ -115,6 +115,7 @@ export class AuthService {
       });
       return changedUser;
     });
+    this.sessions.notifyUserSessionsInvalidated(user.id, authSession.id);
     return toAuthUser(updated);
   }
 

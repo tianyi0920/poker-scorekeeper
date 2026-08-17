@@ -6,6 +6,7 @@ import { BuyinsModule } from './buyins/buyins.module.js';
 import { HealthController } from './health/health.controller.js';
 import { GamesModule } from './games/games.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
+import { RealtimeModule } from './realtime/realtime.module.js';
 import { SettingsModule } from './settings/settings.module.js';
 import { UsersModule } from './users/users.module.js';
 
@@ -15,6 +16,7 @@ import { UsersModule } from './users/users.module.js';
     PrismaModule,
     AuditModule,
     AuthModule,
+    RealtimeModule,
     BuyinsModule,
     GamesModule,
     UsersModule,

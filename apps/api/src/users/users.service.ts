@@ -11,7 +11,9 @@ import { conflict, notFound } from '../common/errors/app-error.js';
 import { Prisma, type Role, type User } from '../generated/prisma/client.js';
 import { AuditService } from '../audit/audit.service.js';
 import { PasswordService } from '../auth/password.service.js';
+import { SessionService } from '../auth/session.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { GameEventsService } from '../realtime/game-events.service.js';
 import {
   assertCanManageUser,
   lockUsersInOrder,
@@ -67,7 +69,9 @@ export class UsersService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(PasswordService) private readonly passwords: PasswordService,
-    @Inject(AuditService) private readonly audit: AuditService
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(SessionService) private readonly sessions: SessionService,
+    @Inject(GameEventsService) private readonly events: GameEventsService
   ) {}
 
   async list(): Promise<{ users: UserResponse[] }> {
@@ -135,7 +139,7 @@ export class UsersService {
     input: UpdateUserRequest
   ): Promise<UserResponse> {
     try {
-      return await this.prisma.$transaction(async (transaction) => {
+      const updated = await this.prisma.$transaction(async (transaction) => {
         if (input.role !== undefined || input.isActive !== undefined) {
           await this.lockLifecycleCoordinator(transaction);
         }
@@ -182,6 +186,13 @@ export class UsersService {
         });
         return updated;
       });
+      if (input.role !== undefined || input.isActive !== undefined) {
+        this.sessions.notifyUserSessionsInvalidated(id);
+      }
+      if (input.rakeEnabled !== undefined) {
+        await this.events.publishPlayerRake(id).catch(() => undefined);
+      }
+      return updated;
     } catch (error) {
       if (isUniqueConstraint(error)) throw conflict('NICKNAME_TAKEN');
       throw error;
@@ -189,7 +200,7 @@ export class UsersService {
   }
 
   async softDelete(actor: AuthUser, id: string): Promise<UserResponse> {
-    return this.prisma.$transaction(async (transaction) => {
+    const deleted = await this.prisma.$transaction(async (transaction) => {
       await this.lockLifecycleCoordinator(transaction);
       const locked = await lockUsersInOrder(transaction, [actor.id, id]);
       const currentActor = requireCurrentActor(locked, actor.id);
@@ -221,6 +232,8 @@ export class UsersService {
       });
       return deleted;
     });
+    this.sessions.notifyUserSessionsInvalidated(id);
+    return deleted;
   }
 
   async restore(actor: AuthUser, id: string, input: RestoreUserRequest): Promise<UserResponse> {
@@ -264,7 +277,7 @@ export class UsersService {
   ): Promise<UserResponse> {
     const passwordHash = await this.passwords.hash(input.newPassword);
     const now = new Date();
-    return this.prisma.$transaction(async (transaction) => {
+    const updated = await this.prisma.$transaction(async (transaction) => {
       const locked = await lockUsersInOrder(transaction, [actor.id, id]);
       const currentActor = requireCurrentActor(locked, actor.id);
       const target = locked.get(id) ?? null;
@@ -289,6 +302,8 @@ export class UsersService {
       });
       return updated;
     });
+    this.sessions.notifyUserSessionsInvalidated(id);
+    return updated;
   }
 
   private async assertLifecycleChangeAllowed(

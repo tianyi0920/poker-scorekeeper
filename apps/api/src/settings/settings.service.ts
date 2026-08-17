@@ -5,6 +5,7 @@ import type { AuthUser } from '../common/auth/auth-user.js';
 import { conflict, forbidden } from '../common/errors/app-error.js';
 import type { Prisma, SystemSetting } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 
 const SETTINGS_ID = 'singleton';
@@ -21,7 +22,8 @@ function toDto(setting: SystemSetting): RakeSettingsDto {
 export class SettingsService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(AuditService) private readonly audit: AuditService
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(GameEventsService) private readonly events: GameEventsService
   ) {}
 
   async getRake(): Promise<RakeSettingsDto> {
@@ -29,7 +31,7 @@ export class SettingsService {
   }
 
   async updateRake(actor: AuthUser, input: UpdateRakeSettingsRequest): Promise<RakeSettingsDto> {
-    return this.prisma.$transaction(async (transaction) => {
+    const result = await this.prisma.$transaction(async (transaction) => {
       await this.lockSettings(transaction);
       const locked = await lockUsersInOrder(transaction, [actor.id]);
       const currentActor = requireCurrentActor(locked, actor.id);
@@ -65,6 +67,8 @@ export class SettingsService {
       });
       return afterDto;
     });
+    await this.events.publishRakeSettings(result.version).catch(() => undefined);
+    return result;
   }
 
   private async lockSettings(transaction: Prisma.TransactionClient): Promise<void> {
