@@ -151,3 +151,22 @@
 ### Final self-review
 
 - Re-read the complete stabilization diff. Test-only database behavior is isolated behind `NODE_ENV === 'test'`; production retains its original pool limit and all driver/Prisma timeout defaults. The unified Vitest budget applies only to the API E2E/unit configuration, not the 15-second integration configuration or production. No local timeout exception, diagnostic logging, broad cleanup, environment value, or unrelated change remains.
+
+## Stabilization review fix (2026-08-18)
+
+### Review verification and TDD evidence
+
+- Verified both review findings against base `86821fb`. The default API Vitest configuration collected unit/spec and remote-database E2E files under the same 30-second test/hook policy, and finalization teardown awaited database cleanup before `app.close()`, so a cleanup rejection skipped close.
+- Config RED: the two policy tests failed because the default config exposed `30_000/30_000` and collected `test/**/*.e2e-spec.ts`, while the E2E config merely re-exported that same mixed configuration. Cleanup RED: an injected cleanup failure left the real `closed` state false. A second cleanup RED proved simultaneous cleanup/close failures surfaced only the close error instead of both failures.
+- GREEN: `vitest.config.ts` now collects only `src/**/*.test.ts` and `test/**/*.spec.ts` with the original 15-second test and 10-second hook budgets. The independent `vitest.e2e.config.ts` preserves the same single-fork serial execution but exclusively collects `test/**/*.e2e-spec.ts` with 30-second test/hook budgets. The API `test` script runs these disjoint suites sequentially, while `test:e2e` remains E2E-only. Focused config/cleanup regression verification passed 4/4.
+- Finalization teardown now runs cleanup and close through a small test-only helper whose `finally` path always attempts close. One failure is rethrown unchanged; cleanup plus close failures are retained in ordered `AggregateError.errors`. This does not suppress a `beforeAll` failure. Focused finalization E2E passed 7/7 with no warning or unhandled rejection.
+
+### Fresh repository and database verification
+
+- The one permitted fresh root `pnpm test` passed 444/444 with zero failures, skips, or unhandled rejections: contracts 48/48, settlement 14/14, web 88/88, API unit/default 97/97, and API E2E 197/197. The four new regression tests account for the increase from 440 to 444; no existing coverage was removed or duplicated.
+- Fresh root `pnpm lint`, environment-loaded `pnpm typecheck`, and `pnpm build` passed. An initial typecheck invocation without the ignored local test environment stopped at Prisma config loading before typechecking; the correctly environment-loaded fresh invocation passed without printing environment values. Prisma `validate` passed and `migrate status` reports all three migrations current on the exact test database.
+- The post-root exact endpoint guard confirmed `tianyi.wiki:8306/poker_scorekeeper_test` and initially found zero open transactions, lock waits, active queries, games, nonterminal games, active-player locks, Task 11 fixture users, and migration shadows. One broader E2E orphan, exact user `audit-2004dfd4d4-bootstrap`, was traced directly to `user-audit.e2e-spec.ts`. Its complete reverse closure was zero created users, sessions, settings, created/settled games, players, locks, buy-in events, edited drafts, settlements, and audits. After a repeated exact endpoint/zero-transaction guard, one user was deleted transactionally by its full ID plus full username. The final audit reported zero for every preceding category and for all known E2E fixture-user prefixes.
+
+### Final self-review
+
+- Re-read the complete review-fix diff. Test collection is disjoint and exhaustive, only remote-database E2E receives the 30-second policy, integration remains unchanged, and the test-only database connection/transaction policy from stabilization is untouched. Teardown attempts both cleanup and close and preserves every resulting failure. No production code, local timeout exception, diagnostic logging, broad database cleanup, environment file/value, or unrelated change is included.

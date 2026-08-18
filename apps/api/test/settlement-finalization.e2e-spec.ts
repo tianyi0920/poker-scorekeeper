@@ -13,6 +13,7 @@ import {
 } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { runCleanupAndClose } from './support/run-cleanup-and-close.js';
 
 const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
 if (databaseName !== 'poker_scorekeeper_test') {
@@ -252,31 +253,37 @@ describe.sequential('atomic final settlement', () => {
   });
 
   afterAll(async () => {
-    if (prisma !== undefined) {
-      await cleanOwnedGames();
-      if (originalSettings !== undefined) {
-        await prisma.systemSetting.update({
-          where: { id: 'singleton' },
-          data: {
-            rakeThreshold: originalSettings.rakeThreshold,
-            rakeBps: originalSettings.rakeBps,
-            version: originalSettings.version,
-            updatedById: originalSettings.updatedById
+    await runCleanupAndClose(
+      async () => {
+        if (prisma !== undefined) {
+          await cleanOwnedGames();
+          if (originalSettings !== undefined) {
+            await prisma.systemSetting.update({
+              where: { id: 'singleton' },
+              data: {
+                rakeThreshold: originalSettings.rakeThreshold,
+                rakeBps: originalSettings.rakeBps,
+                version: originalSettings.version,
+                updatedById: originalSettings.updatedById
+              }
+            });
           }
-        });
+          const users = await prisma.user.findMany({
+            where: { normalizedUsername: { startsWith: normalize(prefix) } }, select: { id: true }
+          });
+          const ids = users.map(({ id }) => id);
+          if (ids.length > 0) {
+            await prisma.auditLog.deleteMany({ where: { actorUserId: { in: ids } } });
+            await prisma.authSession.deleteMany({ where: { userId: { in: ids } } });
+            await prisma.activePlayerLock.deleteMany({ where: { userId: { in: ids } } });
+            await prisma.user.deleteMany({ where: { id: { in: ids } } });
+          }
+        }
+      },
+      async () => {
+        if (app !== undefined) await app.close();
       }
-      const users = await prisma.user.findMany({
-        where: { normalizedUsername: { startsWith: normalize(prefix) } }, select: { id: true }
-      });
-      const ids = users.map(({ id }) => id);
-      if (ids.length > 0) {
-        await prisma.auditLog.deleteMany({ where: { actorUserId: { in: ids } } });
-        await prisma.authSession.deleteMany({ where: { userId: { in: ids } } });
-        await prisma.activePlayerLock.deleteMany({ where: { userId: { in: ids } } });
-        await prisma.user.deleteMany({ where: { id: { in: ids } } });
-      }
-    }
-    if (app !== undefined) await app.close();
+    );
   }, 30_000);
 
   it('persists the exact approved breakdown and releases locks in one permanent settlement', async () => {
