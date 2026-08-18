@@ -74,7 +74,19 @@ export const settlementBreakdownSchema = z.object({
     final: moneyJsonSchema
   }).strict(),
   players: z.array(settlementPlayerBreakdownSchema).max(12)
-}).strict();
+}).strict().superRefine((value, context) => {
+  const playerIds = new Set<string>();
+  value.players.forEach((player, index) => {
+    if (playerIds.has(player.playerId)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['players', index, 'playerId'],
+        message: 'DUPLICATE_PLAYER_ID'
+      });
+    }
+    playerIds.add(player.playerId);
+  });
+});
 
 export const settlementPreviewResponseSchema = settlementBreakdownSchema.extend({
   draftVersion: z.number().int().positive(),

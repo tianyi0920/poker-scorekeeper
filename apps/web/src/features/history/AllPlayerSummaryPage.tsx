@@ -5,6 +5,7 @@ import { scorekeeperApi } from '../../api/resources.js';
 import { Card } from '../../components/Card.js';
 import { Money } from '../../components/Money.js';
 import { Toast } from '../../components/Toast.js';
+import { Button } from '../../components/Button.js';
 
 type AggregateRequest = Parameters<typeof scorekeeperApi.aggregateHistory>[0];
 type QuickKind = 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS';
@@ -25,8 +26,8 @@ function PlayerAggregateCard({ player }: { player: AllPlayerAggregationPlayerDto
 }
 
 export function AllPlayerSummaryPage() {
-  const [search] = useSearchParams(); const [data, setData] = useState<AllPlayerAggregationDto | null>(null); const [error, setError] = useState<string | null>(null);
-  useEffect(() => { let active = true; const request = requestFromSearch(search); void scorekeeperApi.aggregateHistory(request).then((next) => { if (active) setData(next); }).catch(() => { if (active) setError('全员汇总暂时无法加载；服务器已保护可见对局范围。'); }); return () => { active = false; }; }, [search]);
-  if (data === null) return <section className="page-stack"><p className="muted">正在汇总全员战绩…</p>{error !== null && <Toast tone="error" message={error} />}</section>;
+  const [search] = useSearchParams(); const [data, setData] = useState<AllPlayerAggregationDto | null>(null); const [error, setError] = useState<string | null>(null); const [reload, setReload] = useState(0);
+  useEffect(() => { let active = true; const request = requestFromSearch(search); setError(null); void scorekeeperApi.aggregateHistory(request).then((next) => { if (active) setData(next); }).catch(() => { if (active) setError('全员汇总暂时无法加载；服务器已保护可见对局范围。'); }); return () => { active = false; }; }, [reload, search]);
+  if (data === null) return <section className="page-stack"><p className="muted">正在汇总全员战绩…</p>{error !== null && <><Toast tone="error" message={error} /><Button variant="ghost" onClick={() => setReload((value) => value + 1)}>重试加载</Button></>}</section>;
   return <section className="page-stack" aria-labelledby="summary-title"><header className="page-title"><span className="section-kicker">ALL PLAYER SUMMARY</span><h2 id="summary-title">全员汇总</h2><p>{data.gameCount} 局 · {data.playerCount} 位玩家；顺序由服务器结算汇总返回。</p></header>{data.players.length === 0 ? <Card className="empty-card"><p>所选范围没有可汇总的结算记录。</p></Card> : <div className="card-list">{data.players.map((player) => <PlayerAggregateCard key={player.userId} player={player} />)}</div>}<Link className="secondary-link" to="/history/select">重新选择范围</Link></section>;
 }

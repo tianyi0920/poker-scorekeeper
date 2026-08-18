@@ -20,6 +20,15 @@ function draft(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function previewResponse(overrides: Record<string, unknown> = {}) {
+  const response = draft(overrides);
+  return {
+    totals: response.totals, players: response.players, draftVersion: response.draftVersion,
+    settingsVersion: response.settingsVersion, previewReady: response.previewReady,
+    validationCode: response.validationCode, confirmationToken: response.confirmationToken
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -33,7 +42,7 @@ function renderWizard(response = draft()) {
     const url = String(input);
     if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
     if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(response);
-    if (url.endsWith('/api/games/game-1/settlement-preview')) return jsonResponse(response);
+    if (url.endsWith('/api/games/game-1/settlement-preview')) return jsonResponse(previewResponse(response));
     if (url.endsWith('/api/games/game-1/settlement-finalize')) return jsonResponse(response);
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   }));
@@ -58,7 +67,7 @@ it('saves changed cash-outs after 400 ms and uses the server-balanced response a
     const url = String(input);
     if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
     if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(draft());
-    if (url.endsWith('/api/games/game-1/settlement-preview')) return jsonResponse(draft());
+    if (url.endsWith('/api/games/game-1/settlement-preview')) return jsonResponse(previewResponse());
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -124,7 +133,7 @@ it('requires a fresh preview after SETTINGS_VERSION_CONFLICT and disables writes
     const url = String(input);
     if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
     if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(draft());
-    if (url.endsWith('/api/games/game-1/settlement-preview')) return jsonResponse(draft());
+    if (url.endsWith('/api/games/game-1/settlement-preview')) return jsonResponse(previewResponse());
     if (url.endsWith('/api/games/game-1/settlement-finalize')) return jsonResponse({ code: 'SETTINGS_VERSION_CONFLICT' }, 409);
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   }));
@@ -159,7 +168,7 @@ it('ignores a deferred preview from revision A after revision B clears its confi
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
   await user.click(screen.getByRole('button', { name: '查看结算预览' }));
   fireEvent.change(screen.getByLabelText('房费（元）'), { target: { value: '500' } });
-  await act(async () => { preview.resolve(jsonResponse(draft())); await Promise.resolve(); });
+  await act(async () => { preview.resolve(jsonResponse(previewResponse())); await Promise.resolve(); });
   expect(screen.queryByRole('button', { name: '打开永久确认' })).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/settlement-finalize'))).toHaveLength(0);
 });
@@ -174,7 +183,7 @@ it('serializes A then B saves with the returned version and previews only saved 
     if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
     if (url.endsWith('/api/games/game-1/settlement-draft') && init?.method === 'PUT') return saveCalls++ === 0 ? firstSave.promise : secondSave.promise;
     if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft()));
-    if (url.endsWith('/api/games/game-1/settlement-preview')) return Promise.resolve(jsonResponse(draft({ version: 5, draftVersion: 5 })));
+    if (url.endsWith('/api/games/game-1/settlement-preview')) return Promise.resolve(jsonResponse(previewResponse({ draftVersion: 5 })));
     return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
   });
   vi.stubGlobal('fetch', fetchMock);

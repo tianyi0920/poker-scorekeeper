@@ -41,3 +41,15 @@ it('fails closed for invalid money/cursors and replaces a malformed detail index
   expect(localStorage.getItem(indexKey)).toContain('game-1');
   expect(localStorage.getItem('poker-scorekeeper:history-cache:v1:user-2:detail-index')).toBeNull();
 });
+
+it('refuses invalid values at the writer boundary without leaving persistent cache data', () => {
+  const duplicateHistory = { items: [item, { ...item, name: '重复牌局' }], nextCursor: null };
+  const duplicateDetail = { ...detail, players: [
+    { playerId: 'player-1', nickname: '天一', avatarKind: 'PRESET', avatarValue: 'avatar', seatNo: 1, buyIn: '10', cashOut: '10', rawProfit: '0', roomFeeShare: '0', otherFeeShare: '0', afterFeeProfit: '0', rakeEligible: false, rakeAmount: '0', finalAmount: '0' },
+    { playerId: 'player-1', nickname: '天一', avatarKind: 'PRESET', avatarValue: 'avatar', seatNo: 2, buyIn: '10', cashOut: '10', rawProfit: '0', roomFeeShare: '0', otherFeeShare: '0', afterFeeProfit: '0', rakeEligible: false, rakeAmount: '0', finalAmount: '0' }
+  ] };
+
+  expect(writeCachedHistory('user-1', duplicateHistory)).toBe(false);
+  expect(writeCachedSettlementDetail('user-1', duplicateDetail)).toBe(false);
+  expect(localStorage.length).toBe(0);
+});

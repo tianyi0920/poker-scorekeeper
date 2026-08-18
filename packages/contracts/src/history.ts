@@ -28,9 +28,21 @@ export const historyListItemSchema = z.object({
 }).strict();
 
 export const historyResponseSchema = z.object({
-  items: z.array(historyListItemSchema),
+  items: z.array(historyListItemSchema).max(100),
   nextCursor: z.string().max(512).regex(/^[A-Za-z0-9_-]+$/).nullable()
-}).strict();
+}).strict().superRefine((value, context) => {
+  const gameIds = new Set<string>();
+  value.items.forEach((item, index) => {
+    if (gameIds.has(item.gameId)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['items', index, 'gameId'],
+        message: 'DUPLICATE_GAME_ID'
+      });
+    }
+    gameIds.add(item.gameId);
+  });
+});
 
 export const aggregatedHistoryGameSchema = z.object({
   gameId: canonicalPublicIdSchema,
@@ -53,14 +65,38 @@ export const allPlayerAggregationPlayerSchema = z.object({
   rakeAmount: moneyJsonSchema,
   finalAmount: moneyJsonSchema,
   games: z.array(aggregatedHistoryGameSchema)
-}).strict();
+}).strict().superRefine((value, context) => {
+  const gameIds = new Set<string>();
+  value.games.forEach((game, index) => {
+    if (gameIds.has(game.gameId)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['games', index, 'gameId'],
+        message: 'DUPLICATE_GAME_ID'
+      });
+    }
+    gameIds.add(game.gameId);
+  });
+});
 
 export const allPlayerAggregationSchema = z.object({
   gameIds: z.array(canonicalPublicIdSchema),
   gameCount: z.number().int().nonnegative(),
   playerCount: z.number().int().nonnegative(),
   players: z.array(allPlayerAggregationPlayerSchema)
-}).strict();
+}).strict().superRefine((value, context) => {
+  const userIds = new Set<string>();
+  value.players.forEach((player, index) => {
+    if (userIds.has(player.userId)) {
+      context.addIssue({
+        code: 'custom',
+        path: ['players', index, 'userId'],
+        message: 'DUPLICATE_USER_ID'
+      });
+    }
+    userIds.add(player.userId);
+  });
+});
 
 export type SettlementDetailDto = z.infer<typeof settlementDetailSchema>;
 export type HistoryListItemDto = z.infer<typeof historyListItemSchema>;
