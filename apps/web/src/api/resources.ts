@@ -57,16 +57,16 @@ export const scorekeeperApi = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   recentHistory: (limit = 10) => apiFetch<HistoryListResponse>(`/history?limit=${limit}`),
-  settlementDraft: (gameId: string) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft`),
-  saveSettlementDraft: (gameId: string, body: SaveSettlementDraftRequest) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft`, {
-    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  settlementDraft: (gameId: string, signal?: AbortSignal) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft`, { signal }),
+  saveSettlementDraft: (gameId: string, body: SaveSettlementDraftRequest, signal?: AbortSignal) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }),
-  takeOverSettlementDraft: (gameId: string) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft/takeover`, { method: 'POST' }),
-  previewSettlement: (gameId: string, body: SettlementDraftPayload) => apiFetch<SettlementPreviewDto>(`/games/${encodeURIComponent(gameId)}/settlement-preview`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  takeOverSettlementDraft: (gameId: string, signal?: AbortSignal) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft/takeover`, { method: 'POST', signal }),
+  previewSettlement: (gameId: string, body: SettlementDraftPayload, signal?: AbortSignal) => apiFetch<SettlementPreviewDto>(`/games/${encodeURIComponent(gameId)}/settlement-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }),
-  finalizeSettlement: (gameId: string, body: FinalizeSettlementRequest) => apiFetch<SettlementDetailDto>(`/games/${encodeURIComponent(gameId)}/settlement-finalize`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  finalizeSettlement: (gameId: string, body: FinalizeSettlementRequest, signal?: AbortSignal) => apiFetch<SettlementDetailDto>(`/games/${encodeURIComponent(gameId)}/settlement-finalize`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }),
   history: (limit = 10, cursor?: string) => apiFetch<HistoryResponseDto>(`/history?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`),
   historyDetail: (gameId: string) => apiFetch<SettlementDetailDto>(`/history/${encodeURIComponent(gameId)}`),

@@ -16,3 +16,10 @@ it('renders the three money levels with bigint-safe detail and no write control 
   expect(screen.getByText((_, element) => element?.textContent === '总买入 ¥18,014,398,509,481,986,000')).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /确认并永久锁定结算/ })).not.toBeInTheDocument();
 });
+
+it('uses a negative raw-profit tone and a distinct final-money hierarchy', () => {
+  // Break caught: a losing player is visually labelled as positive and final amount is indistinguishable from intermediate values.
+  render(<SettlementBreakdown breakdown={{ ...breakdown, players: [{ ...breakdown.players[0]!, rawProfit: '-1500', afterFeeProfit: '-1700', finalAmount: '-1800' }] }} mode="history" />);
+  expect(screen.getByText('牌局盈亏 −¥1,500')).toHaveClass('money--negative');
+  expect(screen.getByText('最终金额 · 最终应付').parentElement?.parentElement).toHaveClass('settlement-metric--final');
+});
