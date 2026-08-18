@@ -25,6 +25,11 @@ export const ERROR_CODES = {
   DRAFT_VERSION_CONFLICT: 'DRAFT_VERSION_CONFLICT',
   DRAFT_EDITOR_CONFLICT: 'DRAFT_EDITOR_CONFLICT',
   DRAFT_LEASE_ACTIVE: 'DRAFT_LEASE_ACTIVE',
+  REQUEST_TOO_LARGE: 'REQUEST_TOO_LARGE',
+  URI_TOO_LONG: 'URI_TOO_LONG',
+  RESOURCE_CONFLICT: 'RESOURCE_CONFLICT',
+  DATABASE_BUSY: 'DATABASE_BUSY',
+  DATABASE_UNAVAILABLE: 'DATABASE_UNAVAILABLE',
   NOT_FOUND: 'NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR'
 } as const;
@@ -58,6 +63,11 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   DRAFT_VERSION_CONFLICT: 'Settlement draft was updated by another request',
   DRAFT_EDITOR_CONFLICT: 'Settlement draft is owned by another administrator',
   DRAFT_LEASE_ACTIVE: 'Settlement draft editor lease is still active',
+  REQUEST_TOO_LARGE: 'Request payload is too large',
+  URI_TOO_LONG: 'Request URI is too long',
+  RESOURCE_CONFLICT: 'Resource already exists',
+  DATABASE_BUSY: 'Database is busy; retry the request',
+  DATABASE_UNAVAILABLE: 'Database is unavailable',
   NOT_FOUND: 'Not found',
   INTERNAL_ERROR: 'Internal server error'
 };

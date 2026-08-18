@@ -1,47 +1,136 @@
 import type { ArgumentsHost, ExceptionFilter } from '@nestjs/common';
 import { Catch, HttpException, HttpStatus } from '@nestjs/common';
+import { randomUUID } from 'node:crypto';
+import { redactAuditValue } from '../../audit/audit-redaction.js';
+import type { RequestWithId } from '../security/application-security.js';
+import { StructuredLogger } from '../security/structured-logger.js';
 import { AppError } from './app-error.js';
 import { ERROR_MESSAGES, type ErrorCode } from './error-codes.js';
 
 interface JsonResponse {
   status(statusCode: number): JsonResponse;
-  json(body: { code: string; message: string; details?: unknown }): void;
+  json(body: { code: string; message: string; requestId: string; details?: unknown }): void;
+}
+
+interface ErrorShape {
+  code?: unknown;
+  errno?: unknown;
+  name?: unknown;
+  status?: unknown;
+  statusCode?: unknown;
+  type?: unknown;
+}
+
+interface MappedError {
+  status: number;
+  code: ErrorCode;
+  details?: unknown;
 }
 
 const STATUS_CODES: Partial<Record<number, ErrorCode>> = {
   [HttpStatus.BAD_REQUEST]: 'VALIDATION_ERROR',
   [HttpStatus.UNAUTHORIZED]: 'UNAUTHENTICATED',
   [HttpStatus.FORBIDDEN]: 'FORBIDDEN',
-  [HttpStatus.PAYLOAD_TOO_LARGE]: 'AVATAR_TOO_LARGE',
   [HttpStatus.NOT_FOUND]: 'NOT_FOUND',
+  [HttpStatus.CONFLICT]: 'RESOURCE_CONFLICT',
+  [HttpStatus.PAYLOAD_TOO_LARGE]: 'REQUEST_TOO_LARGE',
+  [HttpStatus.URI_TOO_LONG]: 'URI_TOO_LONG',
   [HttpStatus.TOO_MANY_REQUESTS]: 'TOO_MANY_REQUESTS'
 };
 
+const DATABASE_UNAVAILABLE_CODES = new Set([
+  'P1000', 'P1001', 'P1002', 'P1008', 'P1017', 'P2024'
+]);
+const DATABASE_BUSY_CODES = new Set(['P2034', 'ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT']);
+const DATABASE_BUSY_NUMBERS = new Set([1_205, 1_213]);
+
+function shapeOf(error: unknown): ErrorShape {
+  return typeof error === 'object' && error !== null ? error as ErrorShape : {};
+}
+
+function controlledIdentifier(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[A-Za-z0-9_.:-]{1,64}$/.test(value)
+    ? value
+    : undefined;
+}
+
+function appErrorDetails(exception: AppError): unknown {
+  const body = exception.getResponse();
+  if (typeof body !== 'object' || body === null || !('details' in body)) return undefined;
+  return redactAuditValue((body as { details?: unknown }).details);
+}
+
+function mapException(exception: unknown): MappedError {
+  if (exception instanceof AppError) {
+    return {
+      status: exception.getStatus(),
+      code: exception.code,
+      details: appErrorDetails(exception)
+    };
+  }
+
+  const shape = shapeOf(exception);
+  if (shape.code === 'LIMIT_FILE_SIZE') {
+    return { status: HttpStatus.PAYLOAD_TOO_LARGE, code: 'AVATAR_TOO_LARGE' };
+  }
+  if (shape.code === 'P2002') {
+    return { status: HttpStatus.CONFLICT, code: 'RESOURCE_CONFLICT' };
+  }
+  if (
+    DATABASE_BUSY_CODES.has(String(shape.code ?? '')) ||
+    DATABASE_BUSY_NUMBERS.has(Number(shape.errno))
+  ) {
+    return { status: HttpStatus.SERVICE_UNAVAILABLE, code: 'DATABASE_BUSY' };
+  }
+  if (DATABASE_UNAVAILABLE_CODES.has(String(shape.code ?? ''))) {
+    return { status: HttpStatus.SERVICE_UNAVAILABLE, code: 'DATABASE_UNAVAILABLE' };
+  }
+
+  if (exception instanceof HttpException) {
+    const status = exception.getStatus();
+    return { status, code: STATUS_CODES[status] ?? 'INTERNAL_ERROR' };
+  }
+
+  const externalStatus = Number(shape.statusCode ?? shape.status);
+  if (externalStatus === HttpStatus.PAYLOAD_TOO_LARGE || shape.type === 'entity.too.large') {
+    return { status: HttpStatus.PAYLOAD_TOO_LARGE, code: 'REQUEST_TOO_LARGE' };
+  }
+  return { status: HttpStatus.INTERNAL_SERVER_ERROR, code: 'INTERNAL_ERROR' };
+}
+
 @Catch()
 export class ApiExceptionFilter implements ExceptionFilter {
+  constructor(private readonly logger: StructuredLogger = new StructuredLogger()) {}
+
   catch(exception: unknown, host: ArgumentsHost): void {
-    const response = host.switchToHttp().getResponse<JsonResponse>();
+    const http = host.switchToHttp();
+    const response = http.getResponse<JsonResponse>();
+    const request = http.getRequest<RequestWithId>();
+    const mapped = mapException(exception);
+    const requestId = request.requestId ?? randomUUID();
+    const body: { code: ErrorCode; message: string; requestId: string; details?: unknown } = {
+      code: mapped.code,
+      message: ERROR_MESSAGES[mapped.code],
+      requestId
+    };
+    if (mapped.details !== undefined) body.details = mapped.details;
 
-    if (exception instanceof AppError) {
-      const body = exception.getResponse() as {
-        code: ErrorCode;
-        message: string;
-        details?: unknown;
-      };
-      response.status(exception.getStatus()).json(body);
-      return;
+    if (mapped.status >= HttpStatus.INTERNAL_SERVER_ERROR || mapped.code === 'RESOURCE_CONFLICT') {
+      const shape = shapeOf(exception);
+      this.logger.error({
+        event: 'http.request.failed',
+        requestId,
+        method: request.method,
+        path: request.path,
+        status: mapped.status,
+        code: mapped.code,
+        error: {
+          name: controlledIdentifier(shape.name) ?? 'Error',
+          code: controlledIdentifier(shape.code),
+          errno: typeof shape.errno === 'number' ? shape.errno : undefined
+        }
+      });
     }
-
-    if (exception instanceof HttpException) {
-      const status = exception.getStatus();
-      const code = STATUS_CODES[status] ?? 'INTERNAL_ERROR';
-      response.status(status).json({ code, message: ERROR_MESSAGES[code] });
-      return;
-    }
-
-    response.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
-      code: 'INTERNAL_ERROR',
-      message: ERROR_MESSAGES.INTERNAL_ERROR
-    });
+    response.status(mapped.status).json(body);
   }
 }

@@ -51,7 +51,7 @@ function errorCode(error: unknown): CommandErrorCode {
     : 'INTERNAL_ERROR';
 }
 
-@WebSocketGateway()
+@WebSocketGateway({ maxHttpBufferSize: 64 * 1024 })
 export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   private server!: Server;

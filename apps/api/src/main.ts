@@ -3,12 +3,14 @@ import { NestFactory } from '@nestjs/core';
 import { pathToFileURL } from 'node:url';
 import 'reflect-metadata';
 import { AppModule } from './app.module.js';
-import { ApiExceptionFilter } from './common/errors/api-exception.filter.js';
+import { configureApplication } from './common/security/application-security.js';
+import { StructuredLogger } from './common/security/structured-logger.js';
 
 export async function createApp(): Promise<INestApplication> {
-  const app = await NestFactory.create(AppModule);
+  const logger = new StructuredLogger();
+  const app = await NestFactory.create(AppModule, { bodyParser: false, logger });
   app.setGlobalPrefix('api');
-  app.useGlobalFilters(new ApiExceptionFilter());
+  configureApplication(app, logger);
   app.enableShutdownHooks();
   return app;
 }

@@ -50,3 +50,7 @@ export function payloadTooLarge(code: ErrorCode): AppError {
 export function tooManyRequests(code: ErrorCode): AppError {
   return new AppError(HttpStatus.TOO_MANY_REQUESTS, code);
 }
+
+export function serviceUnavailable(code: ErrorCode): AppError {
+  return new AppError(HttpStatus.SERVICE_UNAVAILABLE, code);
+}

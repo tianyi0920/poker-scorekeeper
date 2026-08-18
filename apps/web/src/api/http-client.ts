@@ -23,6 +23,11 @@ const apiErrorMessages = {
   GAME_HAS_RELATIONS: '草稿已关联业务记录，无法删除',
   AVATAR_UNSUPPORTED: '仅支持 JPG、PNG 或 WebP 图片',
   AVATAR_TOO_LARGE: '图片不能超过 5 MiB',
+  REQUEST_TOO_LARGE: '提交内容过大，请缩小后重试',
+  URI_TOO_LONG: '请求地址过长，请刷新页面后重试',
+  RESOURCE_CONFLICT: '内容已存在或刚刚发生变化，请刷新后重试',
+  DATABASE_BUSY: '数据库繁忙，请稍后重试',
+  DATABASE_UNAVAILABLE: '数据库暂时不可用，请稍后重试',
   INTERNAL_ERROR: '服务暂时不可用，请稍后重试',
   HTTP_ERROR: '请求失败，请稍后重试'
 } as const;
