@@ -246,9 +246,13 @@ existing="$(MYSQL_PWD="$MYSQL_PASSWORD" mysql \
   --execute="SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '$RESTORE_DATABASE'")"
 [[ -z "$existing" ]] || die 'restore database already exists'
 create_in_progress=1
-MYSQL_PWD="$MYSQL_PASSWORD" mysql \
-  --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
-  --execute="CREATE DATABASE \`$RESTORE_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" &
+(
+  trap '' HUP INT TERM
+  export MYSQL_PWD="$MYSQL_PASSWORD"
+  exec mysql \
+    --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
+    --execute="CREATE DATABASE \`$RESTORE_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+) &
 create_pid=$!
 while true; do
   if wait "$create_pid"; then

@@ -62,11 +62,13 @@ function restoreTarArchive(entries: RestoreTarEntry[]): Buffer {
   return gzipSync(Buffer.concat(blocks));
 }
 
-function runScript(script: string, env: Record<string, string>) {
+function runScript(script: string, env: Record<string, string>, timeout?: number) {
   return spawnSync(bash, env.DEBUG_SHELL === '1' ? ['-x', shellPath(script)] : [shellPath(script)], {
     cwd: repositoryRoot,
     env: { ...process.env, ...env },
-    encoding: 'utf8'
+    encoding: 'utf8',
+    timeout,
+    killSignal: 'SIGKILL'
   });
 }
 
@@ -151,9 +153,18 @@ case " $* " in
   *INFORMATION_SCHEMA.SCHEMATA*) [ "\${FAKE_SCHEMA_EXISTS:-0}" = 1 ] && printf '%s\n' existing ;;
   *'CREATE DATABASE'*)
     [ "\${FAKE_CREATE_FAIL_AFTER_SIDE_EFFECT:-0}" = 1 ] && exit 12
+    if [ -n "\${FAKE_DATABASE_STATE_FILE:-}" ]; then
+      printf '%s\n' created > "$FAKE_DATABASE_STATE_FILE"
+    fi
+    if [ "\${FAKE_SIGNAL_CREATE_PARENT_AND_CHILD:-0}" = 1 ]; then
+      kill -TERM "$PPID" "$$"
+    fi
     [ "\${FAKE_SIGNAL_ON_CREATE_SUCCESS:-0}" = 1 ] && kill -TERM "$PPID"
     ;;
-  *'DROP DATABASE'*) [ "\${FAKE_DROP_FAIL:-0}" = 1 ] && exit 13 ;;
+  *'DROP DATABASE'*)
+    [ "\${FAKE_DROP_FAIL:-0}" = 1 ] && exit 13
+    [ -n "\${FAKE_DATABASE_STATE_FILE:-}" ] && rm -f -- "$FAKE_DATABASE_STATE_FILE"
+    ;;
 esac
 case " $* " in
   *--execute=*) ;;
@@ -587,6 +598,28 @@ describe('backup and restore scripts', () => {
     const commands = await readFile(fake.log, 'utf8');
     expect(commands).toContain('CREATE DATABASE');
     expect(commands).toContain('DROP DATABASE');
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  it('finishes CREATE ownership cleanup when TERM reaches both the parent and CREATE child', async () => {
+    // Break caught: repeated interrupted waits lose CREATE ownership or spin forever after its side effect.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    const databaseState = join(root, 'database-state');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_DATABASE_STATE_FILE: shellPath(databaseState),
+      FAKE_SIGNAL_CREATE_PARENT_AND_CHILD: '1'
+    }), 15_000);
+
+    expect(result.error, `${result.stderr}\n${result.stdout}`).toBeUndefined();
+    expect(result.status).toBe(143);
+    await expect(stat(databaseState)).rejects.toMatchObject({ code: 'ENOENT' });
+    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
     expect(await readdir(target)).toEqual([]);
   });
 

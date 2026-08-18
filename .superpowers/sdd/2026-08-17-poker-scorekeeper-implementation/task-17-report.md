@@ -57,12 +57,19 @@ Round 2 TDD evidence: the focused restore/backup group first failed 7 review beh
 
 Round 3 TDD evidence: five focused behaviors first failed against `e1e4e44` (preflight mutation, CREATE/TERM ownership, final EPIPE cleanup, USTAR production, and 10 KiB record padding), then passed 5/5 after the minimal fixes. The complete backup/restore group passed 40/40.
 
+## Review Round 4 Fixes (2026-08-19)
+
+- The `CREATE DATABASE` child now ignores HUP, INT, and TERM before `exec`-ing `mysql`, so a signal delivered to both parent and child can interrupt only the parent wait while the child reaches an authoritative terminal status. The parent still records the pending signal, sets `db_created=1` only after explicit CREATE success, and then honors the signal so EXIT cleanup drops the owned schema. CREATE failure still never establishes ownership, preserving the existing-schema race protection.
+- The fake CREATE command now records a database-side state file before sending TERM to both its parent restore shell and itself. The regression test has a 15-second SIGKILL timeout and requires exit 143, removal of that database state through DROP, an empty avatar target, and no infinite wait.
+
+Round 4 TDD evidence: against `56d979d`, the new dual-recipient TERM test reached its 15-second `ETIMEDOUT` RED after the fake CREATE side effect. With only the CREATE-child signal isolation added, the same test passed 1/1 in 4.57 seconds. The complete backup/restore group then passed 41/41.
+
 ## Verification
 
 - `@poker/contracts`: 53/53 tests passed.
 - `@poker/settlement`: 14/14 tests passed.
 - `@poker/web`: 125/125 tests passed; focused GamePage 13/13 passed.
-- API pure unit/static/script suites: 154 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. This includes backup/restore 33/33 and restore-input guard 7/7.
+- API pure unit/static/script suites: 155 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. This includes backup/restore 34/34 and restore-input guard 7/7.
 - Security/readiness E2E: 29/29 passed, including raw malformed JSON/urlencoded requests, malformed/encoded namespace paths, and repeated readiness timeouts.
 - `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - `pnpm audit --prod --audit-level high`: `No known vulnerabilities found`.
