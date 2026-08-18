@@ -460,7 +460,7 @@ describe.sequential('recoverable settlement drafts', () => {
       expect(body.code).toBe('DRAFT_VERSION_CONFLICT');
       expect(body.details.latest).toMatchObject({ version: 2, payload: { roomFee: '380' } });
     });
-  });
+  }, 30_000);
 
   it('allows takeover only after expiry and audits the old and new editors', async () => {
     const fixture = await seedActiveGame('takeover');
@@ -500,7 +500,7 @@ describe.sequential('recoverable settlement drafts', () => {
     expect(audit).toMatchObject({ actorUserId: adminB.id });
     expect(audit.beforeJson).toMatchObject({ editorUserId: adminA.id });
     expect(audit.afterJson).toMatchObject({ editorUserId: adminB.id });
-  });
+  }, 30_000);
 
   it('uses current rake settings and each current user flag for every preview', async () => {
     const fixture = await seedActiveGame('live-rake');

@@ -79,23 +79,34 @@ describe('settlement draft transport', () => {
       settingsVersion: 1,
       previewReady: true,
       validationCode: null,
+      confirmationToken: 'server-signed-confirmation',
       totals: {
         buyIn: '300', cashOut: '300', roomFee: '0', otherFee: '0', rake: '0', final: '0'
       },
       players: [{
         playerId,
         nickname: '天一',
+        avatarKind: 'PRESET',
+        avatarValue: 'preset-01',
+        seatNo: 1,
         buyIn: '300',
         cashOut: '300',
         rawProfit: '0',
         roomFeeShare: '0',
         otherFeeShare: '0',
         afterFeeProfit: '0',
+        rakeEligible: false,
         rakeAmount: '0',
         finalAmount: '0'
       }]
     };
     expect(settlementDraftResponseSchema.parse(response)).toEqual(response);
+    expect(settlementDraftResponseSchema.safeParse({
+      ...response,
+      previewReady: false,
+      validationCode: 'MONEY_OVERFLOW',
+      confirmationToken: null
+    }).success).toBe(true);
     expect(settlementDraftResponseSchema.safeParse({ ...response, extra: true }).success).toBe(false);
   });
 });

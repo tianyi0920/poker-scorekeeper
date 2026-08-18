@@ -8,7 +8,7 @@
     "prebuild": "pnpm --filter @poker/contracts build && pnpm --filter @poker/settlement build && pnpm prisma:generate",
     "build": "tsc -p tsconfig.build.json",
     "pretest": "pnpm --filter @poker/contracts build && pnpm --filter @poker/settlement build && pnpm prisma:generate",
-    "test": "vitest run --config vitest.config.ts",
+    "test": "vitest run --config vitest.config.ts && vitest run --config vitest.e2e.config.ts",
     "pretest:e2e": "pnpm --filter @poker/contracts build && pnpm --filter @poker/settlement build && pnpm prisma:generate",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "pretest:integration": "pnpm --filter @poker/contracts build && pnpm --filter @poker/settlement build && pnpm prisma:generate",

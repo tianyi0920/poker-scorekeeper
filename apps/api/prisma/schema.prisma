@@ -196,25 +196,26 @@ model SettlementDraft {
 }
 
 model Settlement {
-  id                  String                    @id @default(cuid()) @db.VarChar(30)
-  gameId              String                    @unique @map("game_id") @db.VarChar(30)
-  buyInTotal          BigInt                    @map("buy_in_total") @db.BigInt
-  cashOutTotal        BigInt                    @map("cash_out_total") @db.BigInt
-  roomFee             BigInt                    @map("room_fee") @db.BigInt
-  otherFee            BigInt                    @map("other_fee") @db.BigInt
-  otherFeeNote        String                    @default("") @map("other_fee_note") @db.VarChar(500)
-  rakeThresholdUsed   BigInt                    @map("rake_threshold_used") @db.BigInt
-  rakeBpsUsed         Int                       @map("rake_bps_used")
-  settingsVersionUsed Int                       @map("settings_version_used")
-  rakeTotal           BigInt                    @map("rake_total") @db.BigInt
-  finalTotal          BigInt                    @map("final_total") @db.BigInt
-  settledById         String                    @map("settled_by_id") @db.VarChar(30)
-  lockedAt            DateTime                  @map("locked_at") @db.DateTime(3)
-  createdAt           DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
-  game                Game                      @relation(fields: [gameId], references: [id])
-  settledBy           User                      @relation("SettlementSettledBy", fields: [settledById], references: [id])
-  results             SettlementResult[]
-  feeAllocations      SettlementFeeAllocation[]
+  id                        String                    @id @default(cuid()) @db.VarChar(30)
+  gameId                    String                    @unique @map("game_id") @db.VarChar(30)
+  buyInTotal                BigInt                    @map("buy_in_total") @db.BigInt
+  cashOutTotal              BigInt                    @map("cash_out_total") @db.BigInt
+  roomFee                   BigInt                    @map("room_fee") @db.BigInt
+  otherFee                  BigInt                    @map("other_fee") @db.BigInt
+  otherFeeNote              String                    @default("") @map("other_fee_note") @db.VarChar(500)
+  rakeThresholdUsed         BigInt                    @map("rake_threshold_used") @db.BigInt
+  rakeBpsUsed               Int                       @map("rake_bps_used")
+  settingsVersionUsed       Int                       @map("settings_version_used")
+  rakeTotal                 BigInt                    @map("rake_total") @db.BigInt
+  finalTotal                BigInt                    @map("final_total") @db.BigInt
+  settledById               String                    @map("settled_by_id") @db.VarChar(30)
+  settledByNicknameSnapshot String                    @map("settled_by_nickname_snapshot") @db.VarChar(64)
+  lockedAt                  DateTime                  @map("locked_at") @db.DateTime(3)
+  createdAt                 DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
+  game                      Game                      @relation(fields: [gameId], references: [id])
+  settledBy                 User                      @relation("SettlementSettledBy", fields: [settledById], references: [id])
+  results                   SettlementResult[]
+  feeAllocations            SettlementFeeAllocation[]
 
   @@map("settlements")
 }

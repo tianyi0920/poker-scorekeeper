@@ -1,17 +1,31 @@
-import type {
-  AdjustLatestBuyinRequest,
-  BuyHandsRequest,
-  BuyinEventResponse,
-  CreateGameRequest,
-  CreateUserRequest,
-  CurrentGamesResponse,
-  GameSnapshotDto,
-  RakeSettingsDto,
-  SelectPresetAvatarRequest,
-  UpdateRakeSettingsRequest,
-  UpdateUserRequest,
-  UserResponse
+import {
+  allPlayerAggregationSchema,
+  historyResponseSchema,
+  settlementDetailSchema,
+  settlementDraftResponseSchema,
+  settlementPreviewResponseSchema,
+  type AdjustLatestBuyinRequest,
+  type AllPlayerAggregationDto,
+  type BuyHandsRequest,
+  type BuyinEventResponse,
+  type CreateGameRequest,
+  type CreateUserRequest,
+  type CurrentGamesResponse,
+  type FinalizeSettlementRequest,
+  type GameSnapshotDto,
+  type HistoryResponseDto,
+  type RakeSettingsDto,
+  type SaveSettlementDraftRequest,
+  type SelectPresetAvatarRequest,
+  type SettlementDetailDto,
+  type SettlementDraftDto,
+  type SettlementDraftPayload,
+  type SettlementPreviewDto,
+  type UpdateRakeSettingsRequest,
+  type UpdateUserRequest,
+  type UserResponse
 } from '@poker/contracts';
+import type { ZodType } from 'zod';
 import { ApiError, apiFetch, csrfTokenStore } from './http-client.js';
 
 export interface HistoryGameSummary {
@@ -39,6 +53,28 @@ export interface AvatarMutationResponse {
   avatarValue: string;
 }
 
+function invalidApiResponse(): ApiError {
+  return new ApiError(502, 'HTTP_ERROR', '服务器返回了无效结果');
+}
+
+async function validatedApiFetch<T>(schema: ZodType<T>, path: string, init?: RequestInit): Promise<T> {
+  const result = schema.safeParse(await apiFetch<unknown>(path, init));
+  if (!result.success) throw invalidApiResponse();
+  return result.data;
+}
+
+async function validatedSettlementDetail(gameId: string, path: string, init?: RequestInit): Promise<SettlementDetailDto> {
+  const detail = await validatedApiFetch(settlementDetailSchema, path, init);
+  if (detail.game.id !== gameId) throw invalidApiResponse();
+  return detail;
+}
+
+async function validatedSettlementDraft(gameId: string, path: string, init?: RequestInit): Promise<SettlementDraftDto> {
+  const draft = await validatedApiFetch(settlementDraftResponseSchema, path, init);
+  if (draft.gameId !== gameId) throw invalidApiResponse();
+  return draft;
+}
+
 export const scorekeeperApi = {
   currentGames: () => apiFetch<CurrentGamesResponse>('/games/current'),
   gameSnapshot: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`),
@@ -49,6 +85,22 @@ export const scorekeeperApi = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   recentHistory: (limit = 10) => apiFetch<HistoryListResponse>(`/history?limit=${limit}`),
+  settlementDraft: (gameId: string, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft`, { signal }),
+  saveSettlementDraft: (gameId: string, body: SaveSettlementDraftRequest, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
+  }),
+  takeOverSettlementDraft: (gameId: string, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft/takeover`, { method: 'POST', signal }),
+  previewSettlement: (gameId: string, body: SettlementDraftPayload, signal?: AbortSignal): Promise<SettlementPreviewDto> => validatedApiFetch(settlementPreviewResponseSchema, `/games/${encodeURIComponent(gameId)}/settlement-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
+  }),
+  finalizeSettlement: (gameId: string, body: FinalizeSettlementRequest, signal?: AbortSignal): Promise<SettlementDetailDto> => validatedSettlementDetail(gameId, `/games/${encodeURIComponent(gameId)}/settlement-finalize`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
+  }),
+  history: (limit = 10, cursor?: string): Promise<HistoryResponseDto> => validatedApiFetch(historyResponseSchema, `/history?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`),
+  historyDetail: (gameId: string): Promise<SettlementDetailDto> => validatedSettlementDetail(gameId, `/history/${encodeURIComponent(gameId)}`),
+  aggregateHistory: (body: { gameIds: string[] } | { filter: { kind: 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS' } | { kind: 'CUSTOM_DATE_RANGE'; startAt: string; endAt: string } }): Promise<AllPlayerAggregationDto> => validatedApiFetch(allPlayerAggregationSchema, '/history/aggregate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
   createGame: (body: CreateGameRequest) => apiFetch<GameSnapshotDto>('/games', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),

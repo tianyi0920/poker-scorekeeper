@@ -30,6 +30,8 @@ export const ERROR_CODES = {
   RESOURCE_CONFLICT: 'RESOURCE_CONFLICT',
   DATABASE_BUSY: 'DATABASE_BUSY',
   DATABASE_UNAVAILABLE: 'DATABASE_UNAVAILABLE',
+  SETTLEMENT_PREVIEW_CONFLICT: 'SETTLEMENT_PREVIEW_CONFLICT',
+  HISTORY_SCOPE_DENIED: 'HISTORY_SCOPE_DENIED',
   NOT_FOUND: 'NOT_FOUND',
   INTERNAL_ERROR: 'INTERNAL_ERROR'
 } as const;
@@ -68,6 +70,8 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   RESOURCE_CONFLICT: 'Resource already exists',
   DATABASE_BUSY: 'Database is busy; retry the request',
   DATABASE_UNAVAILABLE: 'Database is unavailable',
+  SETTLEMENT_PREVIEW_CONFLICT: 'Settlement preview is no longer current',
+  HISTORY_SCOPE_DENIED: 'History is not available for this game',
   NOT_FOUND: 'Not found',
   INTERNAL_ERROR: 'Internal server error'
 };
