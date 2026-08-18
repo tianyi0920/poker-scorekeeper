@@ -84,7 +84,7 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,mode=1777 \
   poker-scorekeeper:local
 ```
 
-恢复先取得 `/data/restore/.restore.lock`，再以 `O_NOFOLLOW|O_NONBLOCK` 打开每个输入，并通过同一文件描述符 `fstat`、限额流式复制到 `O_EXCL` 私有快照；FIFO、设备、软链接、初始超限或复制中增长超限都会在建库前拒绝。清单和校验文件各固定上限 64 KiB。建库前还会验证 gzip、三项 SHA-256、完整且字段唯一的 `format_version=1` 清单，并流式解析 tar header 检查路径、类型、数量和体积，不把无界 tar listing 写入磁盘。默认/硬上限如下；如需调整，只能通过 `.env.restore` 中的变量在硬上限内设置正整数：
+恢复先取得 `/data/restore/.restore.lock`，再以 `O_NOFOLLOW|O_NONBLOCK` 打开每个输入，并通过同一文件描述符 `fstat`、限额流式复制到 `O_EXCL` 私有快照；FIFO、设备、软链接、初始超限或复制中增长超限都会在建库前拒绝。清单和校验文件各固定上限 64 KiB。建库前还会先对 SQL gzip 执行一次完整但受 `RESTORE_MAX_SQL_EXPANDED_BYTES` 限制的流式解压（输出丢弃），同时验证三项 SHA-256、完整且字段唯一的 `format_version=1` 清单，并流式解析 USTAR header 检查路径、类型、数量和体积，不把无界 tar listing 写入磁盘。默认/硬上限如下；如需调整，只能通过 `.env.restore` 中的变量在硬上限内设置正整数：
 
 | 变量 | 默认值 | 硬上限 |
 | --- | ---: | ---: |
@@ -95,7 +95,7 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,mode=1777 \
 | `RESTORE_MAX_AVATAR_FILE_BYTES` | 8 MiB | 16 MiB |
 | `RESTORE_MAX_AVATAR_TOTAL_BYTES` | 512 MiB | 4 GiB |
 
-SQL 导入还经过展开字节流限额；超限会让 `pipefail` 触发并删除本轮已确认创建的库。失败或 TERM 只会删除 `CREATE DATABASE` 已明确成功的本轮库；头像目标只有包含本轮唯一 ownership marker 时才会删除并重建，外部竞态写入不会被递归清理。成功的演练头像目录会保留隐藏 ownership marker，应用和后续备份均不暴露/归档它。
+SQL 真正导入时会再经过同一展开字节流限额，作为第二道防线；超限会让 `pipefail` 触发并删除本轮已确认创建的库。失败或 TERM 只会删除 `CREATE DATABASE` 已明确成功的本轮库；头像目标只有包含本轮唯一 ownership marker 时才会删除并重建，外部竞态写入不会被递归清理。成功的演练头像目录会保留隐藏 ownership marker，应用和后续备份均不暴露/归档它。
 
 断电或 `SIGKILL` 可能留下 `/data/restore/.restore.lock`。先用 `docker ps`/`docker top` 确认没有恢复进程，再人工核对目标库、头像目录和 marker 的完整状态；只能对确认属于已终止演练的空锁目录执行 `rmdir data/restore/.restore.lock`，不得递归删除。若临时账号权限不足，脚本会输出不含凭据的 `restore cleanup failed`；此时立即人工检查，不能假设清理成功。
 

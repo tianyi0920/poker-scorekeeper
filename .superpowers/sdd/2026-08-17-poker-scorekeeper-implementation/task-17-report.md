@@ -49,12 +49,20 @@ No command connected to, queried, migrated, reset, or cleaned `tianyi.wiki:8306`
 
 Round 2 TDD evidence: the focused restore/backup group first failed 7 review behaviors, readiness/TLS failed 4, and malformed-path E2E failed 3. Final focused suites passed backup/restore 31/31, input guard/readiness/Prisma 14/14, and security/readiness E2E 29/29.
 
+## Review Round 3 Fixes (2026-08-19)
+
+- SQL gzip validation now performs a complete but bounded decompression through the same expanded-byte limiter before any database or avatar staging mutation. The import pipeline retains its limiter as defense in depth. Corrupt or over-expanded SQL therefore fails before `CREATE DATABASE`.
+- Signals received while the `CREATE DATABASE` child is completing are recorded instead of immediately exiting the owner shell. The script waits for the child's authoritative status, records database ownership only after success, then honors the pending signal so cleanup drops exactly this run's schema. The final `completed` transition now follows every failure-capable success output, so EPIPE still rolls back both owned targets.
+- Backups explicitly request USTAR. The streaming archive envelope now budgets per-entry header/padding plus a full 20-block (10 KiB) record, accepting a portable padded fixture at exact logical limits without weakening entry/file/total caps. Synology restore documentation now describes the bounded preflight and second import-time limit.
+
+Round 3 TDD evidence: five focused behaviors first failed against `e1e4e44` (preflight mutation, CREATE/TERM ownership, final EPIPE cleanup, USTAR production, and 10 KiB record padding), then passed 5/5 after the minimal fixes. The complete backup/restore group passed 40/40.
+
 ## Verification
 
 - `@poker/contracts`: 53/53 tests passed.
 - `@poker/settlement`: 14/14 tests passed.
 - `@poker/web`: 125/125 tests passed; focused GamePage 13/13 passed.
-- API pure unit/static/script suites: 151 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite.
+- API pure unit/static/script suites: 154 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. This includes backup/restore 33/33 and restore-input guard 7/7.
 - Security/readiness E2E: 29/29 passed, including raw malformed JSON/urlencoded requests, malformed/encoded namespace paths, and repeated readiness timeouts.
 - `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - `pnpm audit --prod --audit-level high`: `No known vulnerabilities found`.
@@ -69,7 +77,7 @@ Round 2 TDD evidence: the focused restore/backup group first failed 7 review beh
 
 - Docker CLI/daemon and Buildx are not installed in this environment. Real `docker compose config`, image build, multi-stage Linux dependency install, container health smoke, migration-on-start, and named-volume persistence were not run. YAML/Dockerfile policies and pnpm 10 production dependency behavior were verified statically/locally, but a Linux Docker smoke on the Synology or another Docker host remains mandatory before production.
 - `shellcheck` is unavailable. Bash parsing and destructive-path behavior tests passed, but ShellCheck itself was not run.
-- This Windows host provides bsdtar 3.8 rather than GNU tar. The streaming parser accepted a real host-generated USTAR archive and adversarial handcrafted headers; the production Debian GNU tar create/extract round trip remains part of the required Docker smoke.
+- This Windows host provides bsdtar 3.8 rather than GNU tar. The streaming parser accepted a real host-generated USTAR archive, a portable 20-block padded USTAR fixture at exact logical limits, and adversarial handcrafted headers; the production Debian GNU tar create/extract round trip remains part of the required Docker smoke.
 - Database-backed API E2E suites were not run because the authorized remote test database is owned by another task and local Docker is unavailable. Focused hardening E2E uses injected fakes and no database. Run the repository's database integration suites only against a new isolated local Compose project or after the controller explicitly releases the authorized test schema.
 - The real Linux `O_NOFOLLOW` symlink test is skipped on Windows because Node does not expose that flag on this platform. Production is the Debian Linux image; the open-once/fstat/read contract and flag request are otherwise covered by unit tests, and the Linux container smoke must exercise the real symlink case.
 - The `deepmerge-ts` 8.0.1 override crosses a transitive major version because Prisma 7.9.1 has not yet published a patched declaration. Current Prisma generate/config/diff behavior passes; retain the audit gate and remove the override once Prisma officially adopts 8.x.

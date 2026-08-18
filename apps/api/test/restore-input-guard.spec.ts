@@ -53,7 +53,12 @@ function tarArchive(entries: TarEntry[]): Buffer {
     if (padding > 0) blocks.push(Buffer.alloc(padding));
   }
   blocks.push(Buffer.alloc(1024));
-  return gzipSync(Buffer.concat(blocks));
+  const logicalArchive = Buffer.concat(blocks);
+  const portableRecord = Buffer.concat([
+    logicalArchive,
+    Buffer.alloc(Math.max(0, (20 * 512) - logicalArchive.byteLength))
+  ]);
+  return gzipSync(portableRecord);
 }
 
 const defaultLimits = {
@@ -175,6 +180,37 @@ describe('restore input guard', () => {
     expect(result.status, result.stderr).toBe(0);
 
     await expect(validateAvatarArchive(archive, defaultLimits)).resolves.toEqual({
+      entries: 2,
+      files: 1,
+      totalBytes: 11
+    });
+
+    await expect(validateAvatarArchive(archive, {
+      maxEntries: 2,
+      maxFileBytes: 11,
+      maxTotalBytes: 11,
+      maxPathBytes: 160
+    })).resolves.toEqual({
+      entries: 2,
+      files: 1,
+      totalBytes: 11
+    });
+  });
+
+  it('accepts a portable 20-block tar record at exact logical limits', async () => {
+    // Break caught: the envelope budgets payload but rejects standard 10 KiB tar record padding.
+    const archive = join(root, 'portable-record.tar.gz');
+    await writeFile(archive, tarArchive([
+      { name: 'avatars/', type: '5' },
+      { name: `avatars/${avatarName}`, contents: Buffer.from('real-avatar') }
+    ]));
+
+    await expect(validateAvatarArchive(archive, {
+      maxEntries: 2,
+      maxFileBytes: 11,
+      maxTotalBytes: 11,
+      maxPathBytes: 160
+    })).resolves.toEqual({
       entries: 2,
       files: 1,
       totalBytes: 11

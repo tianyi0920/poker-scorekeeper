@@ -128,7 +128,7 @@ docker compose exec -T app /app/scripts/backup/backup.sh
 
 ## 7. 恢复演练（只对隔离测试目标）
 
-恢复脚本不会覆盖现有数据库，也拒绝活动式生产库名。目标必须是新的 `*_test` 或 `*_restore[_标识]` 数据库，并需要数据库名和完整动作二次确认。它先取得恢复父目录锁，再用同一非跟随、非阻塞文件描述符把四个输入限额快照；建库前验证 gzip、SHA-256、唯一 `format_version=1` 清单，并流式解析 tar 路径、类型和资源上限。默认上限为：SQL 压缩包 1 GiB/展开流 4 GiB、头像压缩包 256 MiB、总条目 10,000、单文件 8 MiB、展开总量 512 MiB；清单和 checksum 各固定 64 KiB，可用同名 `RESTORE_MAX_*` 环境变量调低或在硬上限内调高，完整名称见 [backup-restore.md](./backup-restore.md)。
+恢复脚本不会覆盖现有数据库，也拒绝活动式生产库名。目标必须是新的 `*_test` 或 `*_restore[_标识]` 数据库，并需要数据库名和完整动作二次确认。它先取得恢复父目录锁，再用同一非跟随、非阻塞文件描述符把四个输入限额快照；建库前验证 SHA-256、唯一 `format_version=1` 清单，并将 SQL gzip 在展开上限内完整流式验证，同时解析 USTAR 路径、类型和资源上限。默认上限为：SQL 压缩包 1 GiB/展开流 4 GiB、头像压缩包 256 MiB、总条目 10,000、单文件 8 MiB、展开总量 512 MiB；清单和 checksum 各固定 64 KiB，可用同名 `RESTORE_MAX_*` 环境变量调低或在硬上限内调高，完整名称见 [backup-restore.md](./backup-restore.md)。
 
 下面只演练到新库和 `data/restore/avatars`。恢复账号的创建、`600` 专用环境文件、精确 GRANT、撤销和失败检查必须按 [backup-restore.md](./backup-restore.md) 执行。先保证目标为空并从 `latest-stamp` 读取备份标识：
 

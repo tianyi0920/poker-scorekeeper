@@ -80,7 +80,7 @@ while IFS= read -r -d '' path; do
     printf '%s/%s\n' "$avatar_base" "$name" >> "$avatar_list"
   fi
 done < <(find "$avatar_root" -mindepth 1 -maxdepth 1 -type f -print0 | sort -z)
-tar -C "$avatar_parent" -czf "$stage/$avatar_name" \
+tar -C "$avatar_parent" --format=ustar -czf "$stage/$avatar_name" \
   --no-recursion --verbatim-files-from --files-from="$avatar_list"
 
 {

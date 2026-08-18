@@ -178,7 +178,9 @@ export async function validateAvatarArchive(archivePath, limits) {
   const maxFileBytes = positiveInteger(limits.maxFileBytes, 'avatar file limit');
   const maxTotalBytes = positiveInteger(limits.maxTotalBytes, 'avatar total limit');
   const maxPathBytes = positiveInteger(limits.maxPathBytes, 'avatar path limit');
-  const maximumTarBytes = maxTotalBytes + ((maxEntries + 4) * 1024);
+  // One entry can consume a 512-byte header plus up to 511 bytes of padding.
+  // A conforming producer may then pad the archive to a 20-block (10 KiB) record.
+  const maximumTarBytes = maxTotalBytes + (maxEntries * 1024) + (20 * 512);
   if (!Number.isSafeInteger(maximumTarBytes)) throw new RestoreInputError('invalid avatar limits');
 
   const gunzip = createReadStream(archivePath).pipe(createGunzip());

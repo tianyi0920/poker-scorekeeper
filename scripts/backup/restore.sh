@@ -63,6 +63,19 @@ restore_lock_dir=''
 restore_lock_acquired=0
 restore_token=''
 ownership_marker='.poker-restore-owner'
+create_in_progress=0
+pending_signal_status=0
+
+handle_signal() {
+  local signal_status="$1"
+  if (( ${create_in_progress:-0} == 1 )); then
+    if (( ${pending_signal_status:-0} == 0 )); then
+      pending_signal_status="$signal_status"
+    fi
+    return 0
+  fi
+  exit "$signal_status"
+}
 
 cleanup() {
   status=$?
@@ -100,9 +113,9 @@ cleanup() {
   return "$status"
 }
 trap cleanup EXIT
-trap 'exit 129' HUP
-trap 'exit 130' INT
-trap 'exit 143' TERM
+trap 'handle_signal 129' HUP
+trap 'handle_signal 130' INT
+trap 'handle_signal 143' TERM
 
 input_dir="$(cd -- "$(dirname -- "$SQL_ARCHIVE")" && pwd -P)"
 for file in "$AVATAR_ARCHIVE" "$MANIFEST_FILE" "$CHECKSUM_FILE"; do
@@ -191,7 +204,9 @@ done < "$MANIFEST_FILE"
 [[ "${manifest_values[stamp]:-}" == "$stamp" ]] || die 'manifest stamp mismatch'
 [[ "${manifest_values[database]:-}" =~ ^[a-z][a-z0-9_]{2,63}$ ]] || die 'invalid backup manifest'
 [[ "${manifest_values[avatar_directory]:-}" == avatars ]] || die 'invalid avatar manifest root'
-gzip -t "$SQL_ARCHIVE" || die 'invalid SQL gzip stream'
+gzip -dc "$SQL_ARCHIVE" | \
+  "$node_binary" "$restore_input_guard" limit-stream "$max_sql_expanded_bytes" \
+  >/dev/null || die 'invalid or over-expanded SQL gzip stream'
 
 target_parent="$(cd -- "$(dirname -- "$RESTORE_AVATAR_ROOT")" && pwd -P)"
 target_base="$(basename -- "$RESTORE_AVATAR_ROOT")"
@@ -230,10 +245,30 @@ existing="$(MYSQL_PWD="$MYSQL_PASSWORD" mysql \
   --batch --skip-column-names \
   --execute="SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '$RESTORE_DATABASE'")"
 [[ -z "$existing" ]] || die 'restore database already exists'
+create_in_progress=1
 MYSQL_PWD="$MYSQL_PASSWORD" mysql \
   --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
-  --execute="CREATE DATABASE \`$RESTORE_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
+  --execute="CREATE DATABASE \`$RESTORE_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci" &
+create_pid=$!
+while true; do
+  if wait "$create_pid"; then
+    create_status=0
+  else
+    create_status=$?
+  fi
+  if (( pending_signal_status != 0 && create_status >= 128 )); then
+    continue
+  fi
+  break
+done
+if (( create_status != 0 )); then
+  create_in_progress=0
+  if (( pending_signal_status != 0 )); then exit "$pending_signal_status"; fi
+  exit "$create_status"
+fi
 db_created=1
+create_in_progress=0
+if (( pending_signal_status != 0 )); then exit "$pending_signal_status"; fi
 gzip -dc "$SQL_ARCHIVE" | \
   "$node_binary" "$restore_input_guard" limit-stream "$max_sql_expanded_bytes" | \
   MYSQL_PWD="$MYSQL_PASSWORD" mysql \
@@ -246,5 +281,5 @@ gzip -dc "$SQL_ARCHIVE" | \
 rmdir -- "$restore_avatar_root"
 mv -- "$stage" "$restore_avatar_root"
 stage=''
-completed=1
 printf 'restore complete: %s into %s\n' "$stamp" "$RESTORE_DATABASE"
+completed=1

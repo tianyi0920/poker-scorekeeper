@@ -85,8 +85,37 @@ function runScriptAsync(script: string, env: Record<string, string>) {
   });
 }
 
-async function waitForPath(path: string): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
+async function runScriptWithClosedStdout(
+  script: string,
+  env: Record<string, string>,
+  readyFile: string,
+  releaseFile: string
+) {
+  const child = spawn(bash, [shellPath(script)], {
+    cwd: repositoryRoot,
+    env: { ...process.env, ...env },
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stderr = '';
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+  const exited = new Promise<{ status: number | null; signal: NodeJS.Signals | null; stderr: string }>(
+    (resolveResult) => {
+      child.on('exit', (status, signal) => resolveResult({ status, signal, stderr }));
+    }
+  );
+  try {
+    await waitForPath(readyFile, 500);
+    child.stdout.destroy();
+    await writeFile(releaseFile, 'continue');
+    return await exited;
+  } catch (error) {
+    child.kill('SIGKILL');
+    throw error;
+  }
+}
+
+async function waitForPath(path: string, maximumAttempts = 100): Promise<void> {
+  for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
     if (await stat(path).then(() => true).catch(() => false)) return;
     await new Promise((resolveWait) => setTimeout(resolveWait, 20));
   }
@@ -120,8 +149,20 @@ for value in "$@"; do printf ' <%s>' "$value" >> "$FAKE_COMMAND_LOG"; done
 printf '\n' >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *INFORMATION_SCHEMA.SCHEMATA*) [ "\${FAKE_SCHEMA_EXISTS:-0}" = 1 ] && printf '%s\n' existing ;;
-  *'CREATE DATABASE'*) [ "\${FAKE_CREATE_FAIL_AFTER_SIDE_EFFECT:-0}" = 1 ] && exit 12 ;;
+  *'CREATE DATABASE'*)
+    [ "\${FAKE_CREATE_FAIL_AFTER_SIDE_EFFECT:-0}" = 1 ] && exit 12
+    [ "\${FAKE_SIGNAL_ON_CREATE_SUCCESS:-0}" = 1 ] && kill -TERM "$PPID"
+    ;;
   *'DROP DATABASE'*) [ "\${FAKE_DROP_FAIL:-0}" = 1 ] && exit 13 ;;
+esac
+case " $* " in
+  *--execute=*) ;;
+  *)
+    if [ -n "\${FAKE_IMPORT_READY_FILE:-}" ]; then
+      : > "$FAKE_IMPORT_READY_FILE"
+      while [ ! -f "$FAKE_IMPORT_RELEASE_FILE" ]; do sleep 0.02; done
+    fi
+    ;;
 esac
 input="$(cat)"
 if [ -n "$input" ]; then
@@ -135,6 +176,7 @@ exit 0
   await writeExecutable(join(bin, 'gzip'), `#!/bin/sh
 if [ "\${1:-}" = -t ]; then [ "\${FAKE_GZIP_TEST_FAIL:-0}" = 1 ] && exit 11; exit 0; fi
 if [ "\${1:-}" = -dc ]; then
+  [ "\${FAKE_GZIP_TEST_FAIL:-0}" = 1 ] && exit 11
   if [ -n "\${FAKE_GZIP_OUTPUT_BYTES:-}" ]; then
     head -c "$FAKE_GZIP_OUTPUT_BYTES" /dev/zero | tr '\\000' x
   else
@@ -308,6 +350,7 @@ describe('backup and restore scripts', () => {
     expect(commandLog).toContain('mysqldump');
     expect(commandLog).toContain('<--single-transaction>');
     expect(commandLog).toContain('<--skip-add-locks>');
+    expect(commandLog).toContain('<--format=ustar>');
     expect(commandLog).not.toContain('do-not-log-this-password');
   });
 
@@ -527,6 +570,26 @@ describe('backup and restore scripts', () => {
     expect(await readdir(target)).toEqual([]);
   });
 
+  it('owns and drops a successfully created database when TERM arrives at CREATE completion', async () => {
+    // Break caught: TERM between CREATE success and ownership bookkeeping leaves the new schema behind.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_SIGNAL_ON_CREATE_SUCCESS: '1'
+    }));
+
+    expect(result.status).toBe(143);
+    const commands = await readFile(fake.log, 'utf8');
+    expect(commands).toContain('CREATE DATABASE');
+    expect(commands).toContain('DROP DATABASE');
+    expect(await readdir(target)).toEqual([]);
+  });
+
   it('does not delete external avatar content written after the empty check', async () => {
     // Break caught: publication rmdir fails after an external writer arrives, then cleanup rm -rf deletes it.
     const bundle = await createRestoreBundle(root);
@@ -619,8 +682,8 @@ describe('backup and restore scripts', () => {
     expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
   });
 
-  it('drops the owned database when decompressed SQL exceeds its streaming limit', async () => {
-    // Break caught: a tiny gzip expands without bound into mysql and leaves a partial restore schema.
+  it('rejects over-expanded SQL before creating a database or staging avatars', async () => {
+    // Break caught: gzip integrity validation expands unbounded before the guarded import pipeline.
     const bundle = await createRestoreBundle(root);
     const parent = join(root, 'restore');
     const target = join(parent, 'avatars');
@@ -634,10 +697,31 @@ describe('backup and restore scripts', () => {
     }));
 
     expect(result.status).not.toBe(0);
-    const commands = await readFile(fake.log, 'utf8');
-    expect(commands).toContain('CREATE DATABASE');
-    expect(commands).toContain('DROP DATABASE');
+    const commands = await readFile(fake.log, 'utf8').catch(() => '');
+    expect(commands).not.toContain('mysql');
+    expect(commands).not.toContain('tar');
     expect(await readdir(target)).toEqual([]);
+  });
+
+  it('rolls back both owned targets when the final success output gets EPIPE', async () => {
+    // Break caught: success is marked before the last fallible output and cleanup skips a failed handoff.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const ready = join(root, 'import-ready');
+    const release = join(root, 'import-release');
+    const result = await runScriptWithClosedStdout(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_IMPORT_READY_FILE: shellPath(ready),
+      FAKE_IMPORT_RELEASE_FILE: shellPath(release)
+    }), ready, release);
+
+    expect(result.status === 0 && result.signal === null, result.stderr).toBe(false);
+    expect(await readdir(target)).toEqual([]);
+    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
   });
 });
 
