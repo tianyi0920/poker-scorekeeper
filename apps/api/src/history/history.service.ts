@@ -1,5 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { formatMoney, type HistoryResponseDto, type SettlementDetailDto } from '@poker/contracts';
+import {
+  canonicalPublicIdSchema,
+  formatMoney,
+  type HistoryResponseDto,
+  type SettlementDetailDto
+} from '@poker/contracts';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { badRequest, notFound } from '../common/errors/app-error.js';
 import { GameStatus, Prisma } from '../generated/prisma/client.js';
@@ -62,6 +67,7 @@ export class HistoryService {
   }
 
   async get(gameId: string, actor: AuthUser): Promise<SettlementDetailDto> {
+    if (!canonicalPublicIdSchema.safeParse(gameId).success) throw badRequest('VALIDATION_ERROR');
     const game = await this.prisma.game.findFirst({ where: { id: gameId, status: GameStatus.COMPLETED, ...historyScope(actor) }, include: detailInclude });
     if (game === null || game.settlement === null || game.settledBy === null || game.completedAt === null || game.startedAt === null || game.stoppedAt === null) throw notFound('HISTORY_SCOPE_DENIED');
     return detail(game);
