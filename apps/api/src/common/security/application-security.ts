@@ -8,10 +8,12 @@ import { ApiExceptionFilter } from '../errors/api-exception.filter.js';
 import { AppError } from '../errors/app-error.js';
 import { ERROR_MESSAGES } from '../errors/error-codes.js';
 import { StructuredLogger } from './structured-logger.js';
+import { createStaticAssetsHandler } from '../../static/static.module.js';
 
 const MAX_REQUEST_ID_LENGTH = 128;
 const MAX_REQUEST_URI_BYTES = 2_048;
 const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/;
+const PERMISSIONS_POLICY = 'camera=(), microphone=(), geolocation=(), payment=(), usb=()';
 
 export interface RequestWithId extends Request {
   requestId?: string;
@@ -48,12 +50,46 @@ function requestTargetLimit(req: RequestWithId, _res: Response, next: NextFuncti
   ));
 }
 
+function websocketCspSources(environment: NodeJS.ProcessEnv): string[] {
+  const candidates = [
+    environment.PUBLIC_ORIGIN,
+    ...(environment.WS_ALLOWED_ORIGINS?.split(',') ?? [])
+  ];
+  const sources = new Set<string>();
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate.trim() === '') continue;
+    let url: URL;
+    try {
+      url = new URL(candidate.trim());
+    } catch {
+      throw new Error('Invalid public origin configuration');
+    }
+    if (
+      (url.protocol !== 'http:' && url.protocol !== 'https:') ||
+      url.username !== '' ||
+      url.password !== '' ||
+      url.origin === 'null'
+    ) {
+      throw new Error('Invalid public origin configuration');
+    }
+    url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
+    sources.add(url.origin);
+  }
+  return [...sources];
+}
+
+function permissionsPolicy(_req: Request, res: Response, next: NextFunction): void {
+  res.setHeader('Permissions-Policy', PERMISSIONS_POLICY);
+  next();
+}
+
 export function configureApplication(
   app: INestApplication,
   logger: StructuredLogger = new StructuredLogger()
 ): void {
   const environment = process.env.NODE_ENV;
-  const express = app.getHttpAdapter().getInstance<Application>();
+  const connectSources = ["'self'", ...websocketCspSources(process.env)];
+  const express = app.getHttpAdapter().getInstance() as Application;
   express.set('trust proxy', trustProxySetting(environment));
   express.disable('x-powered-by');
 
@@ -64,7 +100,7 @@ export function configureApplication(
       directives: {
         defaultSrc: ["'self'"],
         baseUri: ["'self'"],
-        connectSrc: ["'self'"],
+        connectSrc: connectSources,
         fontSrc: ["'self'", 'data:'],
         formAction: ["'self'"],
         frameAncestors: ["'none'"],
@@ -86,7 +122,9 @@ export function configureApplication(
     noSniff: true,
     referrerPolicy: { policy: 'no-referrer' }
   }));
+  app.use(permissionsPolicy);
   app.use(json({ limit: '256kb', strict: true }));
   app.use(urlencoded({ limit: '64kb', extended: false, parameterLimit: 100 }));
+  app.use(createStaticAssetsHandler());
   app.useGlobalFilters(new ApiExceptionFilter(logger));
 }

@@ -1,16 +1,8 @@
-import {
-  Inject,
-  Injectable,
-  Module,
-  type MiddlewareConsumer,
-  type NestMiddleware,
-  type NestModule
-} from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
+import { Module } from '@nestjs/common';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { static as serveStatic } from 'express';
 import { lstat, readFile, realpath } from 'node:fs/promises';
-import { extname, join, resolve, sep } from 'node:path';
+import { extname, join, relative, resolve, sep } from 'node:path';
 
 const UPLOAD_PATH_PREFIX = '/avatars/uploads/';
 const UPLOAD_FILENAME = /^[A-Za-z0-9_-]{1,30}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/;
@@ -27,25 +19,31 @@ function wantsHtml(req: Request): boolean {
   return accept === undefined || accept === '*/*' || accept.includes('text/html');
 }
 
-@Injectable()
-export class StaticAssetsMiddleware implements NestMiddleware {
+export class StaticAssetsMiddleware {
   private readonly webRoot: string;
   private readonly avatarRoot: string;
   private readonly webAssets: RequestHandler;
 
-  constructor(@Inject(ConfigService) config: ConfigService) {
+  constructor(environment: NodeJS.ProcessEnv = process.env) {
     this.webRoot = resolve(
-      config.get<string>('WEB_DIST_ROOT') ?? join(process.cwd(), 'apps', 'web', 'dist')
+      environment.WEB_DIST_ROOT ?? join(process.cwd(), 'apps', 'web', 'dist')
     );
     this.avatarRoot = resolve(
-      config.get<string>('AVATAR_ROOT') ?? join(process.cwd(), 'data', 'avatars')
+      environment.AVATAR_ROOT ?? join(process.cwd(), 'data', 'avatars')
     );
     this.webAssets = serveStatic(this.webRoot, {
       dotfiles: 'deny',
       fallthrough: true,
       index: false,
       immutable: true,
-      maxAge: '1y'
+      maxAge: '1y',
+      redirect: false,
+      setHeaders: (response, filePath) => {
+        const relativePath = relative(this.webRoot, filePath);
+        if (relativePath !== 'assets' && !relativePath.startsWith(`assets${sep}`)) {
+          response.setHeader('Cache-Control', 'no-cache');
+        }
+      }
     });
   }
 
@@ -131,9 +129,12 @@ export class StaticAssetsMiddleware implements NestMiddleware {
   }
 }
 
-@Module({ providers: [StaticAssetsMiddleware] })
-export class StaticModule implements NestModule {
-  configure(consumer: MiddlewareConsumer): void {
-    consumer.apply(StaticAssetsMiddleware).forRoutes('*');
-  }
+export function createStaticAssetsHandler(
+  environment: NodeJS.ProcessEnv = process.env
+): RequestHandler {
+  const middleware = new StaticAssetsMiddleware(environment);
+  return middleware.use.bind(middleware);
 }
+
+@Module({})
+export class StaticModule {}

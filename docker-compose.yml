@@ -1,0 +1,40 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: poker-scorekeeper:local
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      WEB_DIST_ROOT: /app/apps/web/dist
+      AVATAR_ROOT: /data/avatars
+      BACKUP_DIR: /data/backups
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data/avatars:/data/avatars
+      - ./data/backups:/data/backups
+      - ./data/restore-avatars:/data/restore-avatars
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test: ["CMD", "node", "scripts/docker/healthcheck.mjs"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+    stop_grace_period: 30s
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"

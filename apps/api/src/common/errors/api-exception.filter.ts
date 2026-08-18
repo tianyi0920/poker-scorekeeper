@@ -41,7 +41,9 @@ const STATUS_CODES: Partial<Record<number, ErrorCode>> = {
 const DATABASE_UNAVAILABLE_CODES = new Set([
   'P1000', 'P1001', 'P1002', 'P1008', 'P1017', 'P2024'
 ]);
-const DATABASE_BUSY_CODES = new Set(['P2034', 'ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT']);
+const DATABASE_BUSY_CODES = new Set([
+  'P2028', 'P2034', 'ER_LOCK_DEADLOCK', 'ER_LOCK_WAIT_TIMEOUT'
+]);
 const DATABASE_BUSY_NUMBERS = new Set([1_205, 1_213]);
 
 function shapeOf(error: unknown): ErrorShape {
@@ -122,6 +124,7 @@ export class ApiExceptionFilter implements ExceptionFilter {
         requestId,
         method: request.method,
         path: request.path,
+        sourceIp: request.ip,
         status: mapped.status,
         code: mapped.code,
         error: {

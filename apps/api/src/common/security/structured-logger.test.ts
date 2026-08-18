@@ -13,6 +13,7 @@ describe('structured production logger', () => {
       nested: {
         password: 'secret',
         endpoint: 'mysql://user:password@db/poker',
+        diagnostic: 'UPDATE users SET nickname = ? WHERE id = ?',
         safe: 'visible'
       }
     });
@@ -27,6 +28,7 @@ describe('structured production logger', () => {
         nested: {
           password: '[REDACTED]',
           endpoint: '[REDACTED]',
+          diagnostic: '[REDACTED]',
           safe: 'visible'
         }
       }

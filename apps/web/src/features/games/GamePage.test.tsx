@@ -219,7 +219,10 @@ it.each([
   const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
   await screen.findByTestId('round-table');
   await waitFor(() => expect(socket.joined).toHaveLength(1));
-  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('同步');
+  await waitFor(() => {
+    expect(screen.getByRole('status', { name: '实时连接状态' }))
+      .toHaveTextContent('实时房间同步失败');
+  });
   const initialSnapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length;
 
   // The fallback effect is installed after the failed ACK render, so allow its

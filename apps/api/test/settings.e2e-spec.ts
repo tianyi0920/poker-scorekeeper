@@ -367,7 +367,11 @@ describe.sequential('live rake settings', () => {
       await patchRake(superAuth, { threshold: '1700', bps: 1700, version: 1 })
         .expect(500)
         .expect(({ body }) => {
-          expect(body).toEqual({ code: 'INTERNAL_ERROR', message: 'Internal server error' });
+          expect(body).toEqual({
+            code: 'INTERNAL_ERROR',
+            message: 'Internal server error',
+            requestId: expect.any(String)
+          });
           expect(JSON.stringify(body)).not.toContain(injectedSecret);
         });
     } finally {

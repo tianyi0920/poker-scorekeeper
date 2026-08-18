@@ -7,3 +7,5 @@ allowBuilds:
   esbuild: false
   prisma: false
   sharp: false
+overrides:
+  deepmerge-ts: 8.0.1

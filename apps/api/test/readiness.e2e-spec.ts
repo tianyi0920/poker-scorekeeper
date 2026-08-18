@@ -1,4 +1,5 @@
 import { Module, type INestApplication } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import request from 'supertest';
 import { vi } from 'vitest';
@@ -14,7 +15,10 @@ const database = {
 
 @Module({
   controllers: [HealthController, ReadinessController],
-  providers: [{ provide: PrismaService, useValue: database }]
+  providers: [
+    { provide: PrismaService, useValue: database },
+    { provide: ConfigService, useValue: { get: () => '2000' } }
+  ]
 })
 class ReadinessTestModule {}
 

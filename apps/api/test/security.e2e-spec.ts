@@ -59,6 +59,13 @@ class SecurityProbeController {
       sql: 'UPDATE users SET password_hash=secret'
     });
   }
+
+  @Get('transaction-closed-error')
+  transactionClosedError(): never {
+    throw Object.assign(new Error('Transaction already closed; SQL hidden'), {
+      code: 'P2028'
+    });
+  }
 }
 
 @Module({
@@ -86,6 +93,7 @@ describe('production HTTP security', () => {
     await mkdir(avatarRoot, { recursive: true });
     await writeFile(join(webRoot, 'index.html'), '<!doctype html><title>safe poker shell</title>');
     await writeFile(join(webRoot, 'assets', 'app.js'), 'globalThis.pokerLoaded=true;');
+    await writeFile(join(webRoot, 'sw.js'), 'self.addEventListener("fetch", () => undefined);');
     await writeFile(join(webRoot, 'avatars', 'preset-01.webp'), 'preset-avatar');
     await writeFile(
       join(avatarRoot, 'cm1234567890-123e4567-e89b-42d3-a456-426614174000.webp'),
@@ -120,11 +128,19 @@ describe('production HTTP security', () => {
     expect(response.text).toContain('safe poker shell');
     expect(response.headers['content-security-policy']).toContain("default-src 'self'");
     expect(response.headers['content-security-policy']).toContain("connect-src 'self'");
+    expect(response.headers['content-security-policy']).toContain('wss://poker.example.test');
+    const connectDirective = String(response.headers['content-security-policy'])
+      .split(';')
+      .find((directive) => directive.startsWith('connect-src'));
+    expect(connectDirective?.split(' ')).not.toContain('wss:');
     expect(response.headers['content-security-policy']).toContain("frame-ancestors 'none'");
     expect(response.headers['content-security-policy']).not.toContain('*');
     expect(response.headers['x-frame-options']).toBe('DENY');
     expect(response.headers['x-content-type-options']).toBe('nosniff');
     expect(response.headers['referrer-policy']).toBe('no-referrer');
+    expect(response.headers['permissions-policy']).toBe(
+      'camera=(), microphone=(), geolocation=(), payment=(), usb=()'
+    );
     expect(response.headers['strict-transport-security']).toContain('max-age=');
   });
 
@@ -223,11 +239,24 @@ describe('production HTTP security', () => {
     // Break caught: the single container omits one of its four static delivery paths.
     await request(app.getHttpServer()).get('/assets/app.js').expect(200).expect('globalThis.pokerLoaded=true;');
     await request(app.getHttpServer()).get('/history/games').expect(200).expect(/safe poker shell/);
-    await request(app.getHttpServer()).get('/avatars/preset-01.webp').expect(200).expect('preset-avatar');
+    await request(app.getHttpServer())
+      .get('/avatars/preset-01.webp')
+      .expect(200)
+      .expect(({ body }) => expect((body as Buffer).toString()).toBe('preset-avatar'));
     await request(app.getHttpServer())
       .get('/avatars/uploads/cm1234567890-123e4567-e89b-42d3-a456-426614174000.webp')
       .expect(200)
-      .expect('uploaded-avatar');
+      .expect(({ body }) => expect((body as Buffer).toString()).toBe('uploaded-avatar'));
+  });
+
+  it('allows PWA update checks while caching hashed assets immutably', async () => {
+    // Break caught: a year-long immutable service-worker response prevents deployed PWA updates.
+    const worker = await request(app.getHttpServer()).get('/sw.js').expect(200);
+    expect(worker.headers['cache-control']).toContain('no-cache');
+    expect(worker.headers['cache-control']).not.toContain('immutable');
+
+    const asset = await request(app.getHttpServer()).get('/assets/app.js').expect(200);
+    expect(asset.headers['cache-control']).toContain('immutable');
   });
 
   it('does not expose traversal-shaped or uncontrolled avatar paths', async () => {
@@ -253,6 +282,7 @@ describe('production HTTP security', () => {
     const deadlock = await request(app.getHttpServer())
       .get('/api/deadlock-error')
       .set('X-Request-ID', 'deadlock-request')
+      .set('X-Forwarded-For', '198.51.100.50, 10.0.0.9')
       .expect(503);
     expect(deadlock.body).toEqual({
       code: 'DATABASE_BUSY',
@@ -267,5 +297,22 @@ describe('production HTTP security', () => {
     expect(captured).not.toContain('password=');
     expect(captured).not.toContain('mysql://');
     expect(captured).not.toContain('super-secret');
+    const deadlockLog = logLines
+      .map((line) => JSON.parse(line) as { message: { requestId?: string; sourceIp?: string } })
+      .find((entry) => entry.message.requestId === 'deadlock-request');
+    expect(deadlockLog?.message.sourceIp).toBe('10.0.0.9');
+  });
+
+  it('maps a closed Prisma transaction to a retryable stable response', async () => {
+    // Break caught: P2028 escapes as a generic 500 even though callers can safely retry.
+    const response = await request(app.getHttpServer())
+      .get('/api/transaction-closed-error')
+      .set('X-Request-ID', 'transaction-request')
+      .expect(503);
+    expect(response.body).toEqual({
+      code: 'DATABASE_BUSY',
+      message: 'Database is busy; retry the request',
+      requestId: 'transaction-request'
+    });
   });
 });

@@ -1,0 +1,66 @@
+services:
+  mysql:
+    image: mysql:8.4
+    restart: "no"
+    environment:
+      MYSQL_DATABASE: poker_scorekeeper_test
+      MYSQL_USER: poker_test
+      MYSQL_PASSWORD: poker_test
+      MYSQL_ROOT_PASSWORD: poker_test_root
+    volumes:
+      - mysql_test_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u poker_test -ppoker_test --silent"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks:
+      - isolated_test
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: poker-scorekeeper:test-local
+    restart: "no"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      PUBLIC_ORIGIN: http://127.0.0.1:3000
+      DATABASE_URL: mysql://poker_test:poker_test@mysql:3306/poker_scorekeeper_test
+      CSRF_SECRET: test_only_change_me_0123456789abcdef0123456789abcdef
+      BOOTSTRAP_ADMIN_USERNAME: smokeadmin
+      BOOTSTRAP_ADMIN_NICKNAME: Smoke Admin
+      BOOTSTRAP_ADMIN_PASSWORD: Test-only-password-12345
+      WEB_DIST_ROOT: /app/apps/web/dist
+      AVATAR_ROOT: /data/avatars
+      BACKUP_DIR: /data/backups
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: poker_test
+      MYSQL_PASSWORD: poker_test
+      MYSQL_DATABASE: poker_scorekeeper_test
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - avatar_test_data:/data/avatars
+      - backup_test_data:/data/backups
+    healthcheck:
+      test: ["CMD", "node", "scripts/docker/healthcheck.mjs"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    networks:
+      - isolated_test
+
+networks:
+  isolated_test:
+    internal: true
+
+volumes:
+  mysql_test_data:
+  avatar_test_data:
+  backup_test_data:
