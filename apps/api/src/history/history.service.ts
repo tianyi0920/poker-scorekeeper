@@ -55,7 +55,7 @@ export class HistoryService {
     const cursor = decodeCursor(rawCursor);
     const scope = historyScope(actor);
     const games = await this.prisma.game.findMany({
-      where: { status: GameStatus.COMPLETED, completedAt: { not: null }, ...scope,
+      where: { status: GameStatus.COMPLETED, completedAt: { not: null }, settlement: { isNot: null }, ...scope,
         ...(cursor === undefined ? {} : { OR: [{ completedAt: { lt: new Date(cursor.completedAt) } }, { completedAt: new Date(cursor.completedAt), id: { lt: cursor.id } }] }) },
       include: { settlement: { select: { finalTotal: true, settledByNicknameSnapshot: true } } },
       orderBy: [{ completedAt: 'desc' }, { id: 'desc' }], take: limit + 1

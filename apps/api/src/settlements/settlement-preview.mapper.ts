@@ -1,6 +1,7 @@
 import {
   formatMoney,
   type SettlementDraftPayload,
+  type SettlementOutput,
   type SettlementPreviewDto,
   type SettlementValidationCode
 } from '@poker/contracts';
@@ -36,6 +37,10 @@ interface PlayerAmount {
   rawProfit: bigint;
   entered: boolean;
 }
+
+export type SettlementEvaluation =
+  | { amounts: PlayerAmount[]; validationCode: SettlementValidationCode; output: null }
+  | { amounts: PlayerAmount[]; validationCode: null; output: SettlementOutput };
 
 function ledgerEvent(event: BuyinEvent): LedgerEvent {
   return {
@@ -88,6 +93,7 @@ function validationCode(
   amounts: readonly PlayerAmount[],
   payload: SettlementDraftPayload
 ): SettlementValidationCode | null {
+  if (amounts.length === 0) return 'CASH_OUTS_INCOMPLETE';
   const buyInTotal = amounts.reduce((sum, row) => sum + row.buyIn, 0n);
   const cashOutTotal = amounts.reduce((sum, row) => sum + row.cashOut, 0n);
   if (!allSignedBigInt([
@@ -128,7 +134,7 @@ function interimPreview(
     settingsVersion: context.settings.version,
     previewReady: false,
     validationCode: code,
-    confirmationToken: settlementConfirmationToken(context, payload, draftVersion),
+    confirmationToken: null,
     totals: {
       buyIn: formatMoney(buyInTotal),
       cashOut: formatMoney(cashOutTotal),
@@ -156,14 +162,13 @@ function interimPreview(
   };
 }
 
-export function buildSettlementPreview(
+export function evaluateSettlement(
   context: PreviewContext,
-  payload: SettlementDraftPayload,
-  draftVersion: number
-): SettlementPreviewDto {
+  payload: SettlementDraftPayload
+): SettlementEvaluation {
   const amounts = playerAmounts(context, payload);
   const invalid = validationCode(amounts, payload);
-  if (invalid !== null) return interimPreview(context, amounts, payload, draftVersion, invalid);
+  if (invalid !== null) return { amounts, validationCode: invalid, output: null };
 
   const output = calculateSettlement({
     players: amounts.map(({ player, buyIn, cashOut }) => ({
@@ -200,8 +205,27 @@ export function buildSettlementPreview(
     ])
   ];
   if (!allSignedBigInt(allCalculated)) {
-    return interimPreview(context, amounts, payload, draftVersion, 'MONEY_OVERFLOW');
+    return { amounts, validationCode: 'MONEY_OVERFLOW', output: null };
   }
+  return { amounts, validationCode: null, output };
+}
+
+export function buildSettlementPreview(
+  context: PreviewContext,
+  payload: SettlementDraftPayload,
+  draftVersion: number
+): SettlementPreviewDto {
+  const evaluation = evaluateSettlement(context, payload);
+  if (evaluation.validationCode !== null) {
+    return interimPreview(
+      context,
+      evaluation.amounts,
+      payload,
+      draftVersion,
+      evaluation.validationCode
+    );
+  }
+  const { output } = evaluation;
   const playerById = new Map(context.players.map((player) => [player.id, player]));
   return {
     draftVersion,

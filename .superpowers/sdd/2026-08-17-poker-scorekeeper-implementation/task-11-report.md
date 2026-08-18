@@ -64,3 +64,32 @@
 ### Final self-review
 
 - Re-read the complete follow-up diff. The durable changes are limited to restoring the integration suite's existing 15-second policy, adding two evidence-scoped 30-second E2E timeouts, and this report. No diagnostic instrumentation, environment value, fixture-cleanup script, production timeout, or unrelated worktree change remains.
+
+## Review fix round 1/5 (2026-08-18)
+
+### Review findings verified and fixed
+
+- History lists now require both `COMPLETED` and an existing permanent settlement before mapping. The new standalone E2E seeds a participant-visible completed game without a settlement and proves both administrator and ordinary-user lists omit it while retaining a valid settled game. RED was a 500 where 200 was expected; focused GREEN was history 5/5.
+- Finalization no longer reads `user.rakeEnabled` through the player relation before the explicit user locks. It first locks/loads player and event rows, then locks actor and participant users in sorted ID order, and constructs the confirmation/calculation context only from those current locked user rows. The real MariaDB narrow-window test holds the first sorted user row, starts finalization, waits for the observable InnoDB lock wait, changes another participant through a connection outside the Prisma pool, and proves the stale confirmation is rejected without writes. On the old implementation the early relation read blocked that update until `ER_LOCK_WAIT_TIMEOUT`; after the minimal change the update commits and finalization rejects with `SETTLEMENT_PREVIEW_CONFLICT`. Task 11 concurrency GREEN was 9/9, with the required `system_settings -> game -> draft -> players/events -> sorted users` lock order retained.
+- Preview and finalization now share `evaluateSettlement`, including completeness, balance, signed-BIGINT input and derived-output range checks. Invalid previews return `confirmationToken: null`; finalization independently re-evaluates before token verification and returns a stable conflict carrying the validation code. The overflow HTTP RED did not return the required controlled response and instead reached the old persistence path; GREEN proves balanced derived overflow returns 409 `MONEY_OVERFLOW` and leaves settlement, results, allocations, game state, active locks, and audit unchanged. Self-review also found and drove a unit RED for an empty zero-fee table receiving a ready token; the shared evaluator now rejects it as `CASH_OUTS_INCOMPLETE`. Mapper GREEN is 6/6, and the transport contract explicitly accepts the nullable token only on the preview response while finalize input remains non-null.
+- The settler-snapshot migration no longer fabricates historical snapshots from mutable current nicknames. A random-name isolated-table integration test executes the actual migration statements under strict MariaDB mode: the old migration produced no error (RED), while the corrected migration fails on nullable-to-NOT-NULL when an old settlement exists and leaves the snapshot null (GREEN 1/1). This project has not had a permanent-settlement release, so empty-database application remains the only accepted path.
+- Removed unused `DRAFT_LEASE_EXPIRED` code/message. A repository search found no caller or remaining reference.
+
+### Authorized migration reset
+
+- Immediately before the one authorized reset, the parsed endpoint was hard-asserted as exactly `tianyi.wiki:8306/poker_scorekeeper_test` and the database had zero open transactions. The supplied dangerous-operation consent text was passed only through the required process environment and was not printed.
+- Ran `prisma migrate reset --force` exactly once against that asserted test database. It succeeded and reapplied `20260817000100_initial`, `20260817000200_harden_buyin_idempotency`, and corrected `20260818000100_settlement_settler_snapshot`. Final `prisma validate` and `prisma migrate status` both passed; the database reports three migrations and is current.
+
+### Fresh verification and systematic-debugging evidence
+
+- Focused Task 11 finalization: 7/7 passed. Standalone history: 5/5 passed. Task 11 concurrency: 9/9 passed. Migration behavior: 1/1 passed.
+- Fresh all API integration: 46/46 passed across 8 files, including concurrency 9/9 and migration behavior 1/1.
+- Fresh root `pnpm test`: 437/437 passed with zero failures and zero unhandled rejections — contracts 48/48, settlement 14/14, web 88/88, API 287/287.
+- A preceding root run after the empty-table invariant RED/GREEN reached API 284/287: one finalization case and two following setup hooks exceeded their existing 15/10-second test limits while the remote-database suites were globally much slower. Read-only diagnosis found zero open transactions, zero lock waits, zero nonterminal games, and zero Task 11 fixtures. No timeout was widened and no data was cleared; the next clean rerun passed all 437 tests, including finalization 7/7 and history 5/5.
+- Fresh root `pnpm lint`, `pnpm typecheck`, and `pnpm build` passed. `git diff --check` passed.
+- Final database gate hard-asserted the exact authorized test endpoint and reported zero open transactions, zero lock waits, zero nonterminal games, zero active-player locks, zero Task 11 fixture games/users, and zero migration shadow tables.
+- `.env.local` remains ignored and untracked. The staged high-confidence secret scan found no credential material.
+
+### Final self-review
+
+- Re-read the complete production, migration, contract, and test diff. Verified the nullable preview token does not weaken the non-null finalize request, finalization only consumes current locked rake rows, shared invariant/range evaluation precedes confirmation and persistence, history never force-maps a nullable settlement, migration cleanup is exact even on expected failure, and no temporary instrumentation or database-cleanup code remains.

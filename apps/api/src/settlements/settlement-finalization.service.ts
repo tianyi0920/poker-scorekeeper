@@ -4,11 +4,10 @@ import {
   formatMoney,
   type FinalizeSettlementRequest,
   type SettlementDetailDto,
-  type SettlementDraftPayload
+  type SettlementDraftPayload,
+  type SettlementOutput
 } from '@poker/contracts';
-import { calculateSettlement } from '@poker/settlement';
 import { AuditService } from '../audit/audit.service.js';
-import { foldBuyinEvents } from '../buyins/buyin-ledger.js';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { badRequest, conflict, conflictWithDetails } from '../common/errors/app-error.js';
 import { GameStatus, Prisma } from '../generated/prisma/client.js';
@@ -19,7 +18,7 @@ import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 import { matchesSettlementConfirmation, settlementConfirmationToken } from './settlement-confirmation.js';
 import { parseStoredSettlementDraftPayload } from './settlement-draft.schema.js';
-import { type PreviewContext } from './settlement-preview.mapper.js';
+import { evaluateSettlement, type PreviewContext } from './settlement-preview.mapper.js';
 import { persistSettlement } from './settlement-persistence.mapper.js';
 
 const SETTINGS_ID = 'singleton';
@@ -34,56 +33,10 @@ function isRetryable(error: unknown): boolean {
   return error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034';
 }
 
-function toOutput(context: PreviewContext, payload: SettlementDraftPayload) {
-  const eventsByPlayer = new Map<string, typeof context.buyinEvents>();
-  for (const event of context.buyinEvents) {
-    const events = eventsByPlayer.get(event.gamePlayerId) ?? [];
-    events.push(event);
-    eventsByPlayer.set(event.gamePlayerId, events);
-  }
-  const players = [...context.players]
-    .sort((left, right) => left.seatNo - right.seatNo || left.id.localeCompare(right.id))
-    .map((player) => {
-      const cashOut = payload.cashOutByPlayerId[player.id];
-      if (cashOut === undefined || cashOut === '') throw conflict('SETTLEMENT_PREVIEW_CONFLICT');
-      const hands = foldBuyinEvents((eventsByPlayer.get(player.id) ?? [])
-        .sort((left, right) => left.createdAt.getTime() - right.createdAt.getTime() || left.id.localeCompare(right.id))
-        .map((event) => ({
-          id: event.id,
-          type: event.type,
-          logicalBuyId: event.logicalBuyId,
-          previousHands: event.previousHands,
-          newHands: event.newHands,
-          handsDelta: event.handsDelta
-        })))
-        .reduce((sum, event) => sum + event.effectiveHands, 0);
-      return {
-        playerId: player.id,
-        seatNo: player.seatNo,
-        buyIn: context.game.handPrice * BigInt(hands),
-        cashOut: BigInt(cashOut),
-        rakeEnabled: player.user.rakeEnabled
-      };
-    });
-  const buyIn = players.reduce((sum, player) => sum + player.buyIn, 0n);
-  const cashOut = players.reduce((sum, player) => sum + player.cashOut, 0n);
-  if (players.length === 0 || buyIn !== cashOut) throw conflict('SETTLEMENT_PREVIEW_CONFLICT');
-  return calculateSettlement({
-    players,
-    gameRakeEnabled: context.game.rakeEnabled,
-    rakeThreshold: context.settings.rakeThreshold,
-    rakeBps: context.settings.rakeBps,
-    roomFee: BigInt(payload.roomFee),
-    roomPayerIds: payload.roomPayerIds,
-    otherFee: BigInt(payload.otherFee),
-    otherPayerIds: payload.otherPayerIds
-  });
-}
-
 function detailDto(
   context: PreviewContext,
   payload: SettlementDraftPayload,
-  output: ReturnType<typeof toOutput>,
+  output: SettlementOutput,
   completedAt: Date,
   settledByNickname: string
 ): SettlementDetailDto {
@@ -162,7 +115,6 @@ export class SettlementFinalizationService {
       `;
       const players = await transaction.gamePlayer.findMany({
         where: { gameId },
-        include: { user: { select: { rakeEnabled: true } } },
         orderBy: [{ seatNo: 'asc' }, { id: 'asc' }]
       });
       const users = await lockUsersInOrder(transaction, [actor.id, ...players.map((player) => player.userId)]);
@@ -180,12 +132,24 @@ export class SettlementFinalizationService {
       const events = await transaction.buyinEvent.findMany({
         where: { gameId }, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
       });
-      const context: PreviewContext = { game, players, buyinEvents: events, settings };
+      const currentPlayers = players.map((player) => {
+        const user = users.get(player.userId);
+        if (user === undefined) throw conflict('SETTLEMENT_PREVIEW_CONFLICT');
+        return { ...player, user: { rakeEnabled: user.rakeEnabled } };
+      });
+      const context: PreviewContext = { game, players: currentPlayers, buyinEvents: events, settings };
+      const evaluation = evaluateSettlement(context, payload);
+      if (evaluation.validationCode !== null) {
+        throw conflictWithDetails('SETTLEMENT_PREVIEW_CONFLICT', {
+          refreshRequired: true,
+          validationCode: evaluation.validationCode
+        });
+      }
       const expectedToken = settlementConfirmationToken(context, payload, draft.version);
       if (!matchesSettlementConfirmation(expectedToken, command.confirmationToken)) {
         throw conflictWithDetails('SETTLEMENT_PREVIEW_CONFLICT', { refreshRequired: true });
       }
-      const output = toOutput(context, payload);
+      const output = evaluation.output;
       const completedAt = new Date();
       const settlement = await persistSettlement(
         transaction,

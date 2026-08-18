@@ -22,6 +22,7 @@ if (databaseName !== 'poker_scorekeeper_test') {
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `settlement-final-${runId}`;
 const password = `${randomBytes(18).toString('base64url')}Aa1!`;
+const MAX_SIGNED_BIGINT = '9223372036854775807';
 
 interface AuthContext {
   cookie: string;
@@ -437,6 +438,57 @@ describe.sequential('atomic final settlement', () => {
     });
     await expect(prisma.settlement.count({ where: { gameId: fixture.game.id } })).resolves.toBe(0);
   });
+
+  it('rejects a balanced derived-money overflow without signing or mutating settlement state', async () => {
+    // Break caught: an invalid preview token reaches persistence and exposes a raw BIGINT database failure.
+    const fixture = await seedFixture('money-overflow');
+    const [a, b, c] = fixture.players;
+    await prisma.settlementDraft.update({
+      where: { gameId: fixture.game.id },
+      data: {
+        payload: {
+          cashOutByPlayerId: { [a.id]: '3000', [b.id]: '400', [c.id]: '200' },
+          roomFee: MAX_SIGNED_BIGINT,
+          roomPayerIds: [a.id],
+          otherFee: MAX_SIGNED_BIGINT,
+          otherFeeNote: '两项极限费用',
+          otherPayerIds: [a.id]
+        }
+      }
+    });
+    const preview = await read(
+      adminAuth,
+      `/api/games/${fixture.game.id}/settlement-draft`
+    ).expect(200);
+
+    const response = await write(adminAuth, `/api/games/${fixture.game.id}/settlement-finalize`, {
+      draftVersion: fixture.draftVersion,
+      settingsVersion: 7,
+      confirmationToken: preview.body.confirmationToken ?? 'invalid-overflow-confirmation'
+    }).expect(409);
+    expect(response.body).toMatchObject({
+      code: 'SETTLEMENT_PREVIEW_CONFLICT',
+      details: { refreshRequired: true, validationCode: 'MONEY_OVERFLOW' }
+    });
+    expect(preview.body).toMatchObject({
+      previewReady: false,
+      validationCode: 'MONEY_OVERFLOW',
+      confirmationToken: null
+    });
+    await expect(prisma.settlement.count({ where: { gameId: fixture.game.id } })).resolves.toBe(0);
+    await expect(prisma.settlementResult.count({
+      where: { gamePlayerId: { in: fixture.players.map(({ id }) => id) } }
+    })).resolves.toBe(0);
+    await expect(prisma.settlementFeeAllocation.count({
+      where: { gamePlayerId: { in: fixture.players.map(({ id }) => id) } }
+    })).resolves.toBe(0);
+    await expect(prisma.game.findUniqueOrThrow({ where: { id: fixture.game.id } }))
+      .resolves.toMatchObject({ status: GameStatus.SETTLING, completedAt: null, settledById: null });
+    await expect(prisma.activePlayerLock.count({ where: { gameId: fixture.game.id } })).resolves.toBe(3);
+    await expect(prisma.auditLog.count({
+      where: { action: 'SETTLEMENT_FINALIZED', actorUserId: admin.id }
+    })).resolves.toBe(0);
+  }, 30_000);
 
   it('returns immutable full-table history only to participating users', async () => {
     // Break caught: a user can enumerate another table, or history rebuilds identities from mutable profiles.

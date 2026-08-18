@@ -98,6 +98,7 @@ describe('settlement preview mapping', () => {
     expect(result).toMatchObject({
       previewReady: false,
       validationCode: 'CASH_OUTS_INCOMPLETE',
+      confirmationToken: null,
       totals: { buyIn: '3600', cashOut: '3000' }
     });
     expect(result.players.map(({ rawProfit }) => rawProfit)).toEqual(['1500', '0', '0']);
@@ -169,6 +170,28 @@ describe('settlement preview mapping', () => {
       otherFeeNote: '极限费用',
       otherPayerIds: [playerIds[0]]
     }), 5);
-    expect(result).toMatchObject({ previewReady: false, validationCode: 'MONEY_OVERFLOW' });
+    expect(result).toMatchObject({
+      previewReady: false,
+      validationCode: 'MONEY_OVERFLOW',
+      confirmationToken: null
+    });
+  });
+
+  it('does not sign an empty table even when fees and totals are zero', () => {
+    const emptyContext = { ...context(), players: [], buyinEvents: [] };
+    const result = buildSettlementPreview(emptyContext, payload({
+      cashOutByPlayerId: {},
+      roomFee: '0',
+      roomPayerIds: [],
+      otherFee: '0',
+      otherPayerIds: []
+    }), 6);
+
+    expect(result).toMatchObject({
+      previewReady: false,
+      validationCode: 'CASH_OUTS_INCOMPLETE',
+      confirmationToken: null,
+      players: []
+    });
   });
 });

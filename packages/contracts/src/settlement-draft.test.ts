@@ -101,6 +101,12 @@ describe('settlement draft transport', () => {
       }]
     };
     expect(settlementDraftResponseSchema.parse(response)).toEqual(response);
+    expect(settlementDraftResponseSchema.safeParse({
+      ...response,
+      previewReady: false,
+      validationCode: 'MONEY_OVERFLOW',
+      confirmationToken: null
+    }).success).toBe(true);
     expect(settlementDraftResponseSchema.safeParse({ ...response, extra: true }).success).toBe(false);
   });
 });

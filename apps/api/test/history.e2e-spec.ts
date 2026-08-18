@@ -290,6 +290,40 @@ describe.sequential('immutable completed-game history', () => {
       .expect(({ body }) => expect(body.code).toBe('HISTORY_SCOPE_DENIED'));
   });
 
+  it('omits completed games that have no permanent settlement for administrators and participants', async () => {
+    // Break caught: a nullable settlement is force-dereferenced while mapping the history list.
+    const completedAt = new Date('2026-08-18T00:30:00.000Z');
+    const visible = await seedCompleted(3, true, completedAt);
+    const orphan = await prisma.game.create({
+      data: {
+        name: `${prefix}-completed-without-settlement`,
+        handPrice: 300n,
+        status: GameStatus.COMPLETED,
+        createdById: admin.id,
+        startedAt: new Date(completedAt.getTime() + 1_000),
+        stoppedAt: new Date(completedAt.getTime() + 2_000),
+        completedAt: new Date(completedAt.getTime() + 3_000),
+        settledById: admin.id
+      }
+    });
+    await prisma.gamePlayer.create({
+      data: {
+        gameId: orphan.id,
+        userId: member.id,
+        nicknameSnapshot: member.nickname,
+        avatarKindSnapshot: member.avatarKind,
+        avatarValueSnapshot: member.avatarValue,
+        seatNo: 1,
+        firstBuyinAt: completedAt
+      }
+    });
+
+    const adminList = await read(adminCookie, '/api/history').expect(200);
+    expect(adminList.body.items.map(({ gameId }: { gameId: string }) => gameId)).toEqual([visible]);
+    const memberList = await read(memberCookie, '/api/history').expect(200);
+    expect(memberList.body.items.map(({ gameId }: { gameId: string }) => gameId)).toEqual([visible]);
+  });
+
   it('uses default limit 10 and stable opaque cursor ordering across tied timestamps', async () => {
     // Break caught: a tied completedAt boundary duplicates or skips games between cursor pages.
     const sameTime = new Date('2026-08-18T01:00:00.000Z');

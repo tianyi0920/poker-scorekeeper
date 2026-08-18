@@ -81,7 +81,7 @@ export const settlementPreviewResponseSchema = settlementBreakdownSchema.extend(
   settingsVersion: z.number().int().positive(),
   previewReady: z.boolean(),
   validationCode: settlementValidationCodeSchema.nullable(),
-  confirmationToken: z.string().min(1)
+  confirmationToken: z.string().min(1).nullable()
 });
 
 export const finalizeSettlementSchema = z.object({

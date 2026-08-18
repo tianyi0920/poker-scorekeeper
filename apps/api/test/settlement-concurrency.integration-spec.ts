@@ -1,5 +1,6 @@
 import type { INestApplication } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
+import mariadb from 'mariadb';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AuthUser } from '../src/common/auth/auth-user.js';
 import { AuditService } from '../src/audit/audit.service.js';
@@ -18,7 +19,8 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { SettlementDraftService } from '../src/settlements/settlement-draft.service.js';
 import { SettlementFinalizationService } from '../src/settlements/settlement-finalization.service.js';
 
-const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
+const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
+const databaseName = databaseUrl.pathname.slice(1);
 if (databaseName !== 'poker_scorekeeper_test') {
   throw new Error('Settlement concurrency integration requires the exact poker_scorekeeper_test database');
 }
@@ -47,6 +49,35 @@ function authUser(user: User): AuthUser {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+async function waitForDatabaseLockWait(prisma: PrismaService): Promise<void> {
+  const deadline = Date.now() + 5_000;
+  while (Date.now() < deadline) {
+    const rows = await prisma.$queryRaw<Array<{ count: bigint | number }>>`
+      SELECT COUNT(*) AS count FROM information_schema.innodb_lock_waits
+    `;
+    if (Number(rows[0]?.count ?? 0) > 0) return;
+    await delay(50);
+  }
+  throw new Error('Finalization did not reach the expected user-row lock wait');
+}
+
+async function updateRakeOutsidePrismaPool(userId: string, rakeEnabled: boolean): Promise<void> {
+  const connection = await mariadb.createConnection({
+    host: databaseUrl.hostname,
+    port: Number(databaseUrl.port || 3306),
+    user: decodeURIComponent(databaseUrl.username),
+    password: decodeURIComponent(databaseUrl.password),
+    database: databaseName,
+    connectTimeout: 5_000
+  });
+  try {
+    await connection.query('SET SESSION innodb_lock_wait_timeout = 1');
+    await connection.query('UPDATE users SET rake_enabled = ? WHERE id = ?', [rakeEnabled, userId]);
+  } finally {
+    await connection.end();
+  }
 }
 
 function retryableConflict(): Prisma.PrismaClientKnownRequestError {
@@ -156,6 +187,7 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
 
   async function commandFor(fixture: Fixture, editor = adminA) {
     const preview = await drafts.get(fixture.game.id, authUser(editor));
+    if (preview.confirmationToken === null) throw new Error('expected ready settlement preview');
     return {
       draftVersion: preview.draftVersion,
       settingsVersion: preview.settingsVersion,
@@ -421,6 +453,51 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
     await expect(result).rejects.toMatchObject({ code: 'SETTLEMENT_PREVIEW_CONFLICT' });
     await assertNotFinalized(fixture);
   }, 15_000);
+
+  it('uses participant rake rows locked after the player query instead of its stale relation snapshot', async () => {
+    // Break caught: finalization signs and calculates with player.user.rakeEnabled read before explicit user locks.
+    const fixture = await seedFixture('rake-narrow-window');
+    const command = await commandFor(fixture);
+    const ordered = [adminA.id, playerA.id, playerB.id].sort();
+    const blockedUserId = ordered[0]!;
+    const target = blockedUserId === playerA.id ? playerB : playerA;
+    let userLocked!: () => void;
+    let releaseUser!: () => void;
+    const locked = new Promise<void>((resolve) => { userLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseUser = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM users WHERE id = ${blockedUserId} FOR UPDATE
+      `;
+      userLocked();
+      await release;
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await locked;
+
+    const result = finalization.finalize(fixture.game.id, authUser(adminA), command).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
+    let updateError: unknown;
+    try {
+      await waitForDatabaseLockWait(prisma);
+      try {
+        await updateRakeOutsidePrismaPool(target.id, false);
+      } catch (error) {
+        updateError = error;
+      }
+    } finally {
+      releaseUser();
+      await blocker;
+    }
+
+    expect(updateError).toBeUndefined();
+    await expect(result).resolves.toMatchObject({
+      status: 'rejected',
+      reason: { code: 'SETTLEMENT_PREVIEW_CONFLICT' }
+    });
+    await assertNotFinalized(fixture);
+  }, 20_000);
 
   it('retries the whole serializable transaction only within the P2034 bound', async () => {
     // Break caught: retry is unbounded, does not retry P2034, or duplicates writes across attempts.
