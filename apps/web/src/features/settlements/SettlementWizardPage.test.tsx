@@ -46,6 +46,7 @@ it('shows raw profit beside each completed cash-out and blocks an unbalanced nex
   // Break caught: a client-side total lets an unbalanced table enter fee allocation.
   renderWizard(draft({ payload: { ...draft().payload, cashOutByPlayerId: { 'player-1': '1500', 'player-2': '300' } }, totals: { ...draft().totals, cashOut: '1800' }, previewReady: false, validationCode: 'TABLE_NOT_BALANCED' }));
   expect(await screen.findByText('牌局盈亏 +¥1,500')).toBeInTheDocument();
+  expect(screen.getByText('牌局盈亏 −¥500')).toHaveClass('money--negative');
   expect(screen.getByText('还差 ¥200')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '下一步：费用分摊' })).toBeDisabled();
 });
@@ -213,4 +214,37 @@ it('does not let a late game A save mutate game B after route switch', async () 
   expect(await screen.findByLabelText('天一的带走金额')).toHaveValue('1000');
   await act(async () => { slowSave.resolve(jsonResponse(draft({ version: 4 }))); await Promise.resolve(); });
   expect(screen.getByLabelText('天一的带走金额')).toHaveValue('1000');
+});
+
+it('starts an independent B save after an in-flight A save is abandoned by a route switch', async () => {
+  const saveA = deferred<Response>(); const saveB = deferred<Response>();
+  const gameB = draft({ gameId: 'game-2', version: 9, draftVersion: 9, payload: { ...draft().payload, cashOutByPlayerId: { 'player-1': '1000', 'player-2': '1000' } } });
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input); if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft') && init?.method === 'PUT') return saveA.promise;
+    if (url.endsWith('/api/games/game-2/settlement-draft') && init?.method === 'PUT') return saveB.promise;
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft()));
+    if (url.endsWith('/api/games/game-2/settlement-draft')) return Promise.resolve(jsonResponse(gameB));
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  });
+  vi.stubGlobal('fetch', fetchMock); render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><RouteControl /><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  const gameAInput = await screen.findByLabelText('天一的带走金额'); vi.useFakeTimers(); fireEvent.change(gameAInput, { target: { value: '2400' } }); await act(async () => { vi.advanceTimersByTime(400); await Promise.resolve(); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '切换到第二局' })); await Promise.resolve(); await Promise.resolve(); });
+  fireEvent.change(screen.getByLabelText('天一的带走金额'), { target: { value: '1100' } }); await act(async () => { vi.advanceTimersByTime(400); await Promise.resolve(); });
+  expect(fetchMock.mock.calls.some(([url, init]) => String(url).endsWith('/games/game-2/settlement-draft') && (init as RequestInit | undefined)?.method === 'PUT')).toBe(true);
+  await act(async () => { saveB.resolve(jsonResponse(gameB)); saveA.resolve(jsonResponse(draft({ version: 4 }))); await Promise.resolve(); });
+});
+
+it('retains a transiently failed payload for an explicit retry instead of losing the visible edit', async () => {
+  let attempts = 0;
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input); if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/games/game-1/settlement-draft') && init?.method === 'PUT') return attempts++ === 0 ? jsonResponse({ code: 'TEMPORARY' }, 500) : jsonResponse(draft({ version: 4, draftVersion: 4, payload: { ...draft().payload, cashOutByPlayerId: { 'player-1': '2400', 'player-2': '500' } } }));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(draft()); return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  });
+  vi.stubGlobal('fetch', fetchMock); render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  const retryInput = await screen.findByLabelText('天一的带走金额'); vi.useFakeTimers(); fireEvent.change(retryInput, { target: { value: '2400' } }); await act(async () => { vi.advanceTimersByTime(400); await Promise.resolve(); });
+  expect(screen.getByRole('button', { name: '重试保存草稿' })).toBeInTheDocument(); expect(screen.getByLabelText('天一的带走金额')).toHaveValue('2400');
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重试保存草稿' })); await Promise.resolve(); await Promise.resolve(); });
+  expect(attempts).toBe(2);
 });

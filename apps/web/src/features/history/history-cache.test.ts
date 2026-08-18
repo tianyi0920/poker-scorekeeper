@@ -19,3 +19,13 @@ it('fails closed for damaged cache records', () => {
   localStorage.setItem('poker-scorekeeper:history-cache:v1:user-1:list', '{broken');
   expect(readCachedHistory('user-1')).toBeNull();
 });
+
+it('rejects parseable invalid shapes, oversized lists, and mismatched detail ids without throwing', () => {
+  const listKey = 'poker-scorekeeper:history-cache:v1:user-1:list'; const detailKey = 'poker-scorekeeper:history-cache:v1:user-1:detail:game-1';
+  localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [{ gameId: 7 }], nextCursor: null } }));
+  expect(readCachedHistory('user-1')).toBeNull();
+  localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: Array.from({ length: 101 }, () => item), nextCursor: null } }));
+  expect(readCachedHistory('user-1')).toBeNull();
+  localStorage.setItem(detailKey, JSON.stringify({ version: 1, cachedAt: 1, value: { ...detail, game: { ...detail.game, id: 'other-game' } } }));
+  expect(readCachedSettlementDetail('user-1', 'game-1')).toBeNull();
+});

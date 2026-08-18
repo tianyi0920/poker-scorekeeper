@@ -1,5 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { SettlementBreakdown } from './SettlementBreakdown.js';
 
 const breakdown = {
@@ -20,6 +22,9 @@ it('renders the three money levels with bigint-safe detail and no write control 
 it('uses a negative raw-profit tone and a distinct final-money hierarchy', () => {
   // Break caught: a losing player is visually labelled as positive and final amount is indistinguishable from intermediate values.
   render(<SettlementBreakdown breakdown={{ ...breakdown, players: [{ ...breakdown.players[0]!, rawProfit: '-1500', afterFeeProfit: '-1700', finalAmount: '-1800' }] }} mode="history" />);
-  expect(screen.getByText('牌局盈亏 −¥1,500')).toHaveClass('money--negative');
+  const raw = screen.getByText('牌局盈亏 −¥1,500');
+  expect(raw).toHaveClass('money--negative');
+  const css = readFileSync(resolve(process.cwd(), 'src/styles/global.css'), 'utf8');
+  expect(css).toMatch(/\.raw-profit\.money--negative\s*\{\s*color:\s*var\(--negative\)/);
   expect(screen.getByText('最终金额 · 最终应付').parentElement?.parentElement).toHaveClass('settlement-metric--final');
 });
