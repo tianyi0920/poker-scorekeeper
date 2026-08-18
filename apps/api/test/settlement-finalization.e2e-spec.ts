@@ -56,7 +56,7 @@ describe.sequential('atomic final settlement', () => {
   let playerC: User;
   let adminAuth: AuthContext;
   let playerAuth: AuthContext;
-  let originalSettings: SystemSetting;
+  let originalSettings: SystemSetting | undefined;
 
   async function seedUser(suffix: string, role: Role, rakeEnabled = true): Promise<User> {
     const username = `${prefix}-${suffix}`;
@@ -254,15 +254,17 @@ describe.sequential('atomic final settlement', () => {
   afterAll(async () => {
     if (prisma !== undefined) {
       await cleanOwnedGames();
-      await prisma.systemSetting.update({
-        where: { id: 'singleton' },
-        data: {
-          rakeThreshold: originalSettings.rakeThreshold,
-          rakeBps: originalSettings.rakeBps,
-          version: originalSettings.version,
-          updatedById: originalSettings.updatedById
-        }
-      });
+      if (originalSettings !== undefined) {
+        await prisma.systemSetting.update({
+          where: { id: 'singleton' },
+          data: {
+            rakeThreshold: originalSettings.rakeThreshold,
+            rakeBps: originalSettings.rakeBps,
+            version: originalSettings.version,
+            updatedById: originalSettings.updatedById
+          }
+        });
+      }
       const users = await prisma.user.findMany({
         where: { normalizedUsername: { startsWith: normalize(prefix) } }, select: { id: true }
       });
