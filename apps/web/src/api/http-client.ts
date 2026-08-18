@@ -8,6 +8,9 @@ const apiErrorMessages = {
   TOO_MANY_REQUESTS: '请求过于频繁，请稍后再试',
   NOT_FOUND: '请求的内容不存在',
   SETTINGS_VERSION_CONFLICT: '规则已被其他管理员更新，请核对后再次提交',
+  DRAFT_VERSION_CONFLICT: '结算草稿已被其他管理员更新，请刷新后重试',
+  DRAFT_EDITOR_CONFLICT: '结算草稿正在由其他管理员编辑',
+  DRAFT_LEASE_ACTIVE: '当前编辑租约仍有效，暂时无法接管',
   USERNAME_TAKEN: '用户名已被使用，请换一个',
   NICKNAME_TAKEN: '昵称已被使用，请换一个',
   USER_IN_ACTIVE_GAME: '用户仍在未完成牌局中，请先完成牌局',
@@ -37,7 +40,8 @@ export class ApiError extends Error {
   constructor(
     readonly status: number,
     readonly code: ApiErrorCode,
-    message: string
+    message: string,
+    readonly details?: unknown
   ) {
     super(message);
     this.name = 'ApiError';
@@ -47,9 +51,9 @@ export class ApiError extends Error {
     try {
       const body: unknown = await response.json();
       if (typeof body === 'object' && body !== null && 'code' in body) {
-        const { code } = body as { code: unknown };
+        const { code, details } = body as { code: unknown; details?: unknown };
         if (isApiErrorCode(code)) {
-          return new ApiError(response.status, code, apiErrorMessages[code]);
+          return new ApiError(response.status, code, apiErrorMessages[code], details);
         }
       }
     } catch {

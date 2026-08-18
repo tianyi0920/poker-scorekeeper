@@ -303,6 +303,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         <div className="game-heading-actions">
           <span className={active ? 'live-pill' : 'status-pill status-pill--settling'}>{active ? '进行中' : '结算中'}</span>
           {active && canManage && <Button variant="ghost" unsafe onClick={() => setEndOpen(true)}>结束对局</Button>}
+          {!active && canManage && <Link className="compact-link" to={`/games/${snapshot.id}/settlement`}>进入结算</Link>}
         </div>
       </header>
 

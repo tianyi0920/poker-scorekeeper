@@ -10,11 +10,12 @@ import { ProfilePage } from '../features/profile/ProfilePage.js';
 import { RakeSettingsPage } from '../features/settings/RakeSettingsPage.js';
 import { UserFormPage } from '../features/users/UserFormPage.js';
 import { UserListPage } from '../features/users/UserListPage.js';
+import { SettlementWizardPage } from '../features/settlements/SettlementWizardPage.js';
+import { AllPlayerSummaryPage } from '../features/history/AllPlayerSummaryPage.js';
+import { GameSelectionPage } from '../features/history/GameSelectionPage.js';
+import { HistoryPage } from '../features/history/HistoryPage.js';
+import { SettlementDetailPage } from '../features/history/SettlementDetailPage.js';
 import { AppShell, OfflineBanner } from './AppShell.js';
-
-function HistoryPlaceholder() {
-  return <section className="page-stack"><div className="page-title"><span className="section-kicker">HISTORY</span><h2>战绩</h2><p>历史筛选与全员汇总将在历史模块接入后显示。</p></div></section>;
-}
 
 function ProtectedShell() {
   return <ProtectedRoute><AppShell /></ProtectedRoute>;
@@ -26,10 +27,14 @@ export function AppRouter() {
     <Route path="/change-password" element={<ProtectedRoute><ChangePasswordPage /></ProtectedRoute>} />
     <Route element={<ProtectedShell />}>
       <Route index element={<HomePage />} />
-      <Route path="history" element={<HistoryPlaceholder />} />
+      <Route path="history" element={<HistoryPage />} />
+      <Route path="history/select" element={<GameSelectionPage />} />
+      <Route path="history/summary" element={<AllPlayerSummaryPage />} />
+      <Route path="history/:id" element={<SettlementDetailPage />} />
       <Route path="profile" element={<ProfilePage />} />
       <Route path="games/new" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><CreateGamePage /></RoleGate>} />
       <Route path="games/:id" element={<GamePage />} />
+      <Route path="games/:id/settlement" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><SettlementWizardPage /></RoleGate>} />
       <Route path="users" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserListPage /></RoleGate>} />
       <Route path="users/new" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserFormPage mode="create" /></RoleGate>} />
       <Route path="users/:id/edit" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserFormPage mode="edit" /></RoleGate>} />

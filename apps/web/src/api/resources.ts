@@ -7,6 +7,14 @@ import type {
   CurrentGamesResponse,
   GameSnapshotDto,
   RakeSettingsDto,
+  AllPlayerAggregationDto,
+  FinalizeSettlementRequest,
+  HistoryResponseDto,
+  SaveSettlementDraftRequest,
+  SettlementDetailDto,
+  SettlementDraftDto,
+  SettlementDraftPayload,
+  SettlementPreviewDto,
   SelectPresetAvatarRequest,
   UpdateRakeSettingsRequest,
   UpdateUserRequest,
@@ -49,6 +57,22 @@ export const scorekeeperApi = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   recentHistory: (limit = 10) => apiFetch<HistoryListResponse>(`/history?limit=${limit}`),
+  settlementDraft: (gameId: string) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft`),
+  saveSettlementDraft: (gameId: string, body: SaveSettlementDraftRequest) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
+  takeOverSettlementDraft: (gameId: string) => apiFetch<SettlementDraftDto>(`/games/${encodeURIComponent(gameId)}/settlement-draft/takeover`, { method: 'POST' }),
+  previewSettlement: (gameId: string, body: SettlementDraftPayload) => apiFetch<SettlementPreviewDto>(`/games/${encodeURIComponent(gameId)}/settlement-preview`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
+  finalizeSettlement: (gameId: string, body: FinalizeSettlementRequest) => apiFetch<SettlementDetailDto>(`/games/${encodeURIComponent(gameId)}/settlement-finalize`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
+  history: (limit = 10, cursor?: string) => apiFetch<HistoryResponseDto>(`/history?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`),
+  historyDetail: (gameId: string) => apiFetch<SettlementDetailDto>(`/history/${encodeURIComponent(gameId)}`),
+  aggregateHistory: (body: { gameIds: string[] } | { filter: { kind: 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS' } | { kind: 'CUSTOM_DATE_RANGE'; startAt: string; endAt: string } }) => apiFetch<AllPlayerAggregationDto>('/history/aggregate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  }),
   createGame: (body: CreateGameRequest) => apiFetch<GameSnapshotDto>('/games', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
