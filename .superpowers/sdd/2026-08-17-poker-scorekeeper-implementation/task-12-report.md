@@ -45,3 +45,35 @@
 ## Commit
 
 - Feature commit: `1f4d50df803ffde67dceaf187fe4ef02ecf22d75` (`feat: add all-player history aggregation`)
+
+## Fix round 1: review coverage hardening
+
+### Review verification and mutation RED evidence
+
+- Verified that the review findings were technically valid: the prior fixture had no equal player final amounts, no equal per-player completed timestamp, no explicit negative-loss assertion, and no SUPER_ADMIN quick-filter request. Production behavior already used `finalAmount desc` then normalized nickname ascending and `completedAt desc, id desc` for selected games.
+- Loss mutation: temporarily changed the negative `rawProfit` branch to add zero losses. The real HTTP E2E failed at the negative snapshot player with expected `losses: 1`, received `losses: 0` (1 failed, 6 skipped).
+- Sort mutation: temporarily reversed normalized-nickname order and changed same-timestamp ID ordering to ascending. The real HTTP E2E failed both new assertions: received `Beta, alpha` instead of `alpha, Beta`, and ascending game IDs instead of descending (2 failed, 5 skipped).
+- SUPER_ADMIN mutation: temporarily applied participant scope to SUPER_ADMIN. The real HTTP quick-filter E2E returned no hidden game and failed the expected inclusion assertion (1 failed, 6 skipped).
+- All mutations were reverted before GREEN verification. The task brief requires deterministic ordering but does not prescribe the ID direction; `id desc` is the pre-existing aggregate/history query direction and is now explicitly asserted.
+
+### Changes
+
+- Expanded the aggregate E2E fixture with two equal-final-amount snapshot players (`alpha`, `Beta`), explicit negative raw-profit loss assertion, and raw-profit-zero/final-amount-nonzero tie assertions.
+- Added same-completedAt per-player game coverage for stable `gameId desc` order.
+- Added a SUPER_ADMIN fixture and real HTTP quick-filter checks for ADMIN global scope, SUPER_ADMIN global scope, and USER participant-only scope.
+
+### Fix-round GREEN evidence
+
+- Focused Task 12 E2E: 1 file, 7/7 tests passed.
+- Aggregation plus Task 11 history regression: 2 files, 12/12 tests passed.
+- `pnpm --filter @poker/api typecheck` and `pnpm --filter @poker/api lint` both passed.
+- Test database hard assertion and post-suite ownership-residue check returned `HISTORY_AGGREGATION_FIXTURE_RESIDUE=0`.
+
+### Fix-round self review and concerns
+
+- Self review confirmed that only the E2E fixture/test changed; all temporary production mutations were restored and no production diff remained.
+- No new concern. This was coverage hardening only; it does not alter aggregation behavior, database schema, connection pool, or timeout configuration.
+
+### Fix-round commit
+
+- `ca53c02c373577470a0cfd7cd359df9bdcf389d7` (`test: cover history aggregation ties and admin scopes`)
