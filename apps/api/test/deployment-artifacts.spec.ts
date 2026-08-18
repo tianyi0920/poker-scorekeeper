@@ -31,6 +31,7 @@ describe('production deployment artifacts', () => {
     expect(dockerfile).toMatch(/apps\/api\/prisma/);
     expect(dockerfile).toMatch(/apps\/api\/dist/);
     expect(dockerfile).toMatch(/^USER node$/m);
+    expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"');
     expect(dockerfile).not.toMatch(/FROM .*:latest/);
   });
 
@@ -53,7 +54,8 @@ describe('production deployment artifacts', () => {
     expect(compose.services.app.env_file).toEqual(['.env.production']);
     expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
       './data/avatars:/data/avatars',
-      './data/backups:/data/backups'
+      './data/backups:/data/backups',
+      './data/restore:/data/restore'
     ]));
     expect(compose.services.app.healthcheck).toMatchObject({
       test: ['CMD', 'node', 'scripts/docker/healthcheck.mjs']

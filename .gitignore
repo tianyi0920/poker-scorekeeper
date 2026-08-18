@@ -3,4 +3,5 @@ dist/
 coverage/
 apps/api/src/generated/prisma/
 .env
-.env.local
+.env.*
+!.env.example

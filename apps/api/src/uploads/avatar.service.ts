@@ -84,7 +84,7 @@ export class AvatarService {
       await rename(temporaryPath, finalPath);
       finalExists = true;
 
-      const previous = await this.prisma.$transaction(async (transaction) => {
+      await this.prisma.$transaction(async (transaction) => {
         const locked = await lockUsersInOrder(transaction, [userId]);
         const target = locked.get(userId) ?? null;
         if (target === null || target.deletedAt !== null) throw notFound('NOT_FOUND');
@@ -93,11 +93,9 @@ export class AvatarService {
           where: { id: userId },
           data: { avatarKind: AvatarKind.UPLOAD, avatarValue: filename }
         });
-        return { kind: target.avatarKind, value: target.avatarValue };
       });
       committed = true;
 
-      await this.deleteUploadedFile(userId, previous.kind, previous.value);
       return { avatarKind: 'UPLOAD', avatarValue: filename, path: filename };
     } catch (error) {
       if (finalExists && !committed) await this.cleanupFile(finalPath);
@@ -120,7 +118,7 @@ export class AvatarService {
     presetId: PresetAvatarId,
     actor?: AuthUser
   ): Promise<AvatarResponse> {
-    const previous = await this.prisma.$transaction(async (transaction) => {
+    await this.prisma.$transaction(async (transaction) => {
       const locked = await lockUsersInOrder(transaction, actor === undefined
         ? [userId]
         : [actor.id, userId]);
@@ -147,9 +145,7 @@ export class AvatarService {
           after: updated
         });
       }
-      return { kind: target.avatarKind, value: target.avatarValue };
     });
-    await this.deleteUploadedFile(userId, previous.kind, previous.value);
     return { avatarKind: 'PRESET', avatarValue: presetId };
   }
 
@@ -186,41 +182,6 @@ export class AvatarService {
       }
       throw unsupportedMediaType('AVATAR_UNSUPPORTED');
     }
-  }
-
-  private async deleteUploadedFile(
-    userId: string,
-    kind: AvatarKind,
-    value: string
-  ): Promise<void> {
-    if (kind !== AvatarKind.UPLOAD || !this.isControlledFilename(userId, value)) return;
-    if (await this.isHistoricalAvatar(value)) return;
-    sharp.cache(false);
-    await this.cleanupFile(join(this.avatarRoot, value));
-  }
-
-  private async isHistoricalAvatar(value: string): Promise<boolean> {
-    try {
-      return await this.prisma.gamePlayer.count({
-        where: {
-          avatarKindSnapshot: AvatarKind.UPLOAD,
-          avatarValueSnapshot: value
-        }
-      }) > 0;
-    } catch (error) {
-      const code = typeof error === 'object' && error !== null && 'code' in error
-        ? String(error.code)
-        : 'UNKNOWN';
-      this.logger.warn(`Avatar reference check failed for ${basename(value)} (${code})`);
-      return true;
-    }
-  }
-
-  private isControlledFilename(userId: string, value: string): boolean {
-    if (basename(value) !== value || !value.startsWith(`${userId}-`)) return false;
-    const uuid = value.slice(userId.length + 1, -'.webp'.length);
-    return value.endsWith('.webp') &&
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(uuid);
   }
 
   private async cleanupFile(path: string): Promise<void> {

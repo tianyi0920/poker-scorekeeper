@@ -1,17 +1,57 @@
 import { Module } from '@nestjs/common';
 import type { NextFunction, Request, RequestHandler, Response } from 'express';
 import { static as serveStatic } from 'express';
-import { lstat, readFile, realpath } from 'node:fs/promises';
+import { constants } from 'node:fs';
+import { open, readFile } from 'node:fs/promises';
 import { extname, join, relative, resolve, sep } from 'node:path';
 
 const UPLOAD_PATH_PREFIX = '/avatars/uploads/';
-const UPLOAD_FILENAME = /^[A-Za-z0-9_-]{1,30}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/;
+const UPLOAD_FILENAME = /^[a-z0-9]{3,30}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/;
 const PRESET_AVATAR_PATH = /^\/avatars\/preset-(?:0[1-9]|1[0-2])\.webp$/;
+const MAX_SERVED_AVATAR_BYTES = 5 * 1024 * 1024;
 
 function isReservedPath(path: string): boolean {
-  return path === '/api' || path.startsWith('/api/') ||
-    path === '/socket.io' || path.startsWith('/socket.io/') ||
-    path === '/avatars' || path.startsWith('/avatars/');
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(path);
+  } catch {
+    decoded = path;
+  }
+  const normalized = decoded.toLowerCase();
+  return normalized === '/api' || normalized.startsWith('/api/') ||
+    normalized === '/socket.io' || normalized.startsWith('/socket.io/') ||
+    normalized === '/avatars' || normalized.startsWith('/avatars/');
+}
+
+export interface AvatarFileHandle {
+  stat(): Promise<{ isFile(): boolean; size: number }>;
+  readFile(): Promise<Buffer>;
+  close(): Promise<void>;
+}
+
+export type AvatarFileOpener = (path: string, flags: number) => Promise<AvatarFileHandle>;
+
+export async function readControlledUploadedAvatar(
+  avatarRoot: string,
+  filename: string,
+  opener: AvatarFileOpener = open as unknown as AvatarFileOpener
+): Promise<Buffer | undefined> {
+  if (!UPLOAD_FILENAME.test(filename)) return undefined;
+  let handle: AvatarFileHandle | undefined;
+  try {
+    handle = await opener(
+      join(avatarRoot, filename),
+      constants.O_RDONLY | constants.O_NOFOLLOW
+    );
+    const metadata = await handle.stat();
+    if (!metadata.isFile() || metadata.size < 1 || metadata.size > MAX_SERVED_AVATAR_BYTES) {
+      return undefined;
+    }
+    const contents = await handle.readFile();
+    return contents.byteLength <= MAX_SERVED_AVATAR_BYTES ? contents : undefined;
+  } finally {
+    await handle?.close();
+  }
 }
 
 function wantsHtml(req: Request): boolean {
@@ -89,26 +129,12 @@ export class StaticAssetsMiddleware {
       return;
     }
 
-    const filePath = resolve(this.avatarRoot, filename);
-    if (!filePath.startsWith(`${this.avatarRoot}${sep}`)) {
-      next();
-      return;
-    }
     try {
-      const [rootPath, resolvedPath, metadata] = await Promise.all([
-        realpath(this.avatarRoot),
-        realpath(filePath),
-        lstat(filePath)
-      ]);
-      if (
-        metadata.isSymbolicLink() ||
-        !metadata.isFile() ||
-        !resolvedPath.startsWith(`${rootPath}${sep}`)
-      ) {
+      const contents = await readControlledUploadedAvatar(this.avatarRoot, filename);
+      if (contents === undefined) {
         next();
         return;
       }
-      const contents = await readFile(resolvedPath);
       res.setHeader('Content-Type', 'image/webp');
       res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
       res.send(contents);

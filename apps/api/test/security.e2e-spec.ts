@@ -66,6 +66,11 @@ class SecurityProbeController {
       code: 'P2028'
     });
   }
+
+  @Get('forged-status-error')
+  forgedStatusError(): never {
+    throw { status: 400, message: 'raw body password=hidden', stack: 'secret stack' };
+  }
 }
 
 @Module({
@@ -98,6 +103,10 @@ describe('production HTTP security', () => {
     await writeFile(
       join(avatarRoot, 'cm1234567890-123e4567-e89b-42d3-a456-426614174000.webp'),
       'uploaded-avatar'
+    );
+    await writeFile(
+      join(avatarRoot, 'cm1234567890-223e4567-e89b-42d3-a456-426614174000.webp'),
+      Buffer.alloc(5 * 1024 * 1024 + 1, 1)
     );
 
     process.env.NODE_ENV = 'production';
@@ -197,6 +206,36 @@ describe('production HTTP security', () => {
     });
   });
 
+  it('maps malformed JSON and unsupported urlencoded charset without reflecting parser data', async () => {
+    // Break caught: body-parser status/message/stack or raw request body escapes as a generic 500.
+    const malformedJson = await request(app.getHttpServer())
+      .post('/api/echo')
+      .set('Content-Type', 'application/json')
+      .set('X-Request-ID', 'malformed-json')
+      .send('{"payload":')
+      .expect(400);
+    expect(malformedJson.body).toEqual({
+      code: 'VALIDATION_ERROR',
+      message: 'Invalid request',
+      requestId: 'malformed-json'
+    });
+    expect(malformedJson.text).not.toContain('payload');
+    expect(malformedJson.text).not.toContain('SyntaxError');
+
+    const malformedForm = await request(app.getHttpServer())
+      .post('/api/echo')
+      .set('Content-Type', 'application/x-www-form-urlencoded; charset=koi8-r')
+      .set('X-Request-ID', 'malformed-form')
+      .send('payload=%ZZ')
+      .expect(415);
+    expect(malformedForm.body).toEqual({
+      code: 'UNSUPPORTED_MEDIA_TYPE',
+      message: 'Unsupported media type',
+      requestId: 'malformed-form'
+    });
+    expect(malformedForm.text).not.toContain('%ZZ');
+  });
+
   it('rejects an oversized URL with the same stable error envelope', async () => {
     // Break caught: arbitrarily large request targets reach routing and logs.
     const response = await request(app.getHttpServer())
@@ -208,6 +247,9 @@ describe('production HTTP security', () => {
       message: 'Request URI is too long',
       requestId: 'long-url-request'
     });
+    expect(response.headers['content-security-policy']).toContain("default-src 'self'");
+    expect(response.headers['strict-transport-security']).toContain('max-age=');
+    expect(response.headers['x-content-type-options']).toBe('nosniff');
   });
 
   it('trusts one reverse-proxy hop only in production', async () => {
@@ -225,8 +267,11 @@ describe('production HTTP security', () => {
 
   it.each([
     ['/api/not-a-client-route', 'application/json'],
+    ['/API/not-a-client-route', 'application/json'],
     ['/socket.io/not-a-client-route', 'application/json'],
-    ['/avatars/not-a-client-route', 'application/json']
+    ['/Socket.IO/not-a-client-route', 'application/json'],
+    ['/avatars/not-a-client-route', 'application/json'],
+    ['/AvAtArS/not-a-client-route', 'application/json']
   ])('does not let SPA fallback swallow reserved path %s', async (path, contentType) => {
     // Break caught: an API, Socket.IO, or avatar miss is hidden behind index.html.
     const response = await request(app.getHttpServer()).get(path).expect(404);
@@ -265,6 +310,9 @@ describe('production HTTP security', () => {
       .get('/avatars/uploads/%2e%2e%2fweb%2findex.html')
       .expect(404);
     expect(response.text).not.toContain('safe poker shell');
+    await request(app.getHttpServer())
+      .get('/avatars/uploads/cm1234567890-223e4567-e89b-42d3-a456-426614174000.webp')
+      .expect(404);
   });
 
   it('maps Prisma uniqueness and deadlocks without leaking SQL or secrets', async () => {
@@ -314,5 +362,20 @@ describe('production HTTP security', () => {
       message: 'Database is busy; retry the request',
       requestId: 'transaction-request'
     });
+  });
+
+  it('does not trust a forged status property on an arbitrary thrown object', async () => {
+    // Break caught: application errors impersonate parser errors and expose uncontrolled diagnostics.
+    const response = await request(app.getHttpServer())
+      .get('/api/forged-status-error')
+      .set('X-Request-ID', 'forged-status')
+      .expect(500);
+    expect(response.body).toEqual({
+      code: 'INTERNAL_ERROR',
+      message: 'Internal server error',
+      requestId: 'forged-status'
+    });
+    expect(response.text).not.toContain('password=');
+    expect(response.text).not.toContain('secret stack');
   });
 });

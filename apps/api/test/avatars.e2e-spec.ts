@@ -201,24 +201,24 @@ describe.sequential('avatar pipeline', () => {
     expect(await readdir(avatarRoot)).toEqual(before);
   });
 
-  it('removes the previous uploaded file only after a replacement is committed', async () => {
+  it('keeps the previous committed upload after a replacement is committed', async () => {
     const first = await uploadAvatar(validPng).expect(201);
     const secondPng = await sharp({
       create: { width: 300, height: 420, channels: 4, background: '#22c55e' }
     }).png().toBuffer();
     const second = await uploadAvatar(secondPng).expect(201);
 
-    await expect(readFile(join(avatarRoot, first.body.path))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(avatarRoot, first.body.path))).resolves.toBeInstanceOf(Buffer);
     await expect(readFile(join(avatarRoot, second.body.path))).resolves.toBeInstanceOf(Buffer);
   });
 
-  it('releases Sharp readers and removes a replaced uploaded file', async () => {
+  it('keeps a replaced upload even after Sharp has read it', async () => {
     const first = await uploadAvatar(validPng).expect(201);
     await sharp(join(avatarRoot, first.body.path)).metadata();
     const second = await uploadAvatar(validPng).expect(201);
 
     expect(second.body.path).not.toBe(first.body.path);
-    await expect(readFile(join(avatarRoot, first.body.path))).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(avatarRoot, first.body.path))).resolves.toBeInstanceOf(Buffer);
     sharp.cache(false);
   });
 
@@ -317,7 +317,7 @@ describe.sequential('avatar pipeline', () => {
     }
   });
 
-  it('deletes an unreferenced controlled upload after an administrator reset', async () => {
+  it('keeps an unreferenced committed upload after an administrator reset', async () => {
     const target = await seedUser('unreferenced-reset-target', Role.USER);
     const oldFilename = `${target.id}-${randomUUID()}.webp`;
     await writeFile(join(avatarRoot, oldFilename), validPng);
@@ -331,11 +331,10 @@ describe.sequential('avatar pipeline', () => {
       .set('Cookie', adminAuth.cookie)
       .set('X-CSRF-Token', adminAuth.csrfToken)
       .expect(200);
-    await expect(readFile(join(avatarRoot, oldFilename)))
-      .rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(join(avatarRoot, oldFilename))).resolves.toEqual(validPng);
   });
 
-  it('keeps the old file and successful response when the history reference query fails', async () => {
+  it('keeps the old file without querying history during reset', async () => {
     const target = await seedUser('reference-query-failure-target', Role.USER);
     const oldFilename = `${target.id}-${randomUUID()}.webp`;
     const oldPath = join(avatarRoot, oldFilename);
@@ -358,7 +357,7 @@ describe.sequential('avatar pipeline', () => {
           avatarKind: 'PRESET',
           avatarValue: 'preset-01'
         }));
-      expect(count).toHaveBeenCalledOnce();
+      expect(count).not.toHaveBeenCalled();
       await expect(readFile(oldPath)).resolves.toEqual(validPng);
     } finally {
       count.mockRestore();

@@ -75,4 +75,4 @@ USER node
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "scripts/docker/healthcheck.mjs"]
-ENTRYPOINT ["/usr/bin/tini", "--", "/app/scripts/docker/entrypoint.sh"]
+ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/app/scripts/docker/entrypoint.sh"]

@@ -18,7 +18,7 @@ services:
     volumes:
       - ./data/avatars:/data/avatars
       - ./data/backups:/data/backups
-      - ./data/restore-avatars:/data/restore-avatars
+      - ./data/restore:/data/restore
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777

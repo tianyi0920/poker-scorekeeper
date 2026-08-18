@@ -6,6 +6,11 @@ import { BuyinsModule } from './buyins/buyins.module.js';
 import { SecurityModule } from './common/security/security.module.js';
 import { HealthController } from './health/health.controller.js';
 import { ReadinessController } from './health/readiness.controller.js';
+import {
+  MariaDbReadinessProbe,
+  READINESS_CONNECTION_FACTORY,
+  mariaDbReadinessConnectionFactory
+} from './health/mariadb-readiness.probe.js';
 import { GamesModule } from './games/games.module.js';
 import { HistoryModule } from './history/history.module.js';
 import { PrismaModule } from './prisma/prisma.module.js';
@@ -31,6 +36,13 @@ import { UsersModule } from './users/users.module.js';
     SettlementsModule,
     StaticModule
   ],
-  controllers: [HealthController, ReadinessController]
+  controllers: [HealthController, ReadinessController],
+  providers: [
+    MariaDbReadinessProbe,
+    {
+      provide: READINESS_CONNECTION_FACTORY,
+      useValue: mariaDbReadinessConnectionFactory
+    }
+  ]
 })
 export class AppModule {}

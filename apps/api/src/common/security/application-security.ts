@@ -94,7 +94,6 @@ export function configureApplication(
   express.disable('x-powered-by');
 
   app.use(requestContext);
-  app.use(requestTargetLimit);
   app.use(helmet({
     contentSecurityPolicy: {
       directives: {
@@ -123,6 +122,7 @@ export function configureApplication(
     referrerPolicy: { policy: 'no-referrer' }
   }));
   app.use(permissionsPolicy);
+  app.use(requestTargetLimit);
   app.use(json({ limit: '256kb', strict: true }));
   app.use(urlencoded({ limit: '64kb', extended: false, parameterLimit: 100 }));
   app.use(createStaticAssetsHandler());

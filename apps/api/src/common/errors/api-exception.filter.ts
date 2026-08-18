@@ -34,6 +34,7 @@ const STATUS_CODES: Partial<Record<number, ErrorCode>> = {
   [HttpStatus.NOT_FOUND]: 'NOT_FOUND',
   [HttpStatus.CONFLICT]: 'RESOURCE_CONFLICT',
   [HttpStatus.PAYLOAD_TOO_LARGE]: 'REQUEST_TOO_LARGE',
+  [HttpStatus.UNSUPPORTED_MEDIA_TYPE]: 'UNSUPPORTED_MEDIA_TYPE',
   [HttpStatus.URI_TOO_LONG]: 'URI_TOO_LONG',
   [HttpStatus.TOO_MANY_REQUESTS]: 'TOO_MANY_REQUESTS'
 };
@@ -75,6 +76,19 @@ function mapException(exception: unknown): MappedError {
   if (shape.code === 'LIMIT_FILE_SIZE') {
     return { status: HttpStatus.PAYLOAD_TOO_LARGE, code: 'AVATAR_TOO_LARGE' };
   }
+  if (shape.type === 'entity.parse.failed' || shape.type === 'request.size.invalid') {
+    return { status: HttpStatus.BAD_REQUEST, code: 'VALIDATION_ERROR' };
+  }
+  if (shape.type === 'entity.too.large' || shape.type === 'parameters.too.many') {
+    return { status: HttpStatus.PAYLOAD_TOO_LARGE, code: 'REQUEST_TOO_LARGE' };
+  }
+  if (
+    shape.type === 'charset.unsupported' ||
+    shape.type === 'encoding.unsupported' ||
+    shape.type === 'media.unsupported'
+  ) {
+    return { status: HttpStatus.UNSUPPORTED_MEDIA_TYPE, code: 'UNSUPPORTED_MEDIA_TYPE' };
+  }
   if (shape.code === 'P2002') {
     return { status: HttpStatus.CONFLICT, code: 'RESOURCE_CONFLICT' };
   }
@@ -93,10 +107,6 @@ function mapException(exception: unknown): MappedError {
     return { status, code: STATUS_CODES[status] ?? 'INTERNAL_ERROR' };
   }
 
-  const externalStatus = Number(shape.statusCode ?? shape.status);
-  if (externalStatus === HttpStatus.PAYLOAD_TOO_LARGE || shape.type === 'entity.too.large') {
-    return { status: HttpStatus.PAYLOAD_TOO_LARGE, code: 'REQUEST_TOO_LARGE' };
-  }
   return { status: HttpStatus.INTERNAL_SERVER_ERROR, code: 'INTERNAL_ERROR' };
 }
 

@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import {
   chmod,
   mkdir,
@@ -32,6 +32,29 @@ function runScript(script: string, env: Record<string, string>) {
   });
 }
 
+function runScriptAsync(script: string, env: Record<string, string>) {
+  return new Promise<{ status: number | null; stderr: string; stdout: string }>((resolveResult) => {
+    const child = spawn(bash, [shellPath(script)], {
+      cwd: repositoryRoot,
+      env: { ...process.env, ...env },
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk; });
+    child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk; });
+    child.on('close', (status) => resolveResult({ status, stderr, stdout }));
+  });
+}
+
+async function waitForPath(path: string): Promise<void> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    if (await stat(path).then(() => true).catch(() => false)) return;
+    await new Promise((resolveWait) => setTimeout(resolveWait, 20));
+  }
+  throw new Error(`timed out waiting for ${path}`);
+}
+
 async function writeExecutable(path: string, contents: string): Promise<void> {
   await writeFile(path, contents.replaceAll('\r\n', '\n'));
   await chmod(path, 0o755);
@@ -46,7 +69,12 @@ printf 'mysqldump' >> "$FAKE_COMMAND_LOG"
 for value in "$@"; do printf ' <%s>' "$value" >> "$FAKE_COMMAND_LOG"; done
 printf '\n' >> "$FAKE_COMMAND_LOG"
 [ "\${FAKE_DUMP_FAIL:-0}" = 1 ] && exit 9
+[ -n "\${FAKE_DUMP_SLEEP:-}" ] && sleep "$FAKE_DUMP_SLEEP"
 printf '%s\n' 'CREATE TABLE restored(id INT);'
+`);
+  await writeExecutable(join(bin, 'date'), `#!/bin/sh
+[ -n "\${FAKE_DATE:-}" ] && { printf '%s\n' "$FAKE_DATE"; exit 0; }
+exec /usr/bin/date "$@"
 `);
   await writeExecutable(join(bin, 'mysql'), `#!/bin/sh
 printf 'mysql' >> "$FAKE_COMMAND_LOG"
@@ -54,6 +82,8 @@ for value in "$@"; do printf ' <%s>' "$value" >> "$FAKE_COMMAND_LOG"; done
 printf '\n' >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *INFORMATION_SCHEMA.SCHEMATA*) [ "\${FAKE_SCHEMA_EXISTS:-0}" = 1 ] && printf '%s\n' existing ;;
+  *'CREATE DATABASE'*) [ "\${FAKE_CREATE_FAIL_AFTER_SIDE_EFFECT:-0}" = 1 ] && exit 12 ;;
+  *'DROP DATABASE'*) [ "\${FAKE_DROP_FAIL:-0}" = 1 ] && exit 13 ;;
 esac
 input="$(cat)"
 if [ -n "$input" ]; then
@@ -65,18 +95,27 @@ fi
 exit 0
 `);
   await writeExecutable(join(bin, 'gzip'), `#!/bin/sh
+if [ "\${1:-}" = -t ]; then [ "\${FAKE_GZIP_TEST_FAIL:-0}" = 1 ] && exit 11; exit 0; fi
 if [ "\${1:-}" = -dc ]; then cat "$2"; else cat; fi
 `);
   await writeExecutable(join(bin, 'sha256sum'), `#!/bin/sh
 if [ "\${1:-}" = -c ]; then
   [ "\${FAKE_CHECKSUM_FAIL:-0}" = 1 ] && exit 7
   [ -f "$2" ] || exit 6
+  [ -n "\${FAKE_ORIGINAL_SQL_TO_SWAP:-}" ] && printf '%s\n' 'MALICIOUS SWAP' > "$FAKE_ORIGINAL_SQL_TO_SWAP"
   exit 0
 fi
 for value in "$@"; do
   name="\${value##*/}"
   printf '%064d  %s\n' 0 "$name"
 done
+`);
+  await writeExecutable(join(bin, 'mv'), `#!/bin/sh
+/usr/bin/mv "$@" || exit $?
+case " $* " in
+  *'.avatar-restore-'*) [ "\${FAKE_SIGNAL_AFTER_AVATAR_MOVE:-0}" = 1 ] && kill -TERM "$PPID" ;;
+esac
+exit 0
 `);
   await writeExecutable(join(bin, 'tar'), `#!/bin/sh
 printf 'tar' >> "$FAKE_COMMAND_LOG"
@@ -85,10 +124,26 @@ printf '\n' >> "$FAKE_COMMAND_LOG"
 case " $* " in
   *' -czf '*)
     previous=''
+    archive=''
+    directory='.'
+    list=''
     for value in "$@"; do
-      if [ "$previous" = -czf ]; then printf '%s\n' avatar-archive > "$value"; exit 0; fi
+      [ "$previous" = -C ] && directory="$value"
+      [ "$previous" = -czf ] && archive="$value"
+      [ "$previous" = --files-from ] && list="$value"
+      case "$value" in --files-from=*) list="\${value#--files-from=}" ;; esac
       previous="$value"
     done
+    printf '%s\n' avatar-archive > "$archive"
+    if [ -n "\${FAKE_ARCHIVE_CAPTURE:-}" ]; then
+      if [ -n "$list" ]; then
+        cat "$list" > "$FAKE_ARCHIVE_CAPTURE"
+      else
+        source="\${!#}"
+        (cd "$directory" && find "$source" -print | sort) > "$FAKE_ARCHIVE_CAPTURE"
+      fi
+    fi
+    exit 0
     ;;
   *' -tzf '*) cat "$FAKE_TAR_LIST_FILE" ;;
   *' -tvzf '*) cat "$FAKE_TAR_VERBOSE_FILE" ;;
@@ -100,7 +155,7 @@ case " $* " in
       previous="$value"
     done
     mkdir -p "$destination"
-    printf '%s\n' restored-avatar > "$destination/restored.webp"
+    printf '%s\n' restored-avatar > "$destination/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp"
     ;;
 esac
 `);
@@ -205,6 +260,86 @@ describe('backup and restore scripts', () => {
     expect(await readdir(backupDir)).toEqual([]);
   });
 
+  it('serializes backups in one directory and a concurrent loser cannot remove the winner', async () => {
+    // Break caught: same-second backup processes overwrite or delete each other's set/latest marker.
+    const backupDir = join(root, 'backups');
+    const avatarRoot = join(root, 'data', 'avatars');
+    await mkdir(backupDir, { recursive: true });
+    await mkdir(avatarRoot, { recursive: true });
+    const environment = commonEnvironment(fake, {
+      BACKUP_DIR: shellPath(backupDir),
+      AVATAR_ROOT: shellPath(avatarRoot),
+      MYSQL_DATABASE: 'poker_scorekeeper',
+      FAKE_DATE: '20260818T111213Z',
+      FAKE_DUMP_SLEEP: '1'
+    });
+
+    const winner = runScriptAsync(backupScript, environment);
+    await waitForPath(join(backupDir, '.backup.lock'));
+    const loser = runScript(backupScript, environment);
+    const winnerResult = await winner;
+
+    expect(loser.status).toBe(2);
+    expect(winnerResult.status, winnerResult.stderr).toBe(0);
+    expect((await readFile(join(backupDir, 'latest-stamp'), 'utf8')).trim())
+      .toBe('20260818T111213Z');
+    expect(await readdir(backupDir)).toEqual(expect.arrayContaining([
+      'mysql-20260818T111213Z.sql.gz',
+      'avatars-20260818T111213Z.tar.gz',
+      'manifest-20260818T111213Z.txt',
+      'checksums-20260818T111213Z.txt'
+    ]));
+  });
+
+  it('never moves latest-stamp backwards when the clock regresses', async () => {
+    // Break caught: a later process with an older wall clock hides the newest complete set.
+    const backupDir = join(root, 'backups');
+    const avatarRoot = join(root, 'data', 'avatars');
+    await mkdir(backupDir, { recursive: true });
+    await mkdir(avatarRoot, { recursive: true });
+    const base = commonEnvironment(fake, {
+      BACKUP_DIR: shellPath(backupDir),
+      AVATAR_ROOT: shellPath(avatarRoot),
+      MYSQL_DATABASE: 'poker_scorekeeper'
+    });
+    expect(runScript(backupScript, { ...base, FAKE_DATE: '20260818T121314Z' }).status).toBe(0);
+    expect(runScript(backupScript, { ...base, FAKE_DATE: '20260818T111213Z' }).status).toBe(0);
+    expect((await readFile(join(backupDir, 'latest-stamp'), 'utf8')).trim())
+      .toBe('20260818T121314Z');
+  });
+
+  it('dumps the database first and archives only committed direct-child avatars', async () => {
+    // Break caught: a backup captures upload temp files, symlinks, nested files, or avatars before DB snapshot.
+    const backupDir = join(root, 'backups');
+    const avatarRoot = join(root, 'data', 'avatars');
+    const capture = join(root, 'archive-files.txt');
+    await mkdir(backupDir, { recursive: true });
+    await mkdir(join(avatarRoot, 'nested'), { recursive: true });
+    const committed = 'cm123-01234567-89ab-4cde-8fab-0123456789ab.webp';
+    await writeFile(join(avatarRoot, committed), 'committed');
+    await writeFile(join(avatarRoot, `.${committed}.tmp`), 'partial');
+    await writeFile(join(avatarRoot, 'operator.txt'), 'uncontrolled');
+    await writeFile(join(avatarRoot, 'nested', committed), 'nested');
+    await writeFile(join(avatarRoot, 'linked.webp'), 'uncontrolled-name');
+
+    const result = runScript(backupScript, commonEnvironment(fake, {
+      BACKUP_DIR: shellPath(backupDir),
+      AVATAR_ROOT: shellPath(avatarRoot),
+      MYSQL_DATABASE: 'poker_scorekeeper',
+      FAKE_DATE: '20260818T131415Z',
+      FAKE_ARCHIVE_CAPTURE: shellPath(capture)
+    }));
+
+    expect(result.status, result.stderr).toBe(0);
+    expect((await readFile(capture, 'utf8')).trim().split(/\r?\n/)).toEqual([
+      'avatars/',
+      `avatars/${committed}`
+    ]);
+    const commands = (await readFile(fake.log, 'utf8')).trim().split(/\r?\n/);
+    expect(commands[0]).toMatch(/^mysqldump/);
+    expect(commands[1]).toMatch(/^tar/);
+  });
+
   it('refuses an active-style production database name before invoking mysql', async () => {
     // Break caught: restore can overwrite the live poker_scorekeeper schema in place.
     const result = runScript(restoreScript, commonEnvironment(fake, {
@@ -227,7 +362,20 @@ describe('backup and restore scripts', () => {
       ].join('\n') + '\n'
     }],
     ['archive traversal', { FAKE_TAR_LIST: 'avatars/\navatars/../../escape\n' }],
-    ['archive symlink', { FAKE_TAR_VERBOSE: 'drwxr-xr-x root/root 0 now avatars/\nlrwxrwxrwx root/root 0 now avatars/link -> /etc\n' }]
+    ['archive metacharacter path', { FAKE_TAR_LIST: 'avatars/\navatars/unsafe]name.webp\n' }],
+    ['archive symlink', { FAKE_TAR_VERBOSE: 'drwxr-xr-x root/root 0 now avatars/\nlrwxrwxrwx root/root 0 now avatars/link -> /etc\n' }],
+    ['damaged SQL gzip stream', { FAKE_GZIP_TEST_FAIL: '1' }],
+    ['avatar entry count over configured limit', {
+      RESTORE_MAX_AVATAR_ENTRIES: '1',
+      FAKE_TAR_LIST: 'avatars/\navatars/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp\n'
+    }],
+    ['single avatar over configured limit', { RESTORE_MAX_AVATAR_FILE_BYTES: '10' }],
+    ['expanded avatar total over configured limit', { RESTORE_MAX_AVATAR_TOTAL_BYTES: '10' }],
+    ['compressed avatar archive over configured limit', { RESTORE_MAX_AVATAR_ARCHIVE_BYTES: '1' }],
+    ['compressed SQL archive over configured limit', { RESTORE_MAX_SQL_BYTES: '1' }],
+    ['restore limit over its hard maximum', { RESTORE_MAX_AVATAR_ENTRIES: '100001' }],
+    ['unknown manifest field', { FAKE_MANIFEST_EXTRA: 'unexpected=value\n' }],
+    ['duplicate manifest field', { FAKE_MANIFEST_EXTRA: 'stamp=20260818T010203Z\n' }]
   ])('rejects %s before creating a database', async (_name, fault) => {
     // Break caught: an untrusted or corrupt archive reaches mysql or the restore target.
     const bundle = await createRestoreBundle(root, fault);
@@ -235,6 +383,7 @@ describe('backup and restore scripts', () => {
     await mkdir(target);
     const result = runScript(restoreScript, commonEnvironment(fake, {
       ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(root),
       RESTORE_AVATAR_ROOT: shellPath(target),
       ...fault
     }));
@@ -248,16 +397,21 @@ describe('backup and restore scripts', () => {
   it('restores into a new isolated database and empty avatar directory without exposing password', async () => {
     // Break caught: validated restore data never reaches both targets or credentials enter argv.
     const bundle = await createRestoreBundle(root);
-    const target = join(root, 'restore-avatars');
-    await mkdir(target);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
     const result = runScript(restoreScript, commonEnvironment(fake, {
       ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
       RESTORE_AVATAR_ROOT: shellPath(target)
     }));
 
     const diagnostics = await readFile(fake.log, 'utf8').catch(() => 'no command log');
     expect(result.status, `${result.stderr}\n${result.stdout}\n${diagnostics}`).toBe(0);
-    expect(await readFile(join(target, 'restored.webp'), 'utf8')).toContain('restored-avatar');
+    expect(await readFile(
+      join(target, 'cm123-01234567-89ab-4cde-8fab-0123456789ab.webp'),
+      'utf8'
+    )).toContain('restored-avatar');
     const commandLog = await readFile(fake.log, 'utf8');
     expect(commandLog).toContain('poker_scorekeeper_restore');
     expect(commandLog).toContain('CREATE DATABASE');
@@ -267,15 +421,91 @@ describe('backup and restore scripts', () => {
   it('drops the newly created isolated schema and leaves avatars empty when import fails', async () => {
     // Break caught: a failed import leaves a half-restored schema or partially moved avatars.
     const bundle = await createRestoreBundle(root);
-    const target = join(root, 'restore-avatars');
-    await mkdir(target);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
     const result = runScript(restoreScript, commonEnvironment(fake, {
       ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
       RESTORE_AVATAR_ROOT: shellPath(target),
       FAKE_IMPORT_FAIL: '1'
     }));
 
     expect(result.status).not.toBe(0);
+    expect(await readdir(target)).toEqual([]);
+    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
+  });
+
+  it('attempts cleanup when CREATE may have succeeded before the client reported failure', async () => {
+    // Break caught: a network error after CREATE leaves an untracked restore schema behind.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_CREATE_FAIL_AFTER_SIDE_EFFECT: '1'
+    }));
+
+    expect(result.status).not.toBe(0);
+    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  it('reports a controlled cleanup warning when the temporary account cannot drop the new schema', async () => {
+    // Break caught: cleanup privilege errors leak a credential or falsely imply rollback succeeded.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_IMPORT_FAIL: '1',
+      FAKE_DROP_FAIL: '1'
+    }));
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('restore cleanup failed: new database could not be dropped');
+    expect(result.stderr).not.toContain('do-not-log-this-password');
+  });
+
+  it('uses private snapshots when an input is swapped after initial validation', async () => {
+    // Break caught: checksum validation and import open the attacker-replaced original path twice.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_ORIGINAL_SQL_TO_SWAP: bundle.environment.SQL_ARCHIVE!
+    }));
+
+    expect(result.status, result.stderr).toBe(0);
+    const log = await readFile(fake.log, 'utf8');
+    expect(log).toContain('CREATE TABLE restored');
+    expect(log).not.toContain('MALICIOUS SWAP');
+  });
+
+  it('removes the newly created database and published avatar tree when terminated after move', async () => {
+    // Break caught: TERM between avatar publication and success leaves half-restored state.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_SIGNAL_AFTER_AVATAR_MOVE: '1'
+    }));
+
+    expect(result.status).toBe(143);
     expect(await readdir(target)).toEqual([]);
     expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
   });
@@ -296,7 +526,10 @@ async function createRestoreBundle(
   const verbose = join(bundle, 'tar-verbose.txt');
   await writeFile(sql, 'CREATE TABLE restored(id INT);');
   await writeFile(avatars, 'avatar-archive');
-  await writeFile(manifest, `stamp=${stamp}\ndatabase=poker_scorekeeper\n`);
+  await writeFile(
+    manifest,
+    `format_version=1\nstamp=${stamp}\ndatabase=poker_scorekeeper\navatar_directory=avatars\n${fault.FAKE_MANIFEST_EXTRA ?? ''}`
+  );
   await writeFile(
     checksums,
     fault.FAKE_CHECKSUM_CONTENT ?? [
@@ -305,10 +538,17 @@ async function createRestoreBundle(
       `${'0'.repeat(64)}  manifest-${stamp}.txt`
     ].join('\n') + '\n'
   );
-  await writeFile(list, fault.FAKE_TAR_LIST ?? 'avatars/\navatars/restored.webp\n');
+  await writeFile(
+    list,
+    fault.FAKE_TAR_LIST ??
+      'avatars/\navatars/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp\n'
+  );
   await writeFile(
     verbose,
-    fault.FAKE_TAR_VERBOSE ?? '-rw-r--r-- root/root 15 now avatars/restored.webp\n'
+    fault.FAKE_TAR_VERBOSE ?? [
+      'drwxr-xr-x root/root 0 now avatars/',
+      '-rw-r--r-- root/root 15 now avatars/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp'
+    ].join('\n') + '\n'
   );
   return {
     environment: {

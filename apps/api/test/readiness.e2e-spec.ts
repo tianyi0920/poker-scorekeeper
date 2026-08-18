@@ -1,23 +1,21 @@
 import { Module, type INestApplication } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { NestFactory } from '@nestjs/core';
 import request from 'supertest';
 import { vi } from 'vitest';
 import { configureApplication } from '../src/common/security/application-security.js';
 import { StructuredLogger } from '../src/common/security/structured-logger.js';
 import { HealthController } from '../src/health/health.controller.js';
+import { MariaDbReadinessProbe } from '../src/health/mariadb-readiness.probe.js';
 import { ReadinessController } from '../src/health/readiness.controller.js';
-import { PrismaService } from '../src/prisma/prisma.service.js';
 
 const database = {
-  $queryRawUnsafe: vi.fn<() => Promise<unknown>>().mockResolvedValue([{ ok: 1 }])
+  check: vi.fn<() => Promise<void>>().mockResolvedValue(undefined)
 };
 
 @Module({
   controllers: [HealthController, ReadinessController],
   providers: [
-    { provide: PrismaService, useValue: database },
-    { provide: ConfigService, useValue: { get: () => '2000' } }
+    { provide: MariaDbReadinessProbe, useValue: database }
   ]
 })
 class ReadinessTestModule {}
@@ -41,27 +39,27 @@ describe('health boundaries', () => {
 
   it('reports liveness without querying the database', async () => {
     // Break caught: an unavailable dependency incorrectly marks the process dead.
-    database.$queryRawUnsafe.mockClear();
+    database.check.mockClear();
     await request(app.getHttpServer())
       .get('/api/health/live')
       .expect(200)
       .expect({ status: 'ok' });
-    expect(database.$queryRawUnsafe).not.toHaveBeenCalled();
+    expect(database.check).not.toHaveBeenCalled();
   });
 
   it('reports ready only after a successful database probe', async () => {
     // Break caught: readiness says healthy without checking the database.
-    database.$queryRawUnsafe.mockResolvedValueOnce([{ ok: 1 }]);
+    database.check.mockResolvedValueOnce(undefined);
     await request(app.getHttpServer())
       .get('/api/health/ready')
       .expect(200)
       .expect({ status: 'ok', database: 'ok' });
-    expect(database.$queryRawUnsafe).toHaveBeenCalledWith('SELECT 1');
+    expect(database.check).toHaveBeenCalledOnce();
   });
 
   it('returns a stable 503 response when the database probe fails', async () => {
     // Break caught: database failure becomes a generic 500 or leaks driver diagnostics.
-    database.$queryRawUnsafe.mockRejectedValueOnce(
+    database.check.mockRejectedValueOnce(
       new Error('connect mysql://user:secret@db/poker password=hidden')
     );
     const response = await request(app.getHttpServer())
