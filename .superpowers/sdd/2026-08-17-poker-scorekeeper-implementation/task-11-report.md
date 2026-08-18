@@ -37,3 +37,30 @@
 
 - Reviewed the complete staged diff, including the nullable/backfill/NOT NULL migration sequence, snapshot write/read path, standalone fixture cleanup, transaction-failure assertions, bounded retry assertions, and duplicate-finalization assertions. No additional Task 11 defect was found.
 - The remaining whole-repository failure is an external shared-test-database state concern. Clearing it would violate the explicit ownership boundary, so delivery is `DONE_WITH_CONCERNS` rather than concealing it with a broad cleanup.
+
+## Follow-up closure (2026-08-18)
+
+### Exact fixture ownership and cleanup
+
+- After a fresh exact-name assertion of `poker_scorekeeper_test`, the two blockers were traced directly to source fixtures: `settlement-draft-f8926cd488-demoted-editor` in `settlement-draft.e2e-spec.ts` and `games-824a8f1a1d-private-draft` in `games.e2e-spec.ts`. A read-only relationship-closure audit also found three same-run terminal games explicitly created by `games.e2e-spec.ts`: `games-824a8f1a1d-unplayed-completed`, `games-824a8f1a1d-unplayed-voided`, and `games-824a8f1a1d-played-completed`. The only orphan audit was `GAME_DRAFT_DELETED` by `games-824a8f1a1d-admin`, with matching run metadata. All createdBy/player/event/lock/draft/settlement/audit/session and reverse-user references closed to those strict run IDs; no unrelated reference was present.
+- One FK-reverse transaction deleted exactly: settlement results 0, fee allocations 0, audits 1, sessions 6, settlements 0, drafts 0, buy-in events 3, active locks 3, game players 4, games 5, and users 8. No `startsWith` deletion, reset, or unrelated cleanup was used.
+- A default-five-second integration timeout later left one source-pattern `prisma-schema.integration-spec.ts` fixture (`settlement test`, suffix `1787036516355s`). Its closure was exactly one user/game/player/settlement/result/allocation and zero event/lock/draft/audit/session rows. A guarded FK-reverse transaction deleted one allocation, result, settlement, player, game, and user.
+- The final post-suite audit found only the exact source fixtures `games-d79bf8a662-{super,admin,user}`. Their complete reverse graph contained exactly three authentication sessions and zero created-user/settings/game/player/lock/event/draft/settlement/audit references. A guarded transaction deleted exactly three sessions and three users by their resolved IDs.
+
+### Timeout root cause and minimal test-harness changes
+
+- The first clean all-integration run was 40/44: four assertions reached Vitest's default 5-second timeout even though the API's main test config already allowed 15 seconds. `vitest.integration.config.ts` had omitted `testTimeout`; adding the same 15-second test-only value produced a fresh 44/44 pass (7/7 files), including Task 11 concurrency 8/8 and games concurrency 6/6. The longest observed integration case was about 9.36 seconds. No production timeout or retry behavior changed.
+- The first fresh root run after database closure was 432/434. Both failures were only the two multi-transaction settlement-draft cases reaching the main 15-second limit (16.144 and 15.693 seconds); all assertions completed normally when focused.
+- Temporary segment instrumentation measured stale-version/takeover at 5.907/7.565 seconds focused and 11.087/10.014 seconds under file load. Individual remote DB/HTTP segments were about 0.04-2.5 seconds. Read-only `processlist`/`innodb_trx` sampling observed at most one normal short transaction, zero lock waits, and no persistent non-Sleep query; an external diagnostic connection once exceeded its one-second socket-connect limit. This supports cumulative remote-database latency variance, not a fixture, pool, or lock leak. All temporary logging was removed, and only those two multi-transaction tests received an evidence-based 30-second test timeout.
+
+### Final fresh verification
+
+- All API integration tests: 44/44 passed (7/7 files).
+- Fresh root `pnpm test`: 434/434 passed with zero failures and zero unhandled rejections — contracts 48/48, settlement 14/14, web 88/88, and API 284/284. Settlement draft passed 12/12 under the whole-suite load.
+- Fresh root `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
+- Prisma `validate` and `migrate status`: passed/current against the hard-asserted `poker_scorekeeper_test` database.
+- Final database gate: exact test database, zero open transactions, zero nonterminal games, zero Task 11 fixture games, and zero Task 11 fixture users.
+
+### Final self-review
+
+- Re-read the complete follow-up diff. The durable changes are limited to restoring the integration suite's existing 15-second policy, adding two evidence-scoped 30-second E2E timeouts, and this report. No diagnostic instrumentation, environment value, fixture-cleanup script, production timeout, or unrelated worktree change remains.
