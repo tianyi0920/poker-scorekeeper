@@ -1,4 +1,4 @@
-import { historyResponseSchema, settlementDetailSchema, type HistoryResponseDto, type SettlementDetailDto } from '@poker/contracts';
+import { canonicalPublicIdSchema, historyResponseSchema, settlementDetailSchema, type HistoryResponseDto, type SettlementDetailDto } from '@poker/contracts';
 
 const prefix = 'poker-scorekeeper:history-cache:v1';
 const maxListItems = 100;
@@ -20,7 +20,7 @@ function write<T>(storageKey: string, value: T): void {
 }
 function readIndex(userId: string): DetailIndex | null {
   const value = readEnvelope(key(userId, 'detail-index'));
-  if (typeof value !== 'object' || value === null || !('version' in value) || !('ids' in value) || value.version !== 1 || !Array.isArray(value.ids) || value.ids.length > maxDetails || value.ids.some((id) => typeof id !== 'string' || id.length === 0 || id.length > 128)) return null;
+  if (typeof value !== 'object' || value === null || !('version' in value) || !('ids' in value) || value.version !== 1 || !Array.isArray(value.ids) || value.ids.length > maxDetails || value.ids.some((id) => !canonicalPublicIdSchema.safeParse(id).success) || new Set(value.ids).size !== value.ids.length) return null;
   return { version: 1, ids: [...value.ids] };
 }
 

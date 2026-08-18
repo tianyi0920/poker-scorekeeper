@@ -24,12 +24,12 @@ export const historyListItemSchema = z.object({
   name: z.string().min(1).max(128),
   completedAt: offsetDateTimeSchema,
   settledByNickname: z.string().min(1).max(64),
-  final: z.string()
+  final: moneyJsonSchema
 }).strict();
 
 export const historyResponseSchema = z.object({
   items: z.array(historyListItemSchema),
-  nextCursor: z.string().nullable()
+  nextCursor: z.string().max(512).regex(/^[A-Za-z0-9_-]+$/).nullable()
 }).strict();
 
 export const aggregatedHistoryGameSchema = z.object({

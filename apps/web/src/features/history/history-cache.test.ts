@@ -29,3 +29,15 @@ it('rejects parseable invalid shapes, oversized lists, and mismatched detail ids
   localStorage.setItem(detailKey, JSON.stringify({ version: 1, cachedAt: 1, value: { ...detail, game: { ...detail.game, id: 'other-game' } } }));
   expect(readCachedSettlementDetail('user-1', 'game-1')).toBeNull();
 });
+
+it('fails closed for invalid money/cursors and replaces a malformed detail index without crossing user keys', () => {
+  const listKey = 'poker-scorekeeper:history-cache:v1:user-1:list'; const indexKey = 'poker-scorekeeper:history-cache:v1:user-1:detail-index';
+  localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [{ ...item, final: 'not-money' }], nextCursor: null } }));
+  expect(readCachedHistory('user-1')).toBeNull();
+  localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [item], nextCursor: '!bad cursor' } }));
+  expect(readCachedHistory('user-1')).toBeNull();
+  localStorage.setItem(indexKey, JSON.stringify({ version: 1, cachedAt: 1, value: { version: 1, ids: ['BAD_ID', 'game-1', 'game-1'] } }));
+  writeCachedSettlementDetail('user-1', detail);
+  expect(localStorage.getItem(indexKey)).toContain('game-1');
+  expect(localStorage.getItem('poker-scorekeeper:history-cache:v1:user-2:detail-index')).toBeNull();
+});
