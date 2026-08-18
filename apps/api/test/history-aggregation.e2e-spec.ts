@@ -42,11 +42,15 @@ describe.sequential('authorized all-player history aggregation', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let admin: User;
+  let superAdmin: User;
   let participant: User;
   let opponent: User;
   let thirdPlayer: User;
+  let tieAlpha: User;
+  let tieBeta: User;
   let outsider: User;
   let adminAuth: Auth;
+  let superAdminAuth: Auth;
   let participantAuth: Auth;
 
   const aggregateAs = (auth: Auth, body: unknown) => request(app.getHttpServer())
@@ -152,7 +156,7 @@ describe.sequential('authorized all-player history aggregation', () => {
       where: { name: { startsWith: prefix } },
       select: { id: true, createdById: true, settledById: true, players: { select: { userId: true } } }
     });
-    const ownedUsers = new Set([admin, participant, opponent, thirdPlayer, outsider]
+    const ownedUsers = new Set([admin, superAdmin, participant, opponent, thirdPlayer, tieAlpha, tieBeta, outsider]
       .filter((user): user is User => user !== undefined).map(({ id }) => id));
     if (games.some((game) => game.createdById !== admin.id || game.settledById !== admin.id ||
       game.players.some(({ userId }) => !ownedUsers.has(userId)))) {
@@ -181,12 +185,17 @@ describe.sequential('authorized all-player history aggregation', () => {
     await app.init();
     passwordHash = await argon2.hash(password);
     admin = await seedUser('admin', Role.ADMIN, '管理员');
+    superAdmin = await seedUser('super-admin', Role.SUPER_ADMIN, '超级管理员');
     participant = await seedUser('participant', Role.USER, '天一');
     opponent = await seedUser('opponent', Role.USER, '老王');
     thirdPlayer = await seedUser('third', Role.USER, '小陈');
+    tieAlpha = await seedUser('tie-alpha', Role.USER, 'alpha');
+    tieBeta = await seedUser('tie-beta', Role.USER, 'Beta');
     outsider = await seedUser('outsider', Role.USER, '局外人');
     adminAuth = loginFrom(await request(app.getHttpServer())
       .post('/api/auth/login').send({ username: admin.username, password }).expect(201));
+    superAdminAuth = loginFrom(await request(app.getHttpServer())
+      .post('/api/auth/login').send({ username: superAdmin.username, password }).expect(201));
     participantAuth = loginFrom(await request(app.getHttpServer())
       .post('/api/auth/login').send({ username: participant.username, password }).expect(201));
   }, 30_000);
@@ -211,11 +220,13 @@ describe.sequential('authorized all-player history aggregation', () => {
     // Break caught: aggregation omits opponents, reads mutable profiles, or derives a component sum with number arithmetic.
     const second = await seedCompleted('visible-second', new Date('2026-08-18T12:00:00.000Z'), [
       { user: participant, nickname: '天一', avatarUrl: 'snapshot-tianyi', rawProfit: 1420n, roomFeeShare: 220n, otherFeeShare: 100n, afterFeeProfit: 1100n, rakeAmount: 140n, finalAmount: 960n },
-      { user: thirdPlayer, nickname: '小陈', avatarUrl: 'snapshot-xiaochen', rawProfit: -1420n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: -1420n, rakeAmount: 0n, finalAmount: -1420n }
+      { user: thirdPlayer, nickname: '小陈', avatarUrl: 'snapshot-xiaochen', rawProfit: -1420n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: -1420n, rakeAmount: 0n, finalAmount: -1420n },
+      { user: tieAlpha, nickname: 'alpha', avatarUrl: 'snapshot-alpha', rawProfit: 0n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: 0n, rakeAmount: 0n, finalAmount: 10n }
     ]);
     const first = await seedCompleted('visible-first', new Date('2026-08-17T12:00:00.000Z'), [
       { user: participant, nickname: '天一', avatarUrl: 'snapshot-tianyi', rawProfit: 2000n, roomFeeShare: 300n, otherFeeShare: 40n, afterFeeProfit: 1660n, rakeAmount: 160n, finalAmount: 1500n },
-      { user: opponent, nickname: '老王', avatarUrl: 'snapshot-laowang', rawProfit: -2000n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: -2000n, rakeAmount: 0n, finalAmount: -2000n }
+      { user: opponent, nickname: '老王', avatarUrl: 'snapshot-laowang', rawProfit: -2000n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: -2000n, rakeAmount: 0n, finalAmount: -2000n },
+      { user: tieBeta, nickname: 'Beta', avatarUrl: 'snapshot-beta', rawProfit: 0n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: 0n, rakeAmount: 0n, finalAmount: 10n }
     ]);
     await prisma.user.update({
       where: { id: participant.id },
@@ -225,8 +236,9 @@ describe.sequential('authorized all-player history aggregation', () => {
     const response = await aggregateAs(participantAuth, { gameIds: [first, second] }).expect(200);
     expect(allPlayerAggregationSchema.parse(response.body)).toEqual(response.body);
     expect(response.body.gameIds).toEqual([second, first]);
-    expect(response.body).toMatchObject({ gameCount: 2, playerCount: 3 });
-    expect(response.body.players.map(({ nickname }: { nickname: string }) => nickname)).toEqual(['天一', '小陈', '老王']);
+    expect(response.body).toMatchObject({ gameCount: 2, playerCount: 5 });
+    expect(response.body.players.map(({ nickname }: { nickname: string }) => nickname))
+      .toEqual(['天一', 'alpha', 'Beta', '小陈', '老王']);
     const playerA = response.body.players.find(({ userId }: { userId: string }) => userId === participant.id);
     expect(playerA).toMatchObject({
       nickname: '天一', avatarUrl: 'snapshot-tianyi', gamesPlayed: 2, wins: 2, losses: 0,
@@ -239,6 +251,26 @@ describe.sequential('authorized all-player history aggregation', () => {
       { gameId: second, gameName: `${prefix}-visible-second`, completedAt: '2026-08-18T12:00:00.000Z', finalAmount: '960' },
       { gameId: first, gameName: `${prefix}-visible-first`, completedAt: '2026-08-17T12:00:00.000Z', finalAmount: '1500' }
     ]);
+    expect(response.body.players.find(({ userId }: { userId: string }) => userId === opponent.id)).toMatchObject({
+      rawProfit: '-2000', wins: 0, losses: 1, finalAmount: '-2000'
+    });
+    expect(response.body.players.find(({ userId }: { userId: string }) => userId === tieAlpha.id)).toMatchObject({
+      rawProfit: '0', wins: 0, losses: 0, finalAmount: '10'
+    });
+    expect(response.body.players.find(({ userId }: { userId: string }) => userId === tieBeta.id)).toMatchObject({
+      rawProfit: '0', wins: 0, losses: 0, finalAmount: '10'
+    });
+  });
+
+  it('orders same-timestamp per-player games by game ID descending', async () => {
+    // Break caught: tied completed timestamps have no deterministic game-id secondary order.
+    const completedAt = new Date('2026-08-18T12:00:00.000Z');
+    const first = await seedCompleted('same-time-first', completedAt, [simpleResult(participant)]);
+    const second = await seedCompleted('same-time-second', completedAt, [simpleResult(participant)]);
+    const response = await aggregateAs(participantAuth, { gameIds: [first, second] }).expect(200);
+    const player = response.body.players.find(({ userId }: { userId: string }) => userId === participant.id);
+    expect(player.games.map(({ gameId }: { gameId: string }) => gameId))
+      .toEqual([first, second].sort((left, right) => right.localeCompare(left)));
   });
 
   it('rejects the entire ordinary-user request when any selected completed game is out of scope', async () => {
@@ -251,15 +283,25 @@ describe.sequential('authorized all-player history aggregation', () => {
       .expect(({ body }) => expect(body.gameIds).toEqual([visible]));
   });
 
-  it('lets administrators aggregate out-of-scope games and preserves deleted-player snapshots', async () => {
-    // Break caught: admin scope is unnecessarily restricted or a deleted user's mutable profile replaces the locked snapshot.
-    const hidden = await seedCompleted('admin-only', new Date('2026-08-18T12:00:00.000Z'), [{
+  it('keeps admin quick filters global while user quick filters remain participant-scoped', async () => {
+    // Break caught: non-user roles inherit participant scope, or user quick filters disclose another table.
+    const hidden = await seedCompleted('admin-only', new Date(), [{
       ...simpleResult(outsider), nickname: '永久局外人', avatarUrl: 'snapshot-deleted-user', finalAmount: 1n
     }]);
     await prisma.user.update({
       where: { id: outsider.id },
       data: { nickname: '删除后的昵称', activeNormalizedNickname: null, deletedAt: new Date(), isActive: false }
     });
+    const admin = await aggregateAs(adminAuth, { filter: { kind: 'LAST_30_DAYS' } }).expect(200);
+    expect(admin.body.gameIds).toContain(hidden);
+    expect(admin.body.players).toEqual([expect.objectContaining({
+      userId: outsider.id, nickname: '永久局外人', avatarUrl: 'snapshot-deleted-user',
+      gamesPlayed: 1, wins: 0, losses: 0, finalAmount: '1'
+    })]);
+    const superAdmin = await aggregateAs(superAdminAuth, { filter: { kind: 'RECENT_10' } }).expect(200);
+    expect(superAdmin.body.gameIds).toContain(hidden);
+    await aggregateAs(participantAuth, { filter: { kind: 'LAST_30_DAYS' } }).expect(200)
+      .expect(({ body }) => expect(body.gameIds).not.toContain(hidden));
     await aggregateAs(adminAuth, { gameIds: [hidden] }).expect(200)
       .expect(({ body }) => expect(body.players).toEqual([expect.objectContaining({
         userId: outsider.id, nickname: '永久局外人', avatarUrl: 'snapshot-deleted-user',
