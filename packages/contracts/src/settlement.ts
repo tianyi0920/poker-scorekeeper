@@ -50,12 +50,16 @@ export const settlementValidationCodeSchema = z.enum([
 export const settlementPlayerBreakdownSchema = z.object({
   playerId: canonicalPublicIdSchema,
   nickname: z.string().min(1).max(64),
+  avatarKind: z.enum(['PRESET', 'UPLOAD']),
+  avatarValue: z.string().min(1).max(512),
+  seatNo: z.number().int().min(1).max(12),
   buyIn: moneyJsonSchema,
   cashOut: moneyJsonSchema,
   rawProfit: moneyJsonSchema,
   roomFeeShare: moneyJsonSchema,
   otherFeeShare: moneyJsonSchema,
   afterFeeProfit: moneyJsonSchema,
+  rakeEligible: z.boolean(),
   rakeAmount: moneyJsonSchema,
   finalAmount: moneyJsonSchema
 }).strict();
@@ -76,8 +80,15 @@ export const settlementPreviewResponseSchema = settlementBreakdownSchema.extend(
   draftVersion: z.number().int().positive(),
   settingsVersion: z.number().int().positive(),
   previewReady: z.boolean(),
-  validationCode: settlementValidationCodeSchema.nullable()
+  validationCode: settlementValidationCodeSchema.nullable(),
+  confirmationToken: z.string().min(1)
 });
+
+export const finalizeSettlementSchema = z.object({
+  draftVersion: z.number().int().positive(),
+  settingsVersion: z.number().int().positive(),
+  confirmationToken: z.string().min(1).max(512)
+}).strict();
 
 export const settlementDraftResponseSchema = settlementPreviewResponseSchema.extend({
   gameId: canonicalPublicIdSchema,
@@ -94,6 +105,7 @@ export type SettlementValidationCode = z.infer<typeof settlementValidationCodeSc
 export type SettlementBreakdownDto = z.infer<typeof settlementBreakdownSchema>;
 export type SettlementPreviewDto = z.infer<typeof settlementPreviewResponseSchema>;
 export type SettlementDraftDto = z.infer<typeof settlementDraftResponseSchema>;
+export type FinalizeSettlementRequest = z.infer<typeof finalizeSettlementSchema>;
 
 export interface SettlementPlayerInput {
   playerId: string;

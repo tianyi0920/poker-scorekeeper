@@ -13,6 +13,7 @@ import type {
   SystemSetting,
   User
 } from '../generated/prisma/client.js';
+import { settlementConfirmationToken } from './settlement-confirmation.js';
 
 const MAX_SIGNED_BIGINT = 9223372036854775807n;
 const MIN_SIGNED_BIGINT = -9223372036854775808n;
@@ -127,6 +128,7 @@ function interimPreview(
     settingsVersion: context.settings.version,
     previewReady: false,
     validationCode: code,
+    confirmationToken: settlementConfirmationToken(context, payload, draftVersion),
     totals: {
       buyIn: formatMoney(buyInTotal),
       cashOut: formatMoney(cashOutTotal),
@@ -138,12 +140,16 @@ function interimPreview(
     players: amounts.map(({ player, buyIn, cashOut, rawProfit }) => ({
       playerId: player.id,
       nickname: player.nicknameSnapshot,
+      avatarKind: player.avatarKindSnapshot,
+      avatarValue: player.avatarValueSnapshot,
+      seatNo: player.seatNo,
       buyIn: formatMoney(buyIn),
       cashOut: formatMoney(cashOut),
       rawProfit: formatMoney(rawProfit),
       roomFeeShare: '0',
       otherFeeShare: '0',
       afterFeeProfit: formatMoney(rawProfit),
+      rakeEligible: false,
       rakeAmount: '0',
       finalAmount: formatMoney(rawProfit)
     }))
@@ -196,12 +202,13 @@ export function buildSettlementPreview(
   if (!allSignedBigInt(allCalculated)) {
     return interimPreview(context, amounts, payload, draftVersion, 'MONEY_OVERFLOW');
   }
-  const nicknameByPlayer = new Map(context.players.map((player) => [player.id, player.nicknameSnapshot]));
+  const playerById = new Map(context.players.map((player) => [player.id, player]));
   return {
     draftVersion,
     settingsVersion: context.settings.version,
     previewReady: true,
     validationCode: null,
+    confirmationToken: settlementConfirmationToken(context, payload, draftVersion),
     totals: {
       buyIn: formatMoney(output.buyInTotal),
       cashOut: formatMoney(output.cashOutTotal),
@@ -212,13 +219,17 @@ export function buildSettlementPreview(
     },
     players: output.results.map((row) => ({
       playerId: row.playerId,
-      nickname: nicknameByPlayer.get(row.playerId)!,
+      nickname: playerById.get(row.playerId)!.nicknameSnapshot,
+      avatarKind: playerById.get(row.playerId)!.avatarKindSnapshot,
+      avatarValue: playerById.get(row.playerId)!.avatarValueSnapshot,
+      seatNo: playerById.get(row.playerId)!.seatNo,
       buyIn: formatMoney(row.buyIn),
       cashOut: formatMoney(row.cashOut),
       rawProfit: formatMoney(row.rawProfit),
       roomFeeShare: formatMoney(row.roomFeeShare),
       otherFeeShare: formatMoney(row.otherFeeShare),
       afterFeeProfit: formatMoney(row.afterFeeProfit),
+      rakeEligible: row.rakeEligible,
       rakeAmount: formatMoney(row.rakeAmount),
       finalAmount: formatMoney(row.finalAmount)
     }))
