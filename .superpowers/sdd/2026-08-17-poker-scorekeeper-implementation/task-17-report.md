@@ -64,12 +64,19 @@ Round 3 TDD evidence: five focused behaviors first failed against `e1e4e44` (pre
 
 Round 4 TDD evidence: against `56d979d`, the new dual-recipient TERM test reached its 15-second `ETIMEDOUT` RED after the fake CREATE side effect. With only the CREATE-child signal isolation added, the same test passed 1/1 in 4.57 seconds. The complete backup/restore group then passed 41/41.
 
+## Review Round 5 Fixes (2026-08-19)
+
+- The production Bookworm image installs `default-mysql-client`, which resolves to the MariaDB 10.11 client. That client replaces an inherited ignored SIGINT with its own handler unless `--sigint-ignore` is supplied. The restore now passes that option only to the isolated `CREATE DATABASE` command, leaving the existence query, import, cleanup DROP and credential handling unchanged.
+- The fake MariaDB CREATE client now models that handler replacement, records the server-side CREATE state first, then sends INT to both the restore shell and itself. The 15-second-guarded regression requires exit 130, DROP of the recorded state, an empty avatar target, and the option on CREATE alone.
+
+Round 5 TDD evidence: against `7b74525`, the focused RED exited 130 but left the recorded database state because local ownership was never established. With only the CREATE option added, the focused test passed 1/1 in 4.99 seconds. The complete backup/restore and input-guard group then passed 42/42.
+
 ## Verification
 
 - `@poker/contracts`: 53/53 tests passed.
 - `@poker/settlement`: 14/14 tests passed.
 - `@poker/web`: 125/125 tests passed; focused GamePage 13/13 passed.
-- API pure unit/static/script suites: 155 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. This includes backup/restore 34/34 and restore-input guard 7/7.
+- API pure unit/static/script suites: 156 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. This includes backup/restore 35/35 and restore-input guard 7/7.
 - Security/readiness E2E: 29/29 passed, including raw malformed JSON/urlencoded requests, malformed/encoded namespace paths, and repeated readiness timeouts.
 - `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - `pnpm audit --prod --audit-level high`: `No known vulnerabilities found`.

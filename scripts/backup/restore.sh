@@ -250,6 +250,7 @@ create_in_progress=1
   trap '' HUP INT TERM
   export MYSQL_PWD="$MYSQL_PASSWORD"
   exec mysql \
+    --sigint-ignore \
     --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
     --execute="CREATE DATABASE \`$RESTORE_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
 ) &

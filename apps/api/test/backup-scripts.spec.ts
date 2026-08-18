@@ -146,6 +146,22 @@ printf '%s\n' 'CREATE TABLE restored(id INT);'
 exec /usr/bin/date "$@"
 `);
   await writeExecutable(join(bin, 'mysql'), `#!/bin/sh
+is_create=0
+sigint_ignore=0
+for value in "$@"; do
+  case "$value" in
+    *'CREATE DATABASE'*) is_create=1 ;;
+    --sigint-ignore) sigint_ignore=1 ;;
+  esac
+done
+if [ "\${FAKE_SIGNAL_CREATE_GROUP_INT:-0}" = 1 ] && [ "$is_create" = 1 ] && \
+  [ "$sigint_ignore" = 0 ]; then
+  if [ "\${FAKE_MYSQL_SIGINT_HANDLER_INSTALLED:-0}" = 0 ]; then
+    export FAKE_MYSQL_SIGINT_HANDLER_INSTALLED=1
+    exec /usr/bin/env --default-signal=INT "$0" "$@"
+  fi
+  trap 'exit 130' INT
+fi
 printf 'mysql' >> "$FAKE_COMMAND_LOG"
 for value in "$@"; do printf ' <%s>' "$value" >> "$FAKE_COMMAND_LOG"; done
 printf '\n' >> "$FAKE_COMMAND_LOG"
@@ -158,6 +174,9 @@ case " $* " in
     fi
     if [ "\${FAKE_SIGNAL_CREATE_PARENT_AND_CHILD:-0}" = 1 ]; then
       kill -TERM "$PPID" "$$"
+    fi
+    if [ "\${FAKE_SIGNAL_CREATE_GROUP_INT:-0}" = 1 ]; then
+      kill -INT "$PPID" "$$"
     fi
     [ "\${FAKE_SIGNAL_ON_CREATE_SUCCESS:-0}" = 1 ] && kill -TERM "$PPID"
     ;;
@@ -620,6 +639,33 @@ describe('backup and restore scripts', () => {
     expect(result.status).toBe(143);
     await expect(stat(databaseState)).rejects.toMatchObject({ code: 'ENOENT' });
     expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
+    expect(await readdir(target)).toEqual([]);
+  });
+
+  it('finishes CREATE ownership cleanup when group INT reaches a MariaDB-style client', async () => {
+    // Break caught: MariaDB replaces inherited SIG_IGN, so group INT can commit CREATE before local ownership.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    const databaseState = join(root, 'database-state');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_DATABASE_STATE_FILE: shellPath(databaseState),
+      FAKE_SIGNAL_CREATE_GROUP_INT: '1'
+    }), 15_000);
+
+    expect(result.error, `${result.stderr}\n${result.stdout}`).toBeUndefined();
+    expect(result.status).toBe(130);
+    await expect(stat(databaseState)).rejects.toMatchObject({ code: 'ENOENT' });
+    const commands = (await readFile(fake.log, 'utf8')).trim().split(/\r?\n/);
+    const createCommand = commands.find((line) => line.includes('CREATE DATABASE'));
+    expect(createCommand).toContain('<--sigint-ignore>');
+    expect(commands.filter((line) => !line.includes('CREATE DATABASE'))
+      .every((line) => !line.includes('<--sigint-ignore>'))).toBe(true);
+    expect(commands.some((line) => line.includes('DROP DATABASE'))).toBe(true);
     expect(await readdir(target)).toEqual([]);
   });
 
