@@ -187,7 +187,15 @@ export class SettlementFinalizationService {
       }
       const output = toOutput(context, payload);
       const completedAt = new Date();
-      const settlement = await persistSettlement(transaction, context, payload, output, currentActor.id, completedAt);
+      const settlement = await persistSettlement(
+        transaction,
+        context,
+        payload,
+        output,
+        currentActor.id,
+        currentActor.nickname,
+        completedAt
+      );
       const changed = await transaction.game.updateMany({
         where: { id: game.id, status: GameStatus.SETTLING, version: game.version },
         data: {

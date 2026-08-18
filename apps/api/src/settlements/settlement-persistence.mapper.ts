@@ -39,6 +39,7 @@ export async function persistSettlement(
   payload: SettlementDraftPayload,
   output: SettlementOutput,
   actorId: string,
+  actorNickname: string,
   lockedAt: Date
 ) {
   const settlement = await transaction.settlement.create({
@@ -55,6 +56,7 @@ export async function persistSettlement(
       rakeTotal: output.rakeTotal,
       finalTotal: output.finalTotal,
       settledById: actorId,
+      settledByNicknameSnapshot: actorNickname,
       lockedAt
     }
   });

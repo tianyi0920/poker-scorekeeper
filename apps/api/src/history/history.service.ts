@@ -25,7 +25,6 @@ function decodeCursor(value: string | undefined): Cursor | undefined {
 function encodeCursor(value: Cursor): string { return Buffer.from(JSON.stringify(value)).toString('base64url'); }
 
 const detailInclude = {
-  settledBy: { select: { nickname: true } },
   settlement: { include: { results: { include: { gamePlayer: true }, orderBy: { gamePlayer: { seatNo: 'asc' } } } } }
 } satisfies Prisma.GameInclude;
 
@@ -41,7 +40,7 @@ function detail(game: Prisma.GameGetPayload<{ include: typeof detailInclude }>):
       buyIn: formatMoney(result.buyIn), cashOut: formatMoney(result.cashOut), rawProfit: formatMoney(result.rawProfit), roomFeeShare: formatMoney(result.roomFeeShare), otherFeeShare: formatMoney(result.otherFeeShare), afterFeeProfit: formatMoney(result.afterFeeProfit), rakeEligible: result.rakeEligible, rakeAmount: formatMoney(result.rakeAmount), finalAmount: formatMoney(result.finalAmount)
     })),
     game: { id: game.id, name: game.name, startedAt: startedAt.toISOString(), stoppedAt: stoppedAt.toISOString(), durationSeconds: Math.max(0, Math.floor((stoppedAt.getTime() - startedAt.getTime()) / 1000)) },
-    completedAt: game.completedAt!.toISOString(), settledByNickname: game.settledBy!.nickname, otherFeeNote: settlement.otherFeeNote, immutable: true
+    completedAt: game.completedAt!.toISOString(), settledByNickname: settlement.settledByNicknameSnapshot, otherFeeNote: settlement.otherFeeNote, immutable: true
   };
 }
 
@@ -58,18 +57,18 @@ export class HistoryService {
     const games = await this.prisma.game.findMany({
       where: { status: GameStatus.COMPLETED, completedAt: { not: null }, ...scope,
         ...(cursor === undefined ? {} : { OR: [{ completedAt: { lt: new Date(cursor.completedAt) } }, { completedAt: new Date(cursor.completedAt), id: { lt: cursor.id } }] }) },
-      include: { settledBy: { select: { nickname: true } }, settlement: { select: { finalTotal: true } } },
+      include: { settlement: { select: { finalTotal: true, settledByNicknameSnapshot: true } } },
       orderBy: [{ completedAt: 'desc' }, { id: 'desc' }], take: limit + 1
     });
     const page = games.slice(0, limit);
     const final = page.at(-1);
-    return { items: page.map((game) => ({ gameId: game.id, name: game.name, completedAt: game.completedAt!.toISOString(), settledByNickname: game.settledBy!.nickname, final: formatMoney(game.settlement!.finalTotal) })), nextCursor: games.length > limit && final !== undefined ? encodeCursor({ completedAt: final.completedAt!.toISOString(), id: final.id }) : null };
+    return { items: page.map((game) => ({ gameId: game.id, name: game.name, completedAt: game.completedAt!.toISOString(), settledByNickname: game.settlement!.settledByNicknameSnapshot, final: formatMoney(game.settlement!.finalTotal) })), nextCursor: games.length > limit && final !== undefined ? encodeCursor({ completedAt: final.completedAt!.toISOString(), id: final.id }) : null };
   }
 
   async get(gameId: string, actor: AuthUser): Promise<SettlementDetailDto> {
     if (!canonicalPublicIdSchema.safeParse(gameId).success) throw badRequest('VALIDATION_ERROR');
     const game = await this.prisma.game.findFirst({ where: { id: gameId, status: GameStatus.COMPLETED, ...historyScope(actor) }, include: detailInclude });
-    if (game === null || game.settlement === null || game.settledBy === null || game.completedAt === null || game.startedAt === null || game.stoppedAt === null) throw notFound('HISTORY_SCOPE_DENIED');
+    if (game === null || game.settlement === null || game.completedAt === null || game.startedAt === null || game.stoppedAt === null) throw notFound('HISTORY_SCOPE_DENIED');
     return detail(game);
   }
 }

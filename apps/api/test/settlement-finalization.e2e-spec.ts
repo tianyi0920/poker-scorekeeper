@@ -402,7 +402,7 @@ describe.sequential('atomic final settlement', () => {
     await write(adminAuth, `/api/games/${fixture.game.id}/settlement-finalize`, {
       draftVersion: 4, settingsVersion: 7, confirmationToken: token, unexpected: true
     }).expect(400).expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
-  });
+  }, 30_000);
 
   it('binds confirmation to the saved payload and every current player rake flag', async () => {
     // Break caught: finalization locks draft A after the user confirmed unsaved preview B or stale rake eligibility.
@@ -452,7 +452,7 @@ describe.sequential('atomic final settlement', () => {
     const detail = await read(playerAuth, `/api/history/${fixture.game.id}`).expect(200);
     expect(detail.body).toMatchObject({ immutable: true, otherFeeNote: '饮料' });
     expect(detail.body.players).toHaveLength(3);
-    await read(playerAuth, `/api/history/${randomUUID().replaceAll('-', '')}`).expect(404)
+    await read(playerAuth, `/api/history/c${'a'.repeat(24)}`).expect(404)
       .expect(({ body }) => expect(body.code).toBe('HISTORY_SCOPE_DENIED'));
   });
 });

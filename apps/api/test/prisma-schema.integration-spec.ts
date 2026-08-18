@@ -415,6 +415,7 @@ describe('Prisma financial schema', () => {
           rakeTotal: 0n,
           finalTotal: 0n,
           settledById: userId,
+          settledByNicknameSnapshot: userId,
           lockedAt: new Date()
         }
       });
