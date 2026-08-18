@@ -68,7 +68,7 @@ COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
 COPY scripts ./scripts
 RUN chmod 0555 scripts/docker/entrypoint.sh \
-    && chmod 0444 scripts/docker/healthcheck.mjs \
+    && chmod 0444 scripts/docker/healthcheck.mjs scripts/backup/restore-input-guard.mjs \
     && chmod 0555 scripts/backup/backup.sh scripts/backup/restore.sh
 
 USER node

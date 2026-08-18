@@ -280,6 +280,29 @@ describe('production HTTP security', () => {
     expect(response.text).not.toContain('safe poker shell');
   });
 
+  it.each(['/api%2fusers%ZZ', '/%ZZ', '/%E0%A4'])(
+    'blocks malformed percent paths from SPA fallback: %s', async (path) => {
+      // Break caught: decode failure falls back to the raw path and serves index.html.
+      const response = await request(app.getHttpServer()).get(path);
+      expect(response.status).not.toBe(200);
+      expect(response.text).not.toContain('safe poker shell');
+    }
+  );
+
+  it.each(['/a%70i%2Fusers', '/socket%2Eio%2Fclient', '/av%61tars%2Fpreset-99.webp'])(
+    'blocks encoded reserved namespaces from SPA fallback: %s', async (path) => {
+      // Break caught: encoded namespace separators or letters evade the reserved-path classifier.
+      const response = await request(app.getHttpServer()).get(path);
+      expect(response.status).not.toBe(200);
+      expect(response.text).not.toContain('safe poker shell');
+    }
+  );
+
+  it('continues serving a normal percent-encoded Unicode SPA route', async () => {
+    const response = await request(app.getHttpServer()).get('/%E6%88%98%E7%BB%A9').expect(200);
+    expect(response.text).toContain('safe poker shell');
+  });
+
   it('serves built assets, SPA routes, preset avatars, and controlled upload files', async () => {
     // Break caught: the single container omits one of its four static delivery paths.
     await request(app.getHttpServer()).get('/assets/app.js').expect(200).expect('globalThis.pokerLoaded=true;');

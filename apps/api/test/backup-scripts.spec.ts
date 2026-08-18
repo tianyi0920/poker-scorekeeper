@@ -12,16 +12,54 @@ import {
 } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { gzipSync } from 'node:zlib';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 const backupScript = join(repositoryRoot, 'scripts', 'backup', 'backup.sh');
 const restoreScript = join(repositoryRoot, 'scripts', 'backup', 'restore.sh');
+const restoreInputGuard = join(repositoryRoot, 'scripts', 'backup', 'restore-input-guard.mjs');
 const bash = process.env.BASH_PATH ?? 'bash';
+const controlledAvatarName = 'cm123-01234567-89ab-4cde-8fab-0123456789ab.webp';
 
 function shellPath(path: string): string {
   if (process.platform !== 'win32') return path;
   return path.replace(/^([A-Za-z]):/, (_match, drive: string) => `/${drive.toLowerCase()}`)
     .replaceAll('\\', '/');
+}
+
+interface RestoreTarEntry {
+  name: string;
+  type?: string;
+  contents?: Buffer;
+}
+
+function tarOctal(value: number, width: number): Buffer {
+  return Buffer.from(value.toString(8).padStart(width - 1, '0') + '\0', 'ascii');
+}
+
+function restoreTarArchive(entries: RestoreTarEntry[]): Buffer {
+  const blocks: Buffer[] = [];
+  for (const entry of entries) {
+    const contents = entry.contents ?? Buffer.alloc(0);
+    const header = Buffer.alloc(512);
+    header.write(entry.name, 0, 100, 'utf8');
+    tarOctal(entry.type === '5' ? 0o755 : 0o644, 8).copy(header, 100);
+    tarOctal(0, 8).copy(header, 108);
+    tarOctal(0, 8).copy(header, 116);
+    tarOctal(contents.byteLength, 12).copy(header, 124);
+    tarOctal(0, 12).copy(header, 136);
+    header.fill(0x20, 148, 156);
+    header.write(entry.type ?? '0', 156, 1, 'ascii');
+    header.write('ustar\0', 257, 6, 'ascii');
+    header.write('00', 263, 2, 'ascii');
+    const checksum = [...header].reduce((sum, byte) => sum + byte, 0);
+    Buffer.from(checksum.toString(8).padStart(6, '0') + '\0 ', 'ascii').copy(header, 148);
+    blocks.push(header, contents);
+    const padding = (512 - (contents.byteLength % 512)) % 512;
+    if (padding > 0) blocks.push(Buffer.alloc(padding));
+  }
+  blocks.push(Buffer.alloc(1024));
+  return gzipSync(Buffer.concat(blocks));
 }
 
 function runScript(script: string, env: Record<string, string>) {
@@ -96,7 +134,15 @@ exit 0
 `);
   await writeExecutable(join(bin, 'gzip'), `#!/bin/sh
 if [ "\${1:-}" = -t ]; then [ "\${FAKE_GZIP_TEST_FAIL:-0}" = 1 ] && exit 11; exit 0; fi
-if [ "\${1:-}" = -dc ]; then cat "$2"; else cat; fi
+if [ "\${1:-}" = -dc ]; then
+  if [ -n "\${FAKE_GZIP_OUTPUT_BYTES:-}" ]; then
+    head -c "$FAKE_GZIP_OUTPUT_BYTES" /dev/zero | tr '\\000' x
+  else
+    cat "$2"
+  fi
+else
+  cat
+fi
 `);
   await writeExecutable(join(bin, 'sha256sum'), `#!/bin/sh
 if [ "\${1:-}" = -c ]; then
@@ -115,6 +161,18 @@ done
 case " $* " in
   *'.avatar-restore-'*) [ "\${FAKE_SIGNAL_AFTER_AVATAR_MOVE:-0}" = 1 ] && kill -TERM "$PPID" ;;
 esac
+exit 0
+`);
+  await writeExecutable(join(bin, 'rmdir'), `#!/bin/sh
+target=''
+for value in "$@"; do target="$value"; done
+if [ -n "\${FAKE_INTRUDE_AVATAR_TARGET:-}" ] && [ "$target" = "$FAKE_INTRUDE_AVATAR_TARGET" ]; then
+  printf '%s\n' external > "$target/external.txt"
+fi
+/usr/bin/rmdir "$@" || exit $?
+if [ -n "\${FAKE_SIGNAL_AFTER_AVATAR_RMDIR:-}" ] && [ "$target" = "$FAKE_SIGNAL_AFTER_AVATAR_RMDIR" ]; then
+  kill -TERM "$PPID"
+fi
 exit 0
 `);
   await writeExecutable(join(bin, 'tar'), `#!/bin/sh
@@ -145,8 +203,16 @@ case " $* " in
     fi
     exit 0
     ;;
-  *' -tzf '*) cat "$FAKE_TAR_LIST_FILE" ;;
-  *' -tvzf '*) cat "$FAKE_TAR_VERBOSE_FILE" ;;
+  *' -tzf '*)
+    if [ -n "\${FAKE_TAR_LIST_FILE:-}" ]; then cat "$FAKE_TAR_LIST_FILE"; else
+      printf '%s\n' avatars/ "avatars/${controlledAvatarName}"
+    fi
+    ;;
+  *' -tvzf '*)
+    if [ -n "\${FAKE_TAR_VERBOSE_FILE:-}" ]; then cat "$FAKE_TAR_VERBOSE_FILE"; else
+      printf '%s\n' 'drwxr-xr-x root/root 0 now avatars/' '-rw-r--r-- root/root 15 now avatars/${controlledAvatarName}'
+    fi
+    ;;
   *' -xzf '*)
     previous=''
     destination=''
@@ -173,6 +239,8 @@ function commonEnvironment(
     MYSQL_PORT: '3306',
     MYSQL_USER: 'poker_backup',
     MYSQL_PASSWORD: 'do-not-log-this-password',
+    NODE_BINARY: shellPath(process.execPath),
+    RESTORE_INPUT_GUARD: shellPath(restoreInputGuard),
     ...overrides
   };
 }
@@ -239,6 +307,7 @@ describe('backup and restore scripts', () => {
     const commandLog = await readFile(fake.log, 'utf8');
     expect(commandLog).toContain('mysqldump');
     expect(commandLog).toContain('<--single-transaction>');
+    expect(commandLog).toContain('<--skip-add-locks>');
     expect(commandLog).not.toContain('do-not-log-this-password');
   });
 
@@ -361,18 +430,19 @@ describe('backup and restore scripts', () => {
         `${'0'.repeat(64)}  manifest-20260818T010203ZXtxt`
       ].join('\n') + '\n'
     }],
-    ['archive traversal', { FAKE_TAR_LIST: 'avatars/\navatars/../../escape\n' }],
-    ['archive metacharacter path', { FAKE_TAR_LIST: 'avatars/\navatars/unsafe]name.webp\n' }],
-    ['archive symlink', { FAKE_TAR_VERBOSE: 'drwxr-xr-x root/root 0 now avatars/\nlrwxrwxrwx root/root 0 now avatars/link -> /etc\n' }],
+    ['archive traversal', { ARCHIVE_FAULT: 'traversal' }],
+    ['archive metacharacter path', { ARCHIVE_FAULT: 'metacharacter' }],
+    ['archive symlink', { ARCHIVE_FAULT: 'symlink' }],
     ['damaged SQL gzip stream', { FAKE_GZIP_TEST_FAIL: '1' }],
     ['avatar entry count over configured limit', {
-      RESTORE_MAX_AVATAR_ENTRIES: '1',
-      FAKE_TAR_LIST: 'avatars/\navatars/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp\n'
+      RESTORE_MAX_AVATAR_ENTRIES: '1'
     }],
     ['single avatar over configured limit', { RESTORE_MAX_AVATAR_FILE_BYTES: '10' }],
     ['expanded avatar total over configured limit', { RESTORE_MAX_AVATAR_TOTAL_BYTES: '10' }],
     ['compressed avatar archive over configured limit', { RESTORE_MAX_AVATAR_ARCHIVE_BYTES: '1' }],
     ['compressed SQL archive over configured limit', { RESTORE_MAX_SQL_BYTES: '1' }],
+    ['oversized manifest', { FAKE_MANIFEST_CONTENT: `format_version=1\n${'x'.repeat(70_000)}` }],
+    ['oversized checksum file', { FAKE_CHECKSUM_CONTENT: `${'0'.repeat(70_000)}\n` }],
     ['restore limit over its hard maximum', { RESTORE_MAX_AVATAR_ENTRIES: '100001' }],
     ['unknown manifest field', { FAKE_MANIFEST_EXTRA: 'unexpected=value\n' }],
     ['duplicate manifest field', { FAKE_MANIFEST_EXTRA: 'stamp=20260818T010203Z\n' }]
@@ -389,6 +459,9 @@ describe('backup and restore scripts', () => {
     }));
 
     expect(result.status).toBe(2);
+    if (_name.startsWith('oversized')) {
+      expect(result.stderr).toContain('restore input exceeds configured limit');
+    }
     const commandLog = await readFile(fake.log, 'utf8').catch(() => '');
     expect(commandLog.split('\n').some((line) => line.startsWith('mysql'))).toBe(false);
     expect(await readdir(target)).toEqual([]);
@@ -436,8 +509,8 @@ describe('backup and restore scripts', () => {
     expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
   });
 
-  it('attempts cleanup when CREATE may have succeeded before the client reported failure', async () => {
-    // Break caught: a network error after CREATE leaves an untracked restore schema behind.
+  it('does not drop a database when CREATE loses an existence race', async () => {
+    // Break caught: a failed CREATE is treated as owned and cleanup drops another actor's new schema.
     const bundle = await createRestoreBundle(root);
     const parent = join(root, 'restore');
     const target = join(parent, 'avatars');
@@ -450,8 +523,44 @@ describe('backup and restore scripts', () => {
     }));
 
     expect(result.status).not.toBe(0);
-    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
+    expect(await readFile(fake.log, 'utf8')).not.toContain('DROP DATABASE');
     expect(await readdir(target)).toEqual([]);
+  });
+
+  it('does not delete external avatar content written after the empty check', async () => {
+    // Break caught: publication rmdir fails after an external writer arrives, then cleanup rm -rf deletes it.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_INTRUDE_AVATAR_TARGET: shellPath(target)
+    }));
+
+    expect(result.status).not.toBe(0);
+    expect(await readFile(join(target, 'external.txt'), 'utf8')).toContain('external');
+    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
+  });
+
+  it('recreates an empty target when terminated immediately after removing it', async () => {
+    // Break caught: TERM after rmdir but before mv leaves the configured restore mount target absent.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      FAKE_SIGNAL_AFTER_AVATAR_RMDIR: shellPath(target)
+    }));
+
+    expect(result.status).toBe(143);
+    expect(await readdir(target)).toEqual([]);
+    expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
   });
 
   it('reports a controlled cleanup warning when the temporary account cannot drop the new schema', async () => {
@@ -509,6 +618,27 @@ describe('backup and restore scripts', () => {
     expect(await readdir(target)).toEqual([]);
     expect(await readFile(fake.log, 'utf8')).toContain('DROP DATABASE');
   });
+
+  it('drops the owned database when decompressed SQL exceeds its streaming limit', async () => {
+    // Break caught: a tiny gzip expands without bound into mysql and leaves a partial restore schema.
+    const bundle = await createRestoreBundle(root);
+    const parent = join(root, 'restore');
+    const target = join(parent, 'avatars');
+    await mkdir(target, { recursive: true });
+    const result = runScript(restoreScript, commonEnvironment(fake, {
+      ...bundle.environment,
+      RESTORE_AVATAR_PARENT: shellPath(parent),
+      RESTORE_AVATAR_ROOT: shellPath(target),
+      RESTORE_MAX_SQL_EXPANDED_BYTES: '10',
+      FAKE_GZIP_OUTPUT_BYTES: '11'
+    }));
+
+    expect(result.status).not.toBe(0);
+    const commands = await readFile(fake.log, 'utf8');
+    expect(commands).toContain('CREATE DATABASE');
+    expect(commands).toContain('DROP DATABASE');
+    expect(await readdir(target)).toEqual([]);
+  });
 });
 
 async function createRestoreBundle(
@@ -522,13 +652,25 @@ async function createRestoreBundle(
   const avatars = join(bundle, `avatars-${stamp}.tar.gz`);
   const manifest = join(bundle, `manifest-${stamp}.txt`);
   const checksums = join(bundle, `checksums-${stamp}.txt`);
-  const list = join(bundle, 'tar-list.txt');
-  const verbose = join(bundle, 'tar-verbose.txt');
   await writeFile(sql, 'CREATE TABLE restored(id INT);');
-  await writeFile(avatars, 'avatar-archive');
+  const archiveEntries: RestoreTarEntry[] = [{ name: 'avatars/', type: '5' }];
+  if (fault.ARCHIVE_FAULT === 'traversal') {
+    archiveEntries.push({ name: 'avatars/../../escape', contents: Buffer.from('escape') });
+  } else if (fault.ARCHIVE_FAULT === 'metacharacter') {
+    archiveEntries.push({ name: 'avatars/unsafe]name.webp', contents: Buffer.from('unsafe') });
+  } else if (fault.ARCHIVE_FAULT === 'symlink') {
+    archiveEntries.push({ name: `avatars/${controlledAvatarName}`, type: '2' });
+  } else {
+    archiveEntries.push({
+      name: `avatars/${controlledAvatarName}`,
+      contents: Buffer.from('restored-avatar')
+    });
+  }
+  await writeFile(avatars, restoreTarArchive(archiveEntries));
   await writeFile(
     manifest,
-    `format_version=1\nstamp=${stamp}\ndatabase=poker_scorekeeper\navatar_directory=avatars\n${fault.FAKE_MANIFEST_EXTRA ?? ''}`
+    fault.FAKE_MANIFEST_CONTENT ??
+      `format_version=1\nstamp=${stamp}\ndatabase=poker_scorekeeper\navatar_directory=avatars\n${fault.FAKE_MANIFEST_EXTRA ?? ''}`
   );
   await writeFile(
     checksums,
@@ -536,18 +678,6 @@ async function createRestoreBundle(
       `${'0'.repeat(64)}  mysql-${stamp}.sql.gz`,
       `${'0'.repeat(64)}  avatars-${stamp}.tar.gz`,
       `${'0'.repeat(64)}  manifest-${stamp}.txt`
-    ].join('\n') + '\n'
-  );
-  await writeFile(
-    list,
-    fault.FAKE_TAR_LIST ??
-      'avatars/\navatars/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp\n'
-  );
-  await writeFile(
-    verbose,
-    fault.FAKE_TAR_VERBOSE ?? [
-      'drwxr-xr-x root/root 0 now avatars/',
-      '-rw-r--r-- root/root 15 now avatars/cm123-01234567-89ab-4cde-8fab-0123456789ab.webp'
     ].join('\n') + '\n'
   );
   return {
@@ -558,9 +688,7 @@ async function createRestoreBundle(
       SQL_ARCHIVE: shellPath(sql),
       AVATAR_ARCHIVE: shellPath(avatars),
       MANIFEST_FILE: shellPath(manifest),
-      CHECKSUM_FILE: shellPath(checksums),
-      FAKE_TAR_LIST_FILE: shellPath(list),
-      FAKE_TAR_VERBOSE_FILE: shellPath(verbose)
+      CHECKSUM_FILE: shellPath(checksums)
     }
   };
 }

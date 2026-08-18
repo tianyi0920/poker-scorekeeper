@@ -61,6 +61,7 @@ MYSQL_PWD="$MYSQL_PASSWORD" mysqldump \
   --single-transaction \
   --quick \
   --skip-lock-tables \
+  --skip-add-locks \
   --no-tablespaces \
   --default-character-set=utf8mb4 \
   --host="$MYSQL_HOST" \

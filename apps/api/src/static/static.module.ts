@@ -11,11 +11,12 @@ const PRESET_AVATAR_PATH = /^\/avatars\/preset-(?:0[1-9]|1[0-2])\.webp$/;
 const MAX_SERVED_AVATAR_BYTES = 5 * 1024 * 1024;
 
 function isReservedPath(path: string): boolean {
+  if (/%(?![0-9a-fA-F]{2})/.test(path)) return true;
   let decoded: string;
   try {
     decoded = decodeURIComponent(path);
   } catch {
-    decoded = path;
+    return true;
   }
   const normalized = decoded.toLowerCase();
   return normalized === '/api' || normalized.startsWith('/api/') ||

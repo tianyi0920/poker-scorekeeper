@@ -2,7 +2,7 @@
 
 ## Status
 
-Complete on isolated branch `codex/poker-deployment`. The branch contains checkpoint commit `e2da464`, merge commit `f140ecd` (which makes `4a6b073` an ancestor), the original Task 17 implementation `a525cd9`, and an independent review-fix commit containing this updated report. Nothing was pushed or merged to the main worktree.
+Complete on isolated branch `codex/poker-deployment`. The branch contains checkpoint commit `e2da464`, merge commit `f140ecd` (which makes `4a6b073` an ancestor), the original Task 17 implementation `a525cd9`, and independent review-fix commits containing this updated report. Nothing was pushed or merged to the main worktree.
 
 No command connected to, queried, migrated, reset, or cleaned `tianyi.wiki:8306` or `192.168.10.248:3306`. Prisma generation/diff used only the non-connecting placeholder URL `127.0.0.1`.
 
@@ -38,13 +38,24 @@ No command connected to, queried, migrated, reset, or cleaned `tianyi.wiki:8306`
 - Uploaded avatar serving opens the exact direct-child file once with `O_NOFOLLOW`, then uses the same handle for `fstat` and read. Docker uses `tini -g`; the entrypoint forwards termination to an in-flight migration and preserves migration failures before `exec`-ing the API.
 - The Chinese restore guide now uses a one-time, exact-target-schema restore account in a mode-600 env file and documents success/failure checks, revocation, user removal, and credential-file deletion.
 
+## Review Round 2 Fixes (2026-08-19)
+
+- Restore input snapshotting moved to a Node 24 guard that opens with `O_NOFOLLOW|O_NONBLOCK`, validates the same descriptor with `fstat`, copies to an exclusive private target with an initial and in-stream size cap, and rejects links, devices, FIFOs, oversized files, or growth. Manifest/checksum snapshots are fixed at 64 KiB; compressed and expanded SQL have separate bounds.
+- Avatar archive validation now streams gzip and USTAR headers directly. It verifies checksums, terminators, entry types, direct controlled names, duplicates, path length, entry count, single-file bytes, total bytes and an overall expanded envelope without materializing untrusted `tar -t` output. Handcrafted adversarial headers and a real host-tar USTAR archive are covered.
+- Restore owns a database only after `CREATE DATABASE` returns success. An atomic restore-parent lock and unique marker inside the staged avatar tree let signal cleanup distinguish this run's published target from an external writer; tests cover CREATE existence races, an external write between empty-check/rmdir, TERM after rmdir and TERM immediately after move.
+- Readiness removed the driver-specific `queryTimeout` option and now destroys a dedicated connection with its own bounded timer when a query never settles. Repeated hung probes leave no pending fake connection. Prisma and readiness share one URL builder for MySQL/MariaDB, bracket-free IPv6, percent credentials and Prisma TLS parameters. Certificate/PKCS12 files resolve relative to the Prisma directory, errors hide paths, and `sslaccept` follows the [official Prisma MySQL URL semantics](https://www.prisma.io/docs/orm/v6/overview/databases/mysql); the connector mapping uses `ca`, `pfx`, `passphrase` and `rejectUnauthorized` as documented by [MariaDB Connector/Node.js](https://mariadb.com/docs/connectors/mariadb-connector-nodejs/node-js-connection-options).
+- Malformed percent escapes and invalid encoded UTF-8 are classified as blocked before SPA fallback. Valid encoded/mixed-case API, Socket.IO and avatar namespaces remain reserved, while normal encoded Unicode SPA routes still work.
+- Backup adds `--skip-add-locks` alongside single-transaction/skip-lock-tables, so the isolated restore account does not need `LOCK TABLES`. The Chinese runbooks document the new resource limits, restore lock recovery, ownership marker, expanded-SQL limit and exact privilege rationale.
+
+Round 2 TDD evidence: the focused restore/backup group first failed 7 review behaviors, readiness/TLS failed 4, and malformed-path E2E failed 3. Final focused suites passed backup/restore 31/31, input guard/readiness/Prisma 14/14, and security/readiness E2E 29/29.
+
 ## Verification
 
 - `@poker/contracts`: 53/53 tests passed.
 - `@poker/settlement`: 14/14 tests passed.
 - `@poker/web`: 125/125 tests passed; focused GamePage 13/13 passed.
-- API pure unit/static/script suites: 137 passed, with one Windows-only skip for the Linux `O_NOFOLLOW` symlink behavior; the same-handle/flag contract is covered by a platform-neutral fake.
-- Security/readiness E2E: 22/22 passed, including raw malformed JSON/urlencoded requests and repeated readiness timeouts.
+- API pure unit/static/script suites: 151 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite.
+- Security/readiness E2E: 29/29 passed, including raw malformed JSON/urlencoded requests, malformed/encoded namespace paths, and repeated readiness timeouts.
 - `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - `pnpm audit --prod --audit-level high`: `No known vulnerabilities found`.
 - pnpm 10.15.1 `install --frozen-lockfile`: passed against the final lockfile and override.
@@ -58,6 +69,7 @@ No command connected to, queried, migrated, reset, or cleaned `tianyi.wiki:8306`
 
 - Docker CLI/daemon and Buildx are not installed in this environment. Real `docker compose config`, image build, multi-stage Linux dependency install, container health smoke, migration-on-start, and named-volume persistence were not run. YAML/Dockerfile policies and pnpm 10 production dependency behavior were verified statically/locally, but a Linux Docker smoke on the Synology or another Docker host remains mandatory before production.
 - `shellcheck` is unavailable. Bash parsing and destructive-path behavior tests passed, but ShellCheck itself was not run.
+- This Windows host provides bsdtar 3.8 rather than GNU tar. The streaming parser accepted a real host-generated USTAR archive and adversarial handcrafted headers; the production Debian GNU tar create/extract round trip remains part of the required Docker smoke.
 - Database-backed API E2E suites were not run because the authorized remote test database is owned by another task and local Docker is unavailable. Focused hardening E2E uses injected fakes and no database. Run the repository's database integration suites only against a new isolated local Compose project or after the controller explicitly releases the authorized test schema.
 - The real Linux `O_NOFOLLOW` symlink test is skipped on Windows because Node does not expose that flag on this platform. Production is the Debian Linux image; the open-once/fstat/read contract and flag request are otherwise covered by unit tests, and the Linux container smoke must exercise the real symlink case.
 - The `deepmerge-ts` 8.0.1 override crosses a transitive major version because Prisma 7.9.1 has not yet published a patched declaration. Current Prisma generate/config/diff behavior passes; retain the audit gate and remove the override once Prisma officially adopts 8.x.

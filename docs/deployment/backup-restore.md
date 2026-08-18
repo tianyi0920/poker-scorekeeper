@@ -16,7 +16,7 @@ test -f "data/backups/manifest-$STAMP.txt"
 test -f "data/backups/checksums-$STAMP.txt"
 ```
 
-脚本以 `data/backups/.backup.lock` 串行化同目录备份：先做单事务数据库 dump，再只归档头像根目录顶层中符合已提交文件命名的 `.webp`；点文件、上传临时文件、软链接、子目录和其他文件均排除。校验文件最后无覆盖发布，`latest-stamp` 只前进不倒退；14 天保留只匹配严格数字时间戳文件名。
+脚本以 `data/backups/.backup.lock` 串行化同目录备份：先用 `--single-transaction --skip-lock-tables --skip-add-locks` 做数据库 dump，再只归档头像根目录顶层中符合已提交文件命名的 `.webp`；点文件、上传临时文件、软链接、子目录和其他文件均排除。dump 不写 `LOCK TABLES` 语句，所以一次性恢复账号无需 `LOCK TABLES` 权限。校验文件最后无覆盖发布，`latest-stamp` 只前进不倒退；14 天保留只匹配严格数字时间戳文件名。
 
 断电可能留下锁目录。先用 `docker compose ps`、`docker compose top app` 确认没有备份或 `mysqldump`，并核验 `latest-stamp` 四件套后，只执行 `rmdir data/backups/.backup.lock`；不要递归删除。已提交头像为 append-only，旧历史引用因此稳定，但孤儿文件会积累；上线离线 GC 前不要人工删头像。
 
@@ -33,7 +33,7 @@ GRANT CREATE, DROP, ALTER, INDEX, INSERT, UPDATE, DELETE, SELECT,
 ON poker_scorekeeper_restore_drill.* TO 'poker_restore_once'@'%';
 ```
 
-该账号没有活动生产库权限；`%` 仅用于短时演练并依赖 NAS 防火墙，演练后必须立即删除。若环境能固定容器源网段，应把 `%` 换成更窄的 host 匹配。
+该账号没有活动生产库权限，也不需要 `LOCK TABLES`；备份不导出 routines/events，表触发器则由已有的 `TRIGGER` 权限恢复。`%` 仅用于短时演练并依赖 NAS 防火墙，演练后必须立即删除。若环境能固定容器源网段，应把 `%` 换成更窄的 host 匹配。
 
 ### 2. 专用环境文件
 
@@ -84,17 +84,20 @@ docker run --rm --read-only --tmpfs /tmp:size=64m,mode=1777 \
   poker-scorekeeper:local
 ```
 
-恢复启动即把四个普通、非软链接输入复制到私有快照，此后不再打开原路径。建库前验证 gzip、三项 SHA-256、完整且字段唯一的 `format_version=1` 清单，以及归档路径、类型、数量和体积。默认/硬上限如下；如需调整，只能通过 `.env.restore` 中的变量在硬上限内设置正整数：
+恢复先取得 `/data/restore/.restore.lock`，再以 `O_NOFOLLOW|O_NONBLOCK` 打开每个输入，并通过同一文件描述符 `fstat`、限额流式复制到 `O_EXCL` 私有快照；FIFO、设备、软链接、初始超限或复制中增长超限都会在建库前拒绝。清单和校验文件各固定上限 64 KiB。建库前还会验证 gzip、三项 SHA-256、完整且字段唯一的 `format_version=1` 清单，并流式解析 tar header 检查路径、类型、数量和体积，不把无界 tar listing 写入磁盘。默认/硬上限如下；如需调整，只能通过 `.env.restore` 中的变量在硬上限内设置正整数：
 
 | 变量 | 默认值 | 硬上限 |
 | --- | ---: | ---: |
 | `RESTORE_MAX_SQL_BYTES` | 1 GiB | 4 GiB |
+| `RESTORE_MAX_SQL_EXPANDED_BYTES` | 4 GiB | 16 GiB |
 | `RESTORE_MAX_AVATAR_ARCHIVE_BYTES` | 256 MiB | 1 GiB |
 | `RESTORE_MAX_AVATAR_ENTRIES` | 10,000 | 100,000 |
 | `RESTORE_MAX_AVATAR_FILE_BYTES` | 8 MiB | 16 MiB |
 | `RESTORE_MAX_AVATAR_TOTAL_BYTES` | 512 MiB | 4 GiB |
 
-失败或 TERM 会删除本轮刚创建的库，并仅清理已经严格验证的 `/data/restore/avatars` 目标后重建空目录。若临时账号权限不足，脚本会输出不含凭据的 `restore cleanup failed`；此时立即人工检查，不能假设清理成功。
+SQL 导入还经过展开字节流限额；超限会让 `pipefail` 触发并删除本轮已确认创建的库。失败或 TERM 只会删除 `CREATE DATABASE` 已明确成功的本轮库；头像目标只有包含本轮唯一 ownership marker 时才会删除并重建，外部竞态写入不会被递归清理。成功的演练头像目录会保留隐藏 ownership marker，应用和后续备份均不暴露/归档它。
+
+断电或 `SIGKILL` 可能留下 `/data/restore/.restore.lock`。先用 `docker ps`/`docker top` 确认没有恢复进程，再人工核对目标库、头像目录和 marker 的完整状态；只能对确认属于已终止演练的空锁目录执行 `rmdir data/restore/.restore.lock`，不得递归删除。若临时账号权限不足，脚本会输出不含凭据的 `restore cleanup failed`；此时立即人工检查，不能假设清理成功。
 
 ### 4. 核验、撤权和删除凭据
 

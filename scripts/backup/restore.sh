@@ -41,11 +41,13 @@ validate_limit() {
 }
 
 max_sql_bytes="${RESTORE_MAX_SQL_BYTES:-1073741824}"
+max_sql_expanded_bytes="${RESTORE_MAX_SQL_EXPANDED_BYTES:-4294967296}"
 max_avatar_archive_bytes="${RESTORE_MAX_AVATAR_ARCHIVE_BYTES:-268435456}"
 max_avatar_entries="${RESTORE_MAX_AVATAR_ENTRIES:-10000}"
 max_avatar_file_bytes="${RESTORE_MAX_AVATAR_FILE_BYTES:-8388608}"
 max_avatar_total_bytes="${RESTORE_MAX_AVATAR_TOTAL_BYTES:-536870912}"
 validate_limit RESTORE_MAX_SQL_BYTES "$max_sql_bytes" 4294967296
+validate_limit RESTORE_MAX_SQL_EXPANDED_BYTES "$max_sql_expanded_bytes" 17179869184
 validate_limit RESTORE_MAX_AVATAR_ARCHIVE_BYTES "$max_avatar_archive_bytes" 1073741824
 validate_limit RESTORE_MAX_AVATAR_ENTRIES "$max_avatar_entries" 100000
 validate_limit RESTORE_MAX_AVATAR_FILE_BYTES "$max_avatar_file_bytes" 16777216
@@ -53,20 +55,36 @@ validate_limit RESTORE_MAX_AVATAR_TOTAL_BYTES "$max_avatar_total_bytes" 42949672
 
 snapshot_dir=''
 stage=''
+restore_parent=''
 restore_avatar_root=''
 db_created=0
-avatar_published=0
 completed=0
+restore_lock_dir=''
+restore_lock_acquired=0
+restore_token=''
+ownership_marker='.poker-restore-owner'
 
 cleanup() {
   status=$?
   set +e
-  if (( completed == 0 && avatar_published == 1 )) && [[ -n "$restore_avatar_root" ]]; then
-    rm -rf -- "$restore_avatar_root"
-    mkdir -m 700 -- "$restore_avatar_root" || \
-      printf '%s\n' 'restore cleanup failed: avatar target could not be reset' >&2
+  set +u
+  if (( completed == 0 )) && [[ -n "${restore_avatar_root:-}" && -n "${restore_token:-}" ]]; then
+    marker="$restore_avatar_root/$ownership_marker"
+    marker_token=''
+    if [[ -d "$restore_avatar_root" && ! -L "$restore_avatar_root" && \
+      -f "$marker" && ! -L "$marker" ]]; then
+      IFS= read -r marker_token < "$marker" || true
+    fi
+    if [[ "$marker_token" == "$restore_token" ]]; then
+      rm -rf -- "$restore_avatar_root"
+      mkdir -m 700 -- "$restore_avatar_root" || \
+        printf '%s\n' 'restore cleanup failed: avatar target could not be reset' >&2
+    elif [[ ! -e "$restore_avatar_root" && ! -L "$restore_avatar_root" ]]; then
+      mkdir -m 700 -- "$restore_avatar_root" || \
+        printf '%s\n' 'restore cleanup failed: avatar target could not be recreated' >&2
+    fi
   fi
-  if (( completed == 0 && db_created == 1 )); then
+  if (( ${completed:-0} == 0 && ${db_created:-0} == 1 )); then
     MYSQL_PWD="$MYSQL_PASSWORD" mysql \
       --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
       --execute="DROP DATABASE IF EXISTS \`$RESTORE_DATABASE\`" >/dev/null 2>&1 || \
@@ -74,16 +92,17 @@ cleanup() {
   fi
   if [[ -n "$stage" && -d "$stage" ]]; then rm -rf -- "$stage"; fi
   if [[ -n "$snapshot_dir" && -d "$snapshot_dir" ]]; then rm -rf -- "$snapshot_dir"; fi
+  if (( ${restore_lock_acquired:-0} == 1 )) && [[ -n "${restore_lock_dir:-}" ]]; then
+    rm -f -- "$restore_lock_dir/target-claim"
+    rmdir -- "$restore_lock_dir" || \
+      printf '%s\n' 'restore cleanup failed: restore lock could not be removed' >&2
+  fi
   return "$status"
 }
 trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-
-for file in "$SQL_ARCHIVE" "$AVATAR_ARCHIVE" "$MANIFEST_FILE" "$CHECKSUM_FILE"; do
-  [[ -f "$file" && ! -L "$file" ]] || die 'restore input must be a regular non-symlink file'
-done
 
 input_dir="$(cd -- "$(dirname -- "$SQL_ARCHIVE")" && pwd -P)"
 for file in "$AVATAR_ARCHIVE" "$MANIFEST_FILE" "$CHECKSUM_FILE"; do
@@ -106,27 +125,33 @@ checksum_name="checksums-${stamp}.txt"
 restore_parent="$(cd -- "$RESTORE_AVATAR_PARENT" && pwd -P)"
 [[ "$restore_parent" != / ]] || die 'avatar restore parent must not be filesystem root'
 
+node_binary="${NODE_BINARY:-node}"
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+restore_input_guard="${RESTORE_INPUT_GUARD:-$script_dir/restore-input-guard.mjs}"
+[[ -f "$restore_input_guard" && ! -L "$restore_input_guard" ]] || \
+  die 'restore input guard is unavailable'
+
+restore_lock_dir="$restore_parent/.restore.lock"
+mkdir -- "$restore_lock_dir" 2>/dev/null || die 'another restore is already running'
+restore_lock_acquired=1
+restore_token="${stamp}-$$-${RANDOM}-${RANDOM}"
+printf '%s\n' "$restore_token" > "$restore_lock_dir/target-claim"
+
 # Snapshot all inputs immediately; validation and import never reopen the originals.
 snapshot_dir="$(mktemp -d "$restore_parent/.restore-input-${stamp}.XXXXXX")"
-cp -P -- "$SQL_ARCHIVE" "$snapshot_dir/$sql_name"
-cp -P -- "$AVATAR_ARCHIVE" "$snapshot_dir/$avatar_name"
-cp -P -- "$MANIFEST_FILE" "$snapshot_dir/$manifest_name"
-cp -P -- "$CHECKSUM_FILE" "$snapshot_dir/$checksum_name"
-for file in "$snapshot_dir/$sql_name" "$snapshot_dir/$avatar_name" \
-  "$snapshot_dir/$manifest_name" "$snapshot_dir/$checksum_name"; do
-  [[ -f "$file" && ! -L "$file" ]] || die 'restore snapshot must be a regular non-symlink file'
-done
+"$node_binary" "$restore_input_guard" snapshot \
+  "$SQL_ARCHIVE" "$snapshot_dir/$sql_name" "$max_sql_bytes" || die 'SQL snapshot failed'
+"$node_binary" "$restore_input_guard" snapshot \
+  "$AVATAR_ARCHIVE" "$snapshot_dir/$avatar_name" "$max_avatar_archive_bytes" || \
+  die 'avatar snapshot failed'
+"$node_binary" "$restore_input_guard" snapshot \
+  "$MANIFEST_FILE" "$snapshot_dir/$manifest_name" 65536 || die 'manifest snapshot failed'
+"$node_binary" "$restore_input_guard" snapshot \
+  "$CHECKSUM_FILE" "$snapshot_dir/$checksum_name" 65536 || die 'checksum snapshot failed'
 SQL_ARCHIVE="$snapshot_dir/$sql_name"
 AVATAR_ARCHIVE="$snapshot_dir/$avatar_name"
 MANIFEST_FILE="$snapshot_dir/$manifest_name"
 CHECKSUM_FILE="$snapshot_dir/$checksum_name"
-
-sql_size="$(wc -c < "$SQL_ARCHIVE")"
-avatar_archive_size="$(wc -c < "$AVATAR_ARCHIVE")"
-[[ "$sql_size" =~ ^[0-9]+$ ]] || die 'cannot measure SQL archive'
-[[ "$avatar_archive_size" =~ ^[0-9]+$ ]] || die 'cannot measure avatar archive'
-(( sql_size <= max_sql_bytes )) || die 'SQL archive exceeds configured limit'
-(( avatar_archive_size <= max_avatar_archive_bytes )) || die 'avatar archive exceeds configured limit'
 
 mapfile -t checksum_lines < "$CHECKSUM_FILE"
 [[ "${#checksum_lines[@]}" -eq 3 ]] || die 'invalid checksum manifest'
@@ -180,48 +205,13 @@ restore_avatar_root="$(cd -- "$RESTORE_AVATAR_ROOT" && pwd -P)"
   die 'avatar restore directory is not empty'
 
 stage="$(mktemp -d "$restore_parent/.avatar-restore-${stamp}.XXXXXX")"
-list_file="$stage/.archive-list"
-verbose_file="$stage/.archive-verbose"
-tar -tzf "$AVATAR_ARCHIVE" > "$list_file" || die 'cannot list avatar archive'
-declare -A archive_entries=()
-entry_count=0
-root_count=0
-while IFS= read -r entry || [[ -n "$entry" ]]; do
-  [[ -n "$entry" && ${#entry} -le 160 && "$entry" != /* && "$entry" != *\\* ]] || \
-    die 'unsafe avatar archive path'
-  entry_count=$((entry_count + 1))
-  (( entry_count <= max_avatar_entries )) || die 'avatar archive has too many entries'
-  if [[ "$entry" == avatars || "$entry" == avatars/ ]]; then
-    root_count=$((root_count + 1))
-  elif [[ ! "$entry" =~ ^avatars/[a-z0-9]{3,30}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$ ]]; then
-    die 'avatar archive contains an uncontrolled filename'
-  fi
-  [[ ! -v "archive_entries[$entry]" ]] || die 'duplicate avatar archive entry'
-  archive_entries["$entry"]=1
-done < "$list_file"
-[[ "$root_count" -eq 1 ]] || die 'avatar archive must contain one root directory'
-
-tar -tvzf "$AVATAR_ARCHIVE" > "$verbose_file" || die 'cannot inspect avatar archive'
-verbose_count=0
-total_bytes=0
-while IFS= read -r line || [[ -n "$line" ]]; do
-  [[ -n "$line" ]] || continue
-  type="${line:0:1}"
-  [[ "$type" == d || "$type" == - ]] || die 'avatar archive contains links or special files'
-  read -r _mode _owner size _rest <<< "$line"
-  [[ "$size" =~ ^[0-9]+$ ]] || die 'cannot measure avatar archive entry'
-  if [[ "$type" == - ]]; then
-    (( size <= max_avatar_file_bytes )) || die 'avatar file exceeds configured limit'
-    total_bytes=$((total_bytes + size))
-    (( total_bytes <= max_avatar_total_bytes )) || die 'avatar archive expands beyond configured limit'
-  fi
-  verbose_count=$((verbose_count + 1))
-done < "$verbose_file"
-[[ "$verbose_count" -eq "$entry_count" ]] || die 'avatar archive listings disagree'
+archive_file_count="$("$node_binary" "$restore_input_guard" validate-avatar-tar \
+  "$AVATAR_ARCHIVE" "$max_avatar_entries" "$max_avatar_file_bytes" \
+  "$max_avatar_total_bytes" 160)" || die 'avatar archive validation failed'
+[[ "$archive_file_count" =~ ^[0-9]+$ ]] || die 'invalid avatar archive validation result'
 
 tar -C "$stage" --strip-components=1 --no-same-owner --no-same-permissions \
   -xzf "$AVATAR_ARCHIVE" || die 'cannot extract avatar archive'
-rm -f -- "$list_file" "$verbose_file"
 [[ -z "$(find "$stage" -type l -print -quit)" ]] || die 'avatar archive extracted a symlink'
 [[ -z "$(find "$stage" -mindepth 1 ! -type f -print -quit)" ]] || \
   die 'avatar archive extracted a directory or special file'
@@ -232,25 +222,27 @@ while IFS= read -r -d '' file; do
     die 'extracted avatar has an uncontrolled filename'
   extracted_count=$((extracted_count + 1))
 done < <(find "$stage" -mindepth 1 -maxdepth 1 -type f -print0)
-(( extracted_count + 1 == entry_count )) || die 'avatar extraction count mismatch'
+(( extracted_count == archive_file_count )) || die 'avatar extraction count mismatch'
+printf '%s\n' "$restore_token" > "$stage/$ownership_marker"
 
 existing="$(MYSQL_PWD="$MYSQL_PASSWORD" mysql \
   --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
   --batch --skip-column-names \
   --execute="SELECT SCHEMA_NAME FROM INFORMATION_SCHEMA.SCHEMATA WHERE SCHEMA_NAME = '$RESTORE_DATABASE'")"
 [[ -z "$existing" ]] || die 'restore database already exists'
-db_created=1
 MYSQL_PWD="$MYSQL_PASSWORD" mysql \
   --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" \
   --execute="CREATE DATABASE \`$RESTORE_DATABASE\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci"
-gzip -dc "$SQL_ARCHIVE" | MYSQL_PWD="$MYSQL_PASSWORD" mysql \
+db_created=1
+gzip -dc "$SQL_ARCHIVE" | \
+  "$node_binary" "$restore_input_guard" limit-stream "$max_sql_expanded_bytes" | \
+  MYSQL_PWD="$MYSQL_PASSWORD" mysql \
   --host="$MYSQL_HOST" --port="$MYSQL_PORT" --user="$MYSQL_USER" "$RESTORE_DATABASE"
 
 [[ -d "$restore_avatar_root" && ! -L "$restore_avatar_root" ]] || \
   die 'avatar restore target changed before publication'
 [[ -z "$(find "$restore_avatar_root" -mindepth 1 -print -quit)" ]] || \
   die 'avatar restore directory changed before publication'
-avatar_published=1
 rmdir -- "$restore_avatar_root"
 mv -- "$stage" "$restore_avatar_root"
 stage=''

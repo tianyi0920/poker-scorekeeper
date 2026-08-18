@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import mariadb, { type ConnectionConfig } from 'mariadb';
+import { buildMariaDbConnectionConfig } from '../prisma/mariadb-connection-config.js';
 
 export interface ReadinessConnection {
   query(sql: string): Promise<unknown>;
@@ -25,37 +26,13 @@ function configuredTimeout(config: ConfigService): number {
 
 export function readinessConnectionConfig(
   databaseUrl: string,
-  timeoutMilliseconds: number
+  timeoutMilliseconds: number,
+  tlsBaseDirectory?: string
 ): ConnectionConfig {
-  let url: URL;
-  try {
-    url = new URL(databaseUrl);
-  } catch {
-    throw new Error('Invalid readiness database configuration');
-  }
-  const port = Number(url.port || '3306');
-  const database = decodeURIComponent(url.pathname.slice(1));
-  if (
-    (url.protocol !== 'mysql:' && url.protocol !== 'mariadb:') ||
-    url.hostname === '' ||
-    url.username === '' ||
-    !Number.isInteger(port) ||
-    port < 1 ||
-    port > 65_535 ||
-    database === '' ||
-    database.includes('/')
-  ) {
-    throw new Error('Invalid readiness database configuration');
-  }
   return {
-    host: url.hostname,
-    port,
-    user: decodeURIComponent(url.username),
-    password: decodeURIComponent(url.password),
-    database,
+    ...buildMariaDbConnectionConfig(databaseUrl, tlsBaseDirectory),
     connectTimeout: timeoutMilliseconds,
     socketTimeout: timeoutMilliseconds,
-    queryTimeout: timeoutMilliseconds,
     connectAttributes: { program_name: 'poker-readiness' }
   };
 }
@@ -63,26 +40,54 @@ export function readinessConnectionConfig(
 @Injectable()
 export class MariaDbReadinessProbe {
   private readonly options: ConnectionConfig;
+  private readonly timeoutMilliseconds: number;
 
   constructor(
     @Inject(ConfigService) config: ConfigService,
     @Inject(READINESS_CONNECTION_FACTORY) private readonly factory: ReadinessConnectionFactory
   ) {
+    this.timeoutMilliseconds = configuredTimeout(config);
     this.options = readinessConnectionConfig(
       config.get<string>('DATABASE_URL') ?? '',
-      configuredTimeout(config)
+      this.timeoutMilliseconds
     );
   }
 
   async check(): Promise<void> {
     let connection: ReadinessConnection | undefined;
+    let destroyed = false;
+    const destroy = () => {
+      if (connection !== undefined && !destroyed) {
+        destroyed = true;
+        connection.destroy();
+      }
+    };
     try {
       connection = await this.factory.connect(this.options);
-      await connection.query('SELECT 1');
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const finish = (callback: () => void) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          callback();
+        };
+        const timer = setTimeout(() => {
+          finish(() => {
+            destroy();
+            reject(new Error('Readiness query timeout'));
+          });
+        }, this.timeoutMilliseconds);
+        timer.unref();
+        void connection?.query('SELECT 1').then(
+          () => finish(resolve),
+          (error: unknown) => finish(() => reject(error))
+        );
+      });
       await connection.end();
       connection = undefined;
     } catch (error) {
-      connection?.destroy();
+      destroy();
       throw error;
     }
   }

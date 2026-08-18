@@ -106,7 +106,7 @@ docker compose -p poker17smoke -f docker-compose.test.yml down -v --remove-orpha
 
 ## 6. 每日备份与 14 天保留
 
-备份脚本先取得 `data/backups/.backup.lock`，再使用 MySQL 单事务导出，随后只打包头像目录顶层中已提交且符合受控命名的 `.webp` 文件；上传点文件、临时文件、目录和软链接不会进入归档。只有完整集合才发布校验文件和单调前进的 `latest-stamp`。密码来自容器环境的 `MYSQL_PASSWORD`，不会出现在命令参数或日志中。脚本只清理符合本项目精确数字时间戳命名且超过 14 天的普通文件。
+备份脚本先取得 `data/backups/.backup.lock`，再使用 MySQL 单事务、`--skip-add-locks` 导出，随后只打包头像目录顶层中已提交且符合受控命名的 `.webp` 文件；上传点文件、临时文件、目录和软链接不会进入归档。dump 不包含 `LOCK TABLES` 语句，恢复账号无需该权限。只有完整集合才发布校验文件和单调前进的 `latest-stamp`。密码来自容器环境的 `MYSQL_PASSWORD`，不会出现在命令参数或日志中。脚本只清理符合本项目精确数字时间戳命名且超过 14 天的普通文件。
 
 同一备份目录只允许一个进程。若 NAS 断电留下 `.backup.lock`，先确认没有备份容器或 `mysqldump` 进程、校验 `latest-stamp` 指向的四件套完整，再用 `rmdir data/backups/.backup.lock` 删除空锁目录后重试；不要用递归删除。已提交上传头像采用 append-only，保证数据库快照引用的旧文件仍可归档，代价是孤儿文件会增长；在未来提供离线 GC 前不要手工清理。
 
@@ -128,7 +128,7 @@ docker compose exec -T app /app/scripts/backup/backup.sh
 
 ## 7. 恢复演练（只对隔离测试目标）
 
-恢复脚本不会覆盖现有数据库，也拒绝活动式生产库名。目标必须是新的 `*_test` 或 `*_restore[_标识]` 数据库，并需要数据库名和完整动作二次确认。它启动后立即把四个输入复制到私有快照，建库前验证 gzip、SHA-256、唯一 `format_version=1` 清单、路径/类型和资源上限。默认上限为：SQL 压缩包 1 GiB、头像压缩包 256 MiB、总条目 10,000、单文件 8 MiB、展开总量 512 MiB；可用同名 `RESTORE_MAX_*` 环境变量调低或在硬上限内调高，完整名称见 [backup-restore.md](./backup-restore.md)。
+恢复脚本不会覆盖现有数据库，也拒绝活动式生产库名。目标必须是新的 `*_test` 或 `*_restore[_标识]` 数据库，并需要数据库名和完整动作二次确认。它先取得恢复父目录锁，再用同一非跟随、非阻塞文件描述符把四个输入限额快照；建库前验证 gzip、SHA-256、唯一 `format_version=1` 清单，并流式解析 tar 路径、类型和资源上限。默认上限为：SQL 压缩包 1 GiB/展开流 4 GiB、头像压缩包 256 MiB、总条目 10,000、单文件 8 MiB、展开总量 512 MiB；清单和 checksum 各固定 64 KiB，可用同名 `RESTORE_MAX_*` 环境变量调低或在硬上限内调高，完整名称见 [backup-restore.md](./backup-restore.md)。
 
 下面只演练到新库和 `data/restore/avatars`。恢复账号的创建、`600` 专用环境文件、精确 GRANT、撤销和失败检查必须按 [backup-restore.md](./backup-restore.md) 执行。先保证目标为空并从 `latest-stamp` 读取备份标识：
 
@@ -144,7 +144,7 @@ test "$(stat -c %a .env.restore)" = 600
 
 随后执行操作卡中的 `docker run --env-file .env.restore` 命令；不要改用生产应用/备份账号，也不要把临时密码展开为 `-e MYSQL_PASSWORD=...`。
 
-验证新库行数、管理员登录、历史战绩、结算金额和头像文件后，撤销并删除一次性账号及其环境文件。失败/TERM 会尝试删除本轮刚创建的库并把头像目标恢复为空；若日志出现受控的 `restore cleanup failed`，必须人工确认新库和头像目录状态。生产切换必须另行安排停机窗口和人工复核；本脚本不会覆盖或重命名活动的 `poker_scorekeeper`。
+验证新库行数、管理员登录、历史战绩、结算金额和头像文件后，撤销并删除一次性账号及其环境文件。失败/TERM 只会删除已确认由本轮创建的库，并只在头像目录含本轮唯一 marker 时清理；外部竞态内容不会被误删。断电留下 `.restore.lock` 时必须确认无恢复进程并人工核验状态后仅用 `rmdir` 清空锁。若日志出现受控的 `restore cleanup failed`，必须人工确认新库和头像目录状态。生产切换必须另行安排停机窗口和人工复核；本脚本不会覆盖或重命名活动的 `poker_scorekeeper`。
 
 ## 8. 升级、回滚与日常排障
 

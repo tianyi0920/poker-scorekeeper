@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
   buildMariaDbPoolConfig,
   buildPrismaTransactionOptions
@@ -33,5 +36,34 @@ describe('buildMariaDbPoolConfig', () => {
       timeout: 20_000
     });
     expect(buildPrismaTransactionOptions('production')).toBeUndefined();
+  });
+
+  it('uses the same strict TLS identity semantics as readiness', async () => {
+    // Break caught: Prisma and readiness interpret one DATABASE_URL differently.
+    const root = await mkdtemp(join(tmpdir(), 'poker-prisma-tls-'));
+    try {
+      const cert = join(root, 'ca.pem');
+      const identity = join(root, 'identity.p12');
+      await writeFile(cert, 'ca-data');
+      await writeFile(identity, 'identity-data');
+      const url = new URL('mysql://user:p%40ss@[::1]:3306/test_database');
+      url.searchParams.set('sslaccept', 'strict');
+      url.searchParams.set('sslcert', cert);
+      url.searchParams.set('sslidentity', identity);
+      url.searchParams.set('sslpassword', 'p12-pass');
+
+      expect(buildMariaDbPoolConfig(url.toString(), 'production')).toMatchObject({
+        host: '::1',
+        password: 'p@ss',
+        ssl: {
+          rejectUnauthorized: true,
+          ca: Buffer.from('ca-data'),
+          pfx: Buffer.from('identity-data'),
+          passphrase: 'p12-pass'
+        }
+      });
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 });
