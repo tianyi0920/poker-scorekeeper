@@ -41,6 +41,43 @@ function Wait-ApplicationHealthy {
   Wait-HealthResponse -Uri "$BaseUri/api/health/ready" -RequireDatabase $true
 }
 
+function Open-PrivateEnvironmentStream {
+  param(
+    [Parameter(Mandatory)][string] $Path,
+    [object] $WindowsAcl,
+    [object] $UnixOptions
+  )
+  if ($null -ne $WindowsAcl) {
+    return New-Object System.IO.FileStream(
+      $Path,
+      [System.IO.FileMode]::CreateNew,
+      [System.Security.AccessControl.FileSystemRights]::FullControl,
+      [System.IO.FileShare]::None,
+      4096,
+      [System.IO.FileOptions]::None,
+      $WindowsAcl
+    )
+  }
+  return New-Object System.IO.FileStream($Path, $UnixOptions)
+}
+
+function Write-PrivateEnvironmentLines {
+  param(
+    [Parameter(Mandatory)][System.IO.Stream] $Stream,
+    [Parameter(Mandatory)][string[]] $Lines
+  )
+  $writer = New-Object System.IO.StreamWriter($Stream, (New-Object System.Text.UTF8Encoding($false)))
+  try {
+    foreach ($line in $Lines) { $writer.WriteLine($line) }
+    $writer.Flush()
+  } catch {
+    $writeFailure = $_
+    try { $writer.Dispose() } catch { }
+    throw $writeFailure
+  }
+  $writer.Dispose()
+}
+
 function New-PrivateEnvironmentFile {
   param(
     [Parameter(Mandatory)][string] $RuntimeRoot,
@@ -53,69 +90,69 @@ function New-PrivateEnvironmentFile {
   $environmentPath = Join-Path $privateDirectory 'restore.env'
   if (Test-Path -LiteralPath $privateDirectory) { throw 'Private restore directory already exists' }
 
-  if ($env:OS -eq 'Windows_NT') {
-    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-    $acl = New-Object System.Security.AccessControl.DirectorySecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    $acl.SetOwner($identity)
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-      $identity,
-      [System.Security.AccessControl.FileSystemRights]::FullControl,
-      [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
-      [System.Security.AccessControl.PropagationFlags]::None,
-      [System.Security.AccessControl.AccessControlType]::Allow
-    )
-    $acl.AddAccessRule($rule)
-    [System.IO.Directory]::CreateDirectory($privateDirectory, $acl) | Out-Null
-    $directoryInfo = New-Object System.IO.DirectoryInfo($privateDirectory)
-    $createdAcl = $directoryInfo.GetAccessControl()
-    if (-not $createdAcl.AreAccessRulesProtected) {
-      throw 'Private restore directory ACL was not protected'
-    }
-
-    $fileAcl = New-Object System.Security.AccessControl.FileSecurity
-    $fileAcl.SetAccessRuleProtection($true, $false)
-    $fileAcl.SetOwner($identity)
-    $fileRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-      $identity,
-      [System.Security.AccessControl.FileSystemRights]::FullControl,
-      [System.Security.AccessControl.AccessControlType]::Allow
-    )
-    $fileAcl.AddAccessRule($fileRule)
-    $stream = New-Object System.IO.FileStream(
-      $environmentPath,
-      [System.IO.FileMode]::CreateNew,
-      [System.Security.AccessControl.FileSystemRights]::FullControl,
-      [System.IO.FileShare]::None,
-      4096,
-      [System.IO.FileOptions]::None,
-      $fileAcl
-    )
-  } else {
-    [System.IO.Directory]::CreateDirectory(
-      $privateDirectory,
-      [System.IO.UnixFileMode]::UserRead -bor
-        [System.IO.UnixFileMode]::UserWrite -bor
-        [System.IO.UnixFileMode]::UserExecute
-    ) | Out-Null
-    $options = New-Object System.IO.FileStreamOptions
-    $options.Mode = [System.IO.FileMode]::CreateNew
-    $options.Access = [System.IO.FileAccess]::Write
-    $options.Share = [System.IO.FileShare]::None
-    $options.UnixCreateMode = [System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite
-    $stream = New-Object System.IO.FileStream($environmentPath, $options)
-  }
-
+  $stream = $null
   try {
-    $writer = New-Object System.IO.StreamWriter($stream, (New-Object System.Text.UTF8Encoding($false)))
-    try {
-      foreach ($line in $Lines) { $writer.WriteLine($line) }
-    } finally {
-      $writer.Dispose()
+    if ($env:OS -eq 'Windows_NT') {
+      $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+      $acl = New-Object System.Security.AccessControl.DirectorySecurity
+      $acl.SetAccessRuleProtection($true, $false)
+      $acl.SetOwner($identity)
+      $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $identity,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        [System.Security.AccessControl.InheritanceFlags]'ContainerInherit, ObjectInherit',
+        [System.Security.AccessControl.PropagationFlags]::None,
+        [System.Security.AccessControl.AccessControlType]::Allow
+      )
+      $acl.AddAccessRule($rule)
+      [System.IO.Directory]::CreateDirectory($privateDirectory, $acl) | Out-Null
+      $directoryInfo = New-Object System.IO.DirectoryInfo($privateDirectory)
+      $createdAcl = $directoryInfo.GetAccessControl()
+      if (-not $createdAcl.AreAccessRulesProtected) {
+        throw 'Private restore directory ACL was not protected'
+      }
+
+      $fileAcl = New-Object System.Security.AccessControl.FileSecurity
+      $fileAcl.SetAccessRuleProtection($true, $false)
+      $fileAcl.SetOwner($identity)
+      $fileRule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        $identity,
+        [System.Security.AccessControl.FileSystemRights]::FullControl,
+        [System.Security.AccessControl.AccessControlType]::Allow
+      )
+      $fileAcl.AddAccessRule($fileRule)
+      $stream = Open-PrivateEnvironmentStream -Path $environmentPath -WindowsAcl $fileAcl -UnixOptions $null
+    } else {
+      [System.IO.Directory]::CreateDirectory(
+        $privateDirectory,
+        [System.IO.UnixFileMode]::UserRead -bor
+          [System.IO.UnixFileMode]::UserWrite -bor
+          [System.IO.UnixFileMode]::UserExecute
+      ) | Out-Null
+      $options = New-Object System.IO.FileStreamOptions
+      $options.Mode = [System.IO.FileMode]::CreateNew
+      $options.Access = [System.IO.FileAccess]::Write
+      $options.Share = [System.IO.FileShare]::None
+      $options.UnixCreateMode = [System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite
+      $stream = Open-PrivateEnvironmentStream -Path $environmentPath -WindowsAcl $null -UnixOptions $options
     }
+    Write-PrivateEnvironmentLines -Stream $stream -Lines $Lines
   } catch {
-    $stream.Dispose()
-    throw
+    $creationFailure = $_
+    if ($null -ne $stream) {
+      try { $stream.Dispose() } catch { }
+    }
+    try {
+      if (Test-Path -LiteralPath $environmentPath -PathType Leaf) {
+        Remove-Item -LiteralPath $environmentPath -Force
+      }
+    } catch { }
+    try {
+      if (Test-Path -LiteralPath $privateDirectory -PathType Container) {
+        Remove-Item -LiteralPath $privateDirectory -Force
+      }
+    } catch { }
+    throw $creationFailure
   }
   return [pscustomobject]@{ Directory = $privateDirectory; Path = $environmentPath }
 }

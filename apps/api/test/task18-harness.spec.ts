@@ -2,7 +2,10 @@ import { readTestDatabaseEnvironment } from '../../../tests/e2e/support/database
 import { ownedAvatarFileName } from '../../../tests/e2e/support/avatar-cleanup.js';
 import { assertRestoredHistoryPayload } from '../../../scripts/database/assert-restored-api.mjs';
 import { waitForFreshServer } from '../../../tests/e2e/support/restart.js';
+import { runSettingsOwnershipCleanup } from '../../../tests/e2e/support/settings-ownership.js';
 import playwrightConfiguration from '../../../playwright.config.js';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
@@ -120,6 +123,38 @@ describe('Task18 release harness safety', () => {
       await new Promise<void>((resolveClose, rejectClose) => server.close((error) => (
         error ? rejectClose(error) : resolveClose()
       )));
+    }
+  });
+
+  it('retains the direct-predecessor token after failed cleanup and removes it only after a successful retry', async () => {
+    // Break caught: a finally block removes the only recovery token while database cleanup is still incomplete.
+    const previousRunId = process.env.TASK18_RUN_ID;
+    const runId = `t18retry${randomUUID().replaceAll('-', '').slice(0, 8)}`;
+    const tokenFile = resolve('test-results/task18-runtime', `settings-${runId}.json`);
+    const cleanupFailure = new Error('original fixture cleanup failure');
+    process.env.TASK18_RUN_ID = runId;
+    await mkdir(resolve('test-results/task18-runtime'), { recursive: true });
+    await writeFile(tokenFile, JSON.stringify({
+      ownerId: `${runId}sa`,
+      predecessor: { rakeThreshold: '11', rakeBps: 1111, version: 11, updatedById: 'external-v11' },
+      owned: { rakeThreshold: '12', rakeBps: 1212, version: 12, updatedById: `${runId}sa` }
+    }), { encoding: 'utf8', flag: 'wx' });
+    try {
+      await expect(runSettingsOwnershipCleanup(async () => {
+        throw cleanupFailure;
+      })).rejects.toBe(cleanupFailure);
+      await expect(readFile(tokenFile, 'utf8')).resolves.toContain('external-v11');
+
+      let retriedOwner: string | undefined;
+      await runSettingsOwnershipCleanup(async (token) => {
+        retriedOwner = token?.ownerId;
+      });
+      expect(retriedOwner).toBe(`${runId}sa`);
+      await expect(readFile(tokenFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' });
+    } finally {
+      if (previousRunId === undefined) delete process.env.TASK18_RUN_ID;
+      else process.env.TASK18_RUN_ID = previousRunId;
+      await rm(tokenFile, { force: true });
     }
   });
 });

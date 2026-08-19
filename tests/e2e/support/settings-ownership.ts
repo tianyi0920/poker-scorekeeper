@@ -84,6 +84,14 @@ export async function removeSettingsOwnershipToken(): Promise<void> {
   });
 }
 
+export async function runSettingsOwnershipCleanup(
+  cleanup: (token: SettingsOwnershipToken | undefined) => Promise<void>
+): Promise<void> {
+  const token = await readSettingsOwnershipToken();
+  await cleanup(token);
+  await removeSettingsOwnershipToken();
+}
+
 export async function performOwnedSettingsUpdate<T>(
   connection: SettingsConnection,
   ownerId: string,

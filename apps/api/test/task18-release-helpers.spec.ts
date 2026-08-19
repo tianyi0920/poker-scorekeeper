@@ -46,6 +46,55 @@ windowsOnly('Task18 release PowerShell helpers', () => {
     }
   });
 
+  it.each(['create', 'write', 'flush'] as const)(
+    'removes the partial private credential context without masking an injected %s failure',
+    async (stage) => {
+      // Break caught: setup throws before returning its cleanup context, leaving a secret file or directory behind.
+      const root = await mkdtemp(join(tmpdir(), 'task18-private-failure-'));
+      const escapedRoot = root.replaceAll("'", "''");
+      const escapedHelper = helperPath.replaceAll("'", "''");
+      const originalFailure = `original-${stage}-failure`;
+      const privateDirectory = join(root, 'restore-deadbeef');
+      const fakeBoundary = stage === 'create'
+        ? `
+          function Open-PrivateEnvironmentStream {
+            param([string] $Path, [object] $WindowsAcl, [object] $UnixOptions)
+            [System.IO.File]::WriteAllText($Path, 'partial-secret')
+            throw '${originalFailure}'
+          }
+        `
+        : `
+          function Write-PrivateEnvironmentLines {
+            param([System.IO.Stream] $Stream, [string[]] $Lines)
+            $bytes = [System.Text.Encoding]::UTF8.GetBytes('partial-secret')
+            $Stream.Write($bytes, 0, $bytes.Length)
+            ${stage === 'flush' ? '$Stream.Flush()' : ''}
+            throw '${originalFailure}'
+          }
+        `;
+      try {
+        const result = powershell(`
+          . '${escapedHelper}'
+          ${fakeBoundary}
+          $observed = $null
+          try {
+            New-PrivateEnvironmentFile -RuntimeRoot '${escapedRoot}' -RunId 'deadbeef' -Lines @('RESTORE_PASSWORD=test-only') | Out-Null
+            $observed = 'injected failure was not observed'
+          } catch {
+            $observed = $_.Exception.Message
+          }
+          if ($observed -notlike '*${originalFailure}*') { throw "Original failure was masked: $observed" }
+          if (Test-Path -LiteralPath '${privateDirectory.replaceAll("'", "''")}') { throw 'Partial private context remains' }
+          'cleanup-passed'
+        `);
+        expect(result.status, `${result.stdout}\n${result.stderr}`).toBe(0);
+        expect(result.stdout).toContain('cleanup-passed');
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  );
+
   it('rejects Docker Compose below 2.34.0 through the real command boundary', async () => {
     // Break caught: --env-from-file is attempted only after the long suite on an unsupported Compose CLI.
     const root = await mkdtemp(join(tmpdir(), 'task18-fake-docker-'));

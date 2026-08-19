@@ -6,9 +6,8 @@ import { accounts, allFixtureAccounts } from './support/fixtures.js';
 import { ownedAvatarFileName } from './support/avatar-cleanup.js';
 import { openTestDatabase } from './support/database.js';
 import {
-  readSettingsOwnershipToken,
-  removeSettingsOwnershipToken,
   restoreOwnedSettings,
+  runSettingsOwnershipCleanup,
   type SettingsOwnershipToken
 } from './support/settings-ownership.js';
 
@@ -98,12 +97,7 @@ async function cleanupFixturesImpl(setting: SettingsOwnershipToken | undefined):
 }
 
 async function cleanupFixtures(): Promise<void> {
-  const setting = await readSettingsOwnershipToken();
-  try {
-    await cleanupFixturesImpl(setting);
-  } finally {
-    await removeSettingsOwnershipToken();
-  }
+  await runSettingsOwnershipCleanup(cleanupFixturesImpl);
 }
 
 export default async function globalSetup(_config: FullConfig) {
