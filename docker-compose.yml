@@ -13,7 +13,6 @@ services:
       WEB_DIST_ROOT: /app/apps/web/dist
       AVATAR_ROOT: /data/avatars
       BACKUP_DIR: /data/backups
-      PRODUCTION_TARGET_REQUIRED: "1"
     ports:
       - "127.0.0.1:3000:3000"
     volumes:

@@ -12,6 +12,8 @@ interface ComposeService {
   security_opt?: string[];
   cap_drop?: string[];
   environment?: Record<string, string>;
+  entrypoint?: unknown;
+  command?: unknown;
 }
 
 async function readRepositoryFile(path: string): Promise<string> {
@@ -40,7 +42,8 @@ describe('production deployment artifacts', () => {
     const entrypoint = await readRepositoryFile('scripts/docker/entrypoint.sh');
 
     expect(entrypoint).toContain('set -euo pipefail');
-    expect(entrypoint).toContain('PRODUCTION_TARGET_REQUIRED');
+    expect(entrypoint).not.toContain('PRODUCTION_TARGET_REQUIRED');
+    expect(entrypoint).toMatch(/^\s*node scripts\/database\/production-preflight\.mjs >\/dev\/null$/m);
     expect(entrypoint.indexOf('production-preflight.mjs'))
       .toBeLessThan(entrypoint.indexOf('prisma migrate deploy'));
     expect(entrypoint).toMatch(/prisma migrate deploy/);
@@ -55,7 +58,7 @@ describe('production deployment artifacts', () => {
     expect(Object.keys(compose.services)).toEqual(['app']);
     expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
     expect(compose.services.app.env_file).toEqual(['.env.production']);
-    expect(compose.services.app.environment?.PRODUCTION_TARGET_REQUIRED).toBe('1');
+    expect(compose.services.app.environment).not.toHaveProperty('PRODUCTION_TARGET_REQUIRED');
     expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
       './data/avatars:/data/avatars',
       './data/backups:/data/backups',
@@ -81,6 +84,11 @@ describe('production deployment artifacts', () => {
     expect(databaseUrl).toContain('@mysql:3306/poker_scorekeeper_test');
     expect(databaseUrl).not.toMatch(/tianyi\.wiki|192\.168\.10\.248|poker_scorekeeper(?:\?|$)/);
     expect(compose.services.mysql.environment?.MYSQL_DATABASE).toBe('poker_scorekeeper_test');
+    expect(compose.services.app.entrypoint).toEqual([]);
+    expect(compose.services.app.command).toEqual([
+      '/usr/bin/tini', '-g', '--', 'sh', '-c',
+      'pnpm --dir apps/api exec prisma migrate deploy && exec node apps/api/dist/main.js'
+    ]);
   });
 
   it('prevents source secrets and mutable local data from entering the build context', async () => {

@@ -2,9 +2,7 @@
 set -euo pipefail
 
 production_preflight() {
-  if [[ "${PRODUCTION_TARGET_REQUIRED:-}" == '1' ]]; then
-    node scripts/database/production-preflight.mjs >/dev/null
-  fi
+  node scripts/database/production-preflight.mjs >/dev/null
 }
 
 if (( $# > 0 )); then

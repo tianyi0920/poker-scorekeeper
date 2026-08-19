@@ -23,6 +23,14 @@ services:
       dockerfile: Dockerfile
     image: poker-scorekeeper:test-local
     restart: "no"
+    entrypoint: []
+    command:
+      - /usr/bin/tini
+      - -g
+      - --
+      - sh
+      - -c
+      - pnpm --dir apps/api exec prisma migrate deploy && exec node apps/api/dist/main.js
     depends_on:
       mysql:
         condition: service_healthy

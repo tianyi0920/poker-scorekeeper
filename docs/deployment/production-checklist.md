@@ -69,6 +69,7 @@ docker compose run --rm --env-from-file .env.acceptance app node scripts/verify-
 ```
 
 - [ ] 自动验收通过公开 HTTPS/WSS 源站完成登录、CSRF、强制改密、临时普通用户创建、空局创建/开启、WebSocket 房间加入、空局作废与临时用户逻辑删除。
+- [ ] 最终上线直接在第 5 节运行一次 `--record`（其内部包含同一完整自动验收）；不要先运行本节命令再无意义地重复改密。若为排障单独运行过本节，必须按下一项更新当前/新密码后才能继续。
 - [ ] 输出只包含固定 PASS 字段与 UTC 时间，不含源站、账号、对象 ID、Cookie 或密码。
 - [ ] 如果脚本在强制改密后失败，重跑前把受保护验收文件中的“当前密码”更新为刚设置的新值，并再提供一个不同的新密码；禁止回退到已失效的初始值。
 - [ ] 使用真实手机通过公网 HTTPS 登录，并进入一场空验收局；管理员侧确认该手机通过 WSS 出现在观战者列表。这个人工步骤不能由 Node 客户端替代。
@@ -79,15 +80,15 @@ docker compose run --rm --env-from-file .env.acceptance app node scripts/verify-
 ## 5. 首次备份与无秘密证据
 
 ```sh
-docker compose exec -T app sh scripts/backup/backup.sh
-docker image inspect poker-scorekeeper:local --format '{{.Id}}'
-docker compose exec -T app pnpm --filter @poker/api prisma migrate status
+docker compose exec -T app node scripts/database/production-backup-target.mjs
+# 在能控制本项目生产 Compose 的 Docker/Node 24 管理工作副本最终执行一次；不要在 app 容器内运行。
+node --env-file=.env.production --env-file=.env.acceptance scripts/verify-production.mjs --record
 ```
 
 - [ ] `latest-stamp` 指向本次完整的 SQL、头像、manifest 与 checksum 集合。
 - [ ] checksum 文件内的三条 SHA-256 与对应文件重新计算结果一致。
-- [ ] 将镜像 digest、最后 migration、health/backup 结果、三个备份文件及 SHA-256、最终验收 UTC 时间填入严格格式化的本地环境变量。
-- [ ] 在开发工作副本运行 `node scripts/verify-production.mjs --record`，生成 `docs/deployment/production-verification.md`。
+- [ ] 记录器从真实 Docker image inspect、Prisma migrate status、只读 `_prisma_migrations` checksum、公开 health 与本轮 backup/recheck 采集证据；不接收形似 PASS 的环境值。
+- [ ] 全部证据和本轮自动验收均为 PASS 后，记录器才以同目录临时文件写入、flush/fsync 并原子替换 `docs/deployment/production-verification.md`；任何失败保留旧记录。
 - [ ] 复核验证记录不含主机凭据、连接 URL、Cookie、用户密码或令牌。
 
 ## 6. 上线结论

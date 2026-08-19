@@ -8,6 +8,7 @@ import {
   Param,
   Patch,
   Post,
+  Res,
   UseGuards
 } from '@nestjs/common';
 import {
@@ -30,6 +31,10 @@ import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
 import { Role } from '../generated/prisma/client.js';
 import { UsersService } from './users.service.js';
 
+interface LocationResponse {
+  setHeader(name: 'Location', value: string): void;
+}
+
 @Controller('users')
 @UseGuards(SessionGuard, RolesGuard)
 @Roles(Role.ADMIN, Role.SUPER_ADMIN)
@@ -42,11 +47,14 @@ export class UsersController {
   }
 
   @Post()
-  create(
+  async create(
     @CurrentUser() actor: AuthUser,
-    @Body(new ZodValidationPipe(createUserSchema)) body: CreateUserRequest
+    @Body(new ZodValidationPipe(createUserSchema)) body: CreateUserRequest,
+    @Res({ passthrough: true }) response: LocationResponse
   ): Promise<UserResponse> {
-    return this.users.create(actor, body);
+    const created = await this.users.create(actor, body);
+    response.setHeader('Location', `/api/users/${created.id}`);
+    return created;
   }
 
   @Patch(':id')

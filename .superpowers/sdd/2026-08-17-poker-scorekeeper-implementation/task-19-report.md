@@ -12,11 +12,12 @@ Baseline was clean at `0b1cbcf1bc6566e6543752997020c0ec029ea506`. No command con
 
 - Exact production target validation accepts only MySQL at `192.168.10.248:3306/poker_scorekeeper`; malformed URLs, alternate protocols, implicit/wrong ports, remote-test hosts, and wrong schemas fail with controlled codes that do not reflect input.
 - A read-only preflight connects without selecting a possibly absent schema, uses only static `SELECT`, `SHOW GRANTS`, and session-level `USE`, and reports server version, current database, `utf8mb4`, schema existence, creation capability, and use capability. Driver and permission details are replaced with controlled codes; reports never include the password or full connection URL.
-- Production database creation reuses the exact target guard before connection. The production Compose sets `PRODUCTION_TARGET_REQUIRED=1`; its entrypoint runs the read-only target preflight before any explicit one-off command, migration, or normal API start.
+- Production database creation reuses the exact target guard before connection on validation and real execution paths, regardless of `NODE_ENV`. The production image entrypoint unconditionally runs the read-only target preflight before any explicit one-off command, migration, or normal API start; no opt-out variable exists in the production image or Compose. The isolated test Compose explicitly replaces the image entrypoint for its internal MySQL-only stack.
 - The entrypoint now honors commands supplied by `docker compose run`. This repairs the inherited behavior where the documented preflight command was ignored and the container instead migrated and started the API.
 - Reversible public acceptance validates an exact root HTTPS origin, ready health plus HSTS, bootstrap-super-admin login, CSRF, forced password rotation, temporary ordinary-user creation, empty-game creation/start, a WebSocket-only Socket.IO room join with acknowledgement, empty-game void, and temporary-user logical deletion. It never buys chips or creates a financial settlement.
-- Acceptance cleanup is limited to IDs returned by this run. It deletes an owned draft or voids an owned active empty game, then logically deletes the owned temporary user. HTTP-success state is recorded before response-body validation, so a malformed success response cannot select the wrong cleanup action.
-- Acceptance output contains only fixed PASS fields and a UTC timestamp. A strict recorder accepts only a SHA-256 image digest, committed migration name, controlled health/backup results, an exact backup stamp, three exact backup filenames/checksums, and an ISO UTC acceptance time, then writes only `docs/deployment/production-verification.md`.
+- Acceptance cleanup is limited to IDs proven by exact `Location` headers for this run. Ownership and HTTP-success state are recorded before response-body validation, so truncated JSON still cleans the exact user/game and an ACTIVE game is voided rather than draft-deleted. Missing/unrecognizable ownership fails closed, stops further creation, avoids guessed deletion, and emits only a run marker plus manual-cleanup resource type.
+- Login, password change, user create/delete/list readback, game create/start/void, and WSS join acknowledgements are parsed by shared contracts and checked against the exact username, nickname, role, game name, ID, status, and empty-game invariants for this run. Logical deletion additionally requires `isActive=false`, non-null `deletedAt`, and a confirmed list readback.
+- `--record` no longer accepts evidence-shaped environment variables. It checks Docker/Compose before acceptance, then collects the real image digest, Prisma migrate status, exact repository/database migration checksums, public HTTPS health/HSTS, and a newly executed/recomputed backup. Only all-PASS evidence can be formatted. Publication uses a same-directory exclusive temporary file, file flush/fsync, and atomic rename; failures remove only the temporary file and preserve the prior record.
 - The production checklist and Synology runbook make rotated credentials, independent session/CSRF secrets, the exact HTTPS origin, Docker/Compose capabilities, directory modes, fixed database target, loopback-only port, reverse-proxy/WebSocket/real-IP settings, router TCP 443 boundary, real-phone observation, first backup, and secret-free evidence mandatory.
 - `.env.example` now includes the required secret-free `SESSION_SECRET` placeholder. The initial verification document contains no fabricated evidence and remains `NOT_EXECUTED`.
 
@@ -30,7 +31,7 @@ docker compose run --rm app node scripts/database/production-preflight.mjs
 
 would not run the preflight. It would execute `prisma migrate deploy` and start the API, causing production mutation before the intended read-only gate. This contradicted the Task 19 order and the explicit fail-closed requirement.
 
-Ruling: explicit commands must be executed by the entrypoint. In the production Compose, every explicit command other than the preflight itself first runs the same read-only exact-target gate; normal startup also gates before migration. The isolated test Compose does not set `PRODUCTION_TARGET_REQUIRED`, so its internal `mysql:3306/poker_scorekeeper_test` flow remains unchanged.
+Ruling: explicit commands must be executed by the entrypoint. Every production-image command other than the preflight itself first runs the same read-only exact-target gate; normal startup also gates before migration. The isolated test Compose explicitly replaces the image entrypoint and command for its internal `mysql:3306/poker_scorekeeper_test` flow. This test-only override is not an environment switch and is absent from the production image/Compose configuration.
 
 ## TDD and Debugging Evidence
 
@@ -44,18 +45,27 @@ Ruling: explicit commands must be executed by the entrypoint. In the production 
 - Entrypoint command RED was independently reproduced by temporarily removing the new direct-command branch: the fake migration ran and exited 90 instead of the requested command's 23. Restoring the branch made the full real-Bash entrypoint group pass 3/3, including existing TERM forwarding and migration-status preservation.
 - The first shell attempt with a copied Bash executable exited Windows code `0xC0000135` before executing tests. Root cause was its missing adjacent runtime. Re-running with the runtime's adjacent `bash-task17.exe` produced authoritative RED/GREEN behavior.
 
+### Review fix round 1 (`136afc0` baseline)
+
+- Entry guard RED: deployment policy failed 3 assertions because the production entrypoint/Compose still depended on `PRODUCTION_TARGET_REQUIRED` and the isolated test Compose had no explicit override; real-Bash explicit-command preflight also failed. The production flag was removed, entry preflight made unconditional, test Compose given an explicit entrypoint replacement, and create-database made target-strict on every path. Focused artifact/entrypoint tests passed 12/12 before the later controller additions and 14/14 in the final focused group.
+- Ownership RED: new controller tests observed no `Location` headers. Both create endpoints now return exact `/api/users/{id}` or `/api/games/{id}` locations. Acceptance tests prove truncated user/game 201 bodies still clean only those header-owned IDs; a successful create without recognizable ownership stops immediately, performs no guessed deletion, and carries a secret-free manual-cleanup marker.
+- Contract/readback GREEN: all mutating JSON responses use shared strict schemas and exact run-owned identity/status checks. User deletion requires exact ID/username/nickname/role, `isActive=false`, non-null `deletedAt`, and a strict `/api/users` readback. ACTIVE cleanup always uses VOID; draft deletion is limited to the exact Location-owned empty draft.
+- Evidence RED: the old formatter failed once migration checksum and explicit acceptance evidence became mandatory, and the old environment-shaped writer failed the new API. `--record` now probes Docker/Compose and the running healthy container/tag digest, reads Prisma status and exact DB/repository checksums, checks public health/HSTS, runs a fixed-target backup and independently recomputes its three checksums, then atomically publishes only all-PASS evidence. Fake-command tests cover real collection boundaries and prove missing Docker stops before acceptance; fake filesystem tests prove write/sync/close/rename order and prior-record preservation on rename failure.
+- WSS contract GREEN: `gameJoinAckSchema` is now the sole acknowledgement parser; the focused test rejects an otherwise plausible ack missing `version` and `snapshotSent`.
+- A later broad API pure-test invocation accidentally omitted `BASH_PATH`, so shell cases failed only with `spawnSync bash ENOENT`. No code changed for that result; rerunning the same 174-test pure group with the adjacent runtime Bash passed 173 with the single existing Windows `O_NOFOLLOW` skip.
+
 ## Verification
 
 All commands used Node 24.19.0 and pnpm 10.15.1. Prisma generation/type/build used only `mysql://build:build@127.0.0.1:3306/poker_scorekeeper_build`, which does not connect.
 
-- Task 19 focused suite: 19/19 passed.
+- Task 19 focused suite: 29/29 passed.
 - Production/database safety validation: 6/6 passed.
 - Production deployment artifact policy: 9/9 passed.
 - Real Bash entrypoint behavior/signal group: 3/3 passed.
 - `@poker/contracts`: 53/53 passed.
 - `@poker/settlement`: 14/14 passed.
 - `@poker/web`: 125/125 passed.
-- API pure unit/static/script group: 171 passed, one existing Windows-only `O_NOFOLLOW` test skipped.
+- API pure unit/static/script group: 173 passed, one existing Windows-only `O_NOFOLLOW` test skipped.
 - Root workspace `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - Direct ESLint for the new `.mjs` and Task 19 test files: passed.
 - `node --check` for both new Node scripts and Bash syntax for the entrypoint: passed.
@@ -80,4 +90,4 @@ Do not use the old password as a fallback. Do not infer any missing value. Until
 
 ## Review Handoff
 
-Review the entrypoint explicit-command routing and production-only preflight order first, then the grant interpretation, controlled-error redaction, HTTP-success cleanup state transitions, exact-ID cleanup, WebSocket-only join acknowledgement, strict record formatter, and runbook stop conditions. Independent reviewer dispatch was not performed here because the controller explicitly prohibited spawning subagents; the controller should arrange the required independent review before integration.
+Round-1 review findings are implemented and locally verified. Re-review the unconditional production entry target gate and isolated-test override; Location-first ownership under truncated bodies; shared contract and logical-delete readback checks; running-container digest/migration/health/backup evidence collection; atomic record publication; and complete WSS join acknowledgement. Independent reviewer dispatch remains the controller's responsibility because this worker was explicitly prohibited from spawning subagents.

@@ -62,7 +62,7 @@ AVATAR_ROOT=/data/avatars
 
 发布与恢复校验要求 Docker Compose 2.34.0 或更高版本；脚本在任何耗时测试前检查 CLI、daemon、Buildx 和 Compose 版本并失败关闭。该最低版本保证隔离恢复所用的 `docker compose run --env-from-file` 可用。
 
-命令行部署。`production-preflight.mjs` 只执行 `SELECT`、`SHOW GRANTS` 和会话级 `USE`；它固定拒绝除 `192.168.10.248:3306/poker_scorekeeper` 之外的目标。正式 Compose 设置 `PRODUCTION_TARGET_REQUIRED=1`，因此建库、显式迁移和正常启动都会在任何写入前重新运行同一门禁：
+命令行部署。`production-preflight.mjs` 只执行 `SELECT`、`SHOW GRANTS` 和会话级 `USE`；它固定拒绝除 `192.168.10.248:3306/poker_scorekeeper` 之外的目标。生产镜像入口无条件运行该门禁，不依赖可遗漏的环境开关；`create-database.mjs` 的验证与真实执行路径也都无条件固定目标。只有 `docker-compose.test.yml` 通过显式替换镜像入口运行内部隔离测试栈，生产镜像中没有测试 opt-out：
 
 ```sh
 docker compose config --quiet
@@ -101,7 +101,7 @@ chmod 600 .env.acceptance
 docker compose run --rm --env-from-file .env.acceptance app node scripts/verify-production.mjs
 ```
 
-脚本只创建一个临时普通用户和一个不含购买的空局，通过公开 HTTPS/WSS 完成登录、CSRF、强制改密、开局和房间加入，然后作废空局并逻辑删除临时用户；失败路径也只清理这两个由本轮返回 ID 标识的对象。它不会购买筹码或提交结算。如果脚本在强制改密后失败，重跑前必须把受保护验收文件中的当前密码更新为刚设置的新值，并再选择一个不同的新密码；禁止回退到已失效的初始值。脚本中的 Node WebSocket 客户端不能替代真实手机验收：仍须用手机通过公网 HTTPS 进入空局并确认观战者实时出现，之后才能记录最终验收时间。完成后安全删除 `.env.acceptance`，并按 [生产上线检查表](./production-checklist.md) 运行首次备份和生成无秘密的 [生产验证记录](./production-verification.md)。
+脚本只创建一个临时普通用户和一个不含购买的空局，通过公开 HTTPS/WSS 完成登录、CSRF、强制改密、开局和房间加入，然后作废空局并逻辑删除临时用户。创建响应必须同时提供可识别的 `Location` 与严格共享 contract；脚本会在读取 JSON 前记录本轮精确归属，响应截断也只清理该 ID。若成功创建却无法证明归属，脚本立即停止、不猜测 ID，并只输出不含 URL/凭据的 `acceptanceRunId` 与人工清理类型。它不会购买筹码或提交结算。如果脚本在强制改密后失败，重跑前必须把受保护验收文件中的当前密码更新为刚设置的新值，并再选择一个不同的新密码；禁止回退到已失效的初始值。脚本中的 Node WebSocket 客户端不能替代真实手机验收：仍须用手机通过公网 HTTPS 进入空局并确认观战者实时出现，之后才能记录最终验收时间。完成后安全删除 `.env.acceptance`，并按 [生产上线检查表](./production-checklist.md) 运行首次备份和生成无秘密的 [生产验证记录](./production-verification.md)。
 
 ## 5. 本地隔离容器烟测
 
@@ -138,6 +138,7 @@ docker compose -p poker17smoke -f docker-compose.test.yml down -v --remove-orpha
 先手动运行并检查：
 
 ```sh
+docker compose exec -T app node scripts/database/production-backup-target.mjs
 docker compose exec -T app /app/scripts/backup/backup.sh
 cat data/backups/latest-stamp
 ls -la data/backups
@@ -146,7 +147,7 @@ ls -la data/backups
 然后在 DSM“控制面板 → 任务计划”新增每日任务，工作目录设为项目目录，命令只写：
 
 ```sh
-docker compose exec -T app /app/scripts/backup/backup.sh
+docker compose exec -T app node scripts/database/production-backup-target.mjs && docker compose exec -T app /app/scripts/backup/backup.sh
 ```
 
 不要把密码附加到计划任务命令。应定期将 `data/backups` 加密复制到另一台设备或另一存储池；同盘备份不能防止磁盘或整机故障。
@@ -177,6 +178,7 @@ test "$(stat -c %a .env.restore)" = 600
 
 ```sh
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+docker compose exec -T app node scripts/database/production-backup-target.mjs
 docker compose exec -T app /app/scripts/backup/backup.sh
 docker image tag poker-scorekeeper:local "poker-scorekeeper:rollback-$STAMP"
 docker compose build --pull

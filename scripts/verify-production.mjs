@@ -1,17 +1,28 @@
 /* global AbortController, URL, clearTimeout, process, setTimeout */
 
-import { randomBytes, randomUUID } from 'node:crypto';
-import { writeFile } from 'node:fs/promises';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { pathToFileURL } from 'node:url';
 
 const requireFromWeb = createRequire(new URL('../apps/web/package.json', import.meta.url));
 const { io } = requireFromWeb('socket.io-client');
+const {
+  authSessionResponseSchema,
+  canonicalPublicIdSchema,
+  gameJoinAckSchema,
+  gameSnapshotSchema,
+  userResponseSchema,
+  usersResponseSchema
+} = requireFromWeb('@poker/contracts');
 const SESSION_COOKIE_NAME = 'poker_session';
 const REQUEST_TIMEOUT_MS = 10_000;
 
-function controlledError(code) {
-  return new Error(code);
+function controlledError(code, publicDetails) {
+  const error = new Error(code);
+  if (publicDetails !== undefined) error.publicDetails = publicDetails;
+  return error;
 }
 
 function isControlledError(error) {
@@ -51,13 +62,6 @@ function assertPassword(value, code) {
   if (value.length < 8 || value.length > 128) throw controlledError(code);
 }
 
-function safeIdentifier(value, code) {
-  if (typeof value !== 'string' || !/^[A-Za-z0-9-]{1,128}$/.test(value)) {
-    throw controlledError(code);
-  }
-  return value;
-}
-
 function sessionCookie(response) {
   const values = typeof response.headers.getSetCookie === 'function'
     ? response.headers.getSetCookie()
@@ -79,6 +83,13 @@ async function responseJson(response, code) {
   } catch {
     throw controlledError(code);
   }
+}
+
+async function strictResponse(response, schema, code) {
+  const body = await responseJson(response, code);
+  const parsed = schema.safeParse(body);
+  if (!parsed.success) throw controlledError(code);
+  return parsed.data;
 }
 
 async function timedFetch(fetchImpl, input, init, code) {
@@ -110,7 +121,7 @@ async function healthCheck(origin, fetchImpl) {
   if (!response.headers.get('strict-transport-security')) throw controlledError('HSTS_MISSING');
 }
 
-async function apiRequest(origin, fetchImpl, path, options) {
+async function apiResponse(origin, fetchImpl, path, options) {
   const headers = { Accept: 'application/json' };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   if (options.auth !== undefined) {
@@ -125,7 +136,32 @@ async function apiRequest(origin, fetchImpl, path, options) {
   if (response.status !== options.expectedStatus) {
     throw statusError(options.errorPrefix, response.status);
   }
-  return responseJson(response, `${options.errorPrefix}_RESPONSE_INVALID`);
+  return response;
+}
+
+async function apiRequest(origin, fetchImpl, path, options) {
+  const response = await apiResponse(origin, fetchImpl, path, options);
+  return strictResponse(response, options.schema, `${options.errorPrefix}_RESPONSE_INVALID`);
+}
+
+function ownedLocation(response, origin, collectionPath, code) {
+  const value = response.headers.get('location');
+  let location;
+  try {
+    location = new URL(value, origin);
+  } catch {
+    throw controlledError(code);
+  }
+  const prefix = `${collectionPath}/`;
+  const parsedId = canonicalPublicIdSchema.safeParse(location.pathname.slice(prefix.length));
+  if (
+    value === null || location.origin !== origin.origin ||
+    !location.pathname.startsWith(prefix) || location.pathname.slice(prefix.length).includes('/') ||
+    location.search !== '' || location.hash !== '' || !parsedId.success
+  ) {
+    throw controlledError(code);
+  }
+  return parsedId.data;
 }
 
 export async function joinProductionSpectator(
@@ -166,12 +202,8 @@ export async function joinProductionSpectator(
           return;
         }
         socket.emit('game.join', { gameId, knownVersion: 0 }, (acknowledgement) => {
-          if (
-            typeof acknowledgement !== 'object' ||
-            acknowledgement === null ||
-            acknowledgement.ok !== true ||
-            acknowledgement.gameId !== gameId
-          ) {
+          const parsed = gameJoinAckSchema.safeParse(acknowledgement);
+          if (!parsed.success || !parsed.data.ok || parsed.data.gameId !== gameId) {
             finish(controlledError('PUBLIC_WSS_JOIN_FAILED'));
             return;
           }
@@ -201,6 +233,71 @@ function acceptanceDependencies(overrides) {
   };
 }
 
+function ownershipFailure(code, runId, resources) {
+  return controlledError(code, {
+    manualCleanupRequired: true,
+    acceptanceRunId: runId,
+    resources
+  });
+}
+
+function assertOwnedUser(user, expected, deleted, code) {
+  if (
+    user.id !== expected.id || user.username !== expected.username ||
+    user.nickname !== expected.nickname || user.role !== 'USER' ||
+    user.rakeEnabled !== false || user.isActive !== !deleted ||
+    (deleted ? user.deletedAt === null : user.deletedAt !== null)
+  ) {
+    throw controlledError(code);
+  }
+}
+
+function assertOwnedGame(game, expected, status, code) {
+  if (
+    game.id !== expected.id || game.name !== expected.name || game.status !== status ||
+    game.handPrice !== '300' || game.rakeEnabled !== false ||
+    game.players.length !== 0 || game.purchases.length !== 0 || game.spectators.length !== 0
+  ) {
+    throw controlledError(code);
+  }
+}
+
+async function assertDeletedUserReadback(origin, fetchImpl, auth, expected, errorPrefix) {
+  const listed = await apiRequest(origin, fetchImpl, '/api/users', {
+    method: 'GET',
+    expectedStatus: 200,
+    errorPrefix,
+    auth,
+    schema: usersResponseSchema.strict()
+  });
+  const user = listed.users.find(({ id }) => id === expected.id);
+  if (user === undefined) throw controlledError(`${errorPrefix}_RESPONSE_INVALID`);
+  assertOwnedUser(user, expected, true, `${errorPrefix}_RESPONSE_INVALID`);
+}
+
+async function deleteOwnedUser(origin, fetchImpl, auth, expected, errorPrefix, onCommitted) {
+  const response = await apiResponse(origin, fetchImpl, `/api/users/${expected.id}`, {
+    method: 'DELETE',
+    expectedStatus: 200,
+    errorPrefix,
+    auth
+  });
+  onCommitted();
+  let responseError;
+  try {
+    const deleted = await strictResponse(
+      response,
+      userResponseSchema.strict(),
+      `${errorPrefix}_RESPONSE_INVALID`
+    );
+    assertOwnedUser(deleted, expected, true, `${errorPrefix}_RESPONSE_INVALID`);
+  } catch (error) {
+    responseError = error;
+  }
+  await assertDeletedUserReadback(origin, fetchImpl, auth, expected, `${errorPrefix}_READBACK_FAILED`);
+  if (responseError !== undefined) throw responseError;
+}
+
 export async function runProductionAcceptance(environment, overrides = {}) {
   const origin = assertPublicOrigin(requiredEnvironment(environment, 'PUBLIC_ORIGIN'));
   const username = requiredEnvironment(environment, 'BOOTSTRAP_ADMIN_USERNAME');
@@ -218,9 +315,13 @@ export async function runProductionAcceptance(environment, overrides = {}) {
   assertPassword(temporaryPassword, 'PRODUCTION_TEMPORARY_PASSWORD_INVALID');
 
   let auth;
-  let temporaryUserId;
-  let temporaryUserDeleted = false;
-  let gameId;
+  const temporaryUser = {
+    id: undefined,
+    username: `accept-${runId}`,
+    nickname: `验收-${runId}`
+  };
+  const ownedGame = { id: undefined, name: `生产验收-${runId}` };
+  let temporaryUserDeleteCommitted = false;
   let gameState;
   let primaryError;
   let cleanupError;
@@ -235,12 +336,12 @@ export async function runProductionAcceptance(environment, overrides = {}) {
       body: JSON.stringify({ username, password: currentPassword })
     }, 'PRODUCTION_LOGIN_FAILED_0');
     if (loginResponse.status !== 201) throw statusError('PRODUCTION_LOGIN_FAILED', loginResponse.status);
-    const login = await responseJson(loginResponse, 'PRODUCTION_LOGIN_RESPONSE_INVALID');
-    if (
-      login.user?.role !== 'SUPER_ADMIN' ||
-      typeof login.csrfToken !== 'string' ||
-      !/^[a-f0-9]{64}$/.test(login.csrfToken)
-    ) {
+    const login = await strictResponse(
+      loginResponse,
+      authSessionResponseSchema.strict(),
+      'PRODUCTION_LOGIN_RESPONSE_INVALID'
+    );
+    if (login.user.role !== 'SUPER_ADMIN' || login.user.username !== username) {
       throw controlledError('PRODUCTION_LOGIN_RESPONSE_INVALID');
     }
     auth = { cookie: sessionCookie(loginResponse), csrfToken: login.csrfToken };
@@ -250,48 +351,82 @@ export async function runProductionAcceptance(environment, overrides = {}) {
       expectedStatus: 200,
       errorPrefix: 'PRODUCTION_PASSWORD_CHANGE_FAILED',
       auth,
-      body: { currentPassword, newPassword }
+      body: { currentPassword, newPassword },
+      schema: authSessionResponseSchema.strict()
     });
-    if (passwordChange.user?.mustChangePassword !== false) {
+    if (
+      passwordChange.user.mustChangePassword !== false ||
+      passwordChange.user.id !== login.user.id ||
+      passwordChange.user.username !== username ||
+      passwordChange.user.nickname !== login.user.nickname ||
+      passwordChange.user.role !== 'SUPER_ADMIN' ||
+      passwordChange.csrfToken !== auth.csrfToken
+    ) {
       throw controlledError('PRODUCTION_PASSWORD_CHANGE_RESPONSE_INVALID');
     }
 
-    const createdUser = await apiRequest(origin, dependencies.fetchImpl, '/api/users', {
+    const createdUserResponse = await apiResponse(origin, dependencies.fetchImpl, '/api/users', {
       method: 'POST',
       expectedStatus: 201,
       errorPrefix: 'PRODUCTION_USER_CREATE_FAILED',
       auth,
       body: {
-        username: `accept-${runId}`,
-        nickname: `验收-${runId}`,
+        username: temporaryUser.username,
+        nickname: temporaryUser.nickname,
         initialPassword: temporaryPassword,
         role: 'USER',
         rakeEnabled: false
       }
     });
-    temporaryUserId = safeIdentifier(createdUser.id, 'PRODUCTION_USER_CREATE_RESPONSE_INVALID');
+    try {
+      temporaryUser.id = ownedLocation(
+        createdUserResponse,
+        origin,
+        '/api/users',
+        'PRODUCTION_USER_OWNERSHIP_UNCONFIRMED'
+      );
+    } catch {
+      throw ownershipFailure('PRODUCTION_USER_OWNERSHIP_UNCONFIRMED', runId, ['TEMPORARY_USER']);
+    }
+    const createdUser = await strictResponse(
+      createdUserResponse,
+      userResponseSchema.strict(),
+      'PRODUCTION_USER_CREATE_RESPONSE_INVALID'
+    );
+    assertOwnedUser(createdUser, temporaryUser, false, 'PRODUCTION_USER_CREATE_RESPONSE_INVALID');
+    if (createdUser.mustChangePassword !== true) {
+      throw controlledError('PRODUCTION_USER_CREATE_RESPONSE_INVALID');
+    }
 
-    const createdGame = await apiRequest(origin, dependencies.fetchImpl, '/api/games', {
+    const createdGameResponse = await apiResponse(origin, dependencies.fetchImpl, '/api/games', {
       method: 'POST',
       expectedStatus: 201,
       errorPrefix: 'PRODUCTION_GAME_CREATE_FAILED',
       auth,
-      body: { name: `生产验收-${runId}`, handPrice: '300', rakeEnabled: false }
+      body: { name: ownedGame.name, handPrice: '300', rakeEnabled: false }
     });
-    gameId = safeIdentifier(createdGame.id, 'PRODUCTION_GAME_CREATE_RESPONSE_INVALID');
-    gameState = 'DRAFT';
-    if (
-      createdGame.status !== 'DRAFT' ||
-      !Array.isArray(createdGame.players) || createdGame.players.length !== 0 ||
-      !Array.isArray(createdGame.purchases) || createdGame.purchases.length !== 0
-    ) {
-      throw controlledError('PRODUCTION_ACCEPTANCE_GAME_NOT_EMPTY');
+    try {
+      ownedGame.id = ownedLocation(
+        createdGameResponse,
+        origin,
+        '/api/games',
+        'PRODUCTION_GAME_OWNERSHIP_UNCONFIRMED'
+      );
+    } catch {
+      throw ownershipFailure('PRODUCTION_GAME_OWNERSHIP_UNCONFIRMED', runId, ['EMPTY_GAME']);
     }
+    gameState = 'DRAFT';
+    const createdGame = await strictResponse(
+      createdGameResponse,
+      gameSnapshotSchema.strict(),
+      'PRODUCTION_GAME_CREATE_RESPONSE_INVALID'
+    );
+    assertOwnedGame(createdGame, ownedGame, 'DRAFT', 'PRODUCTION_GAME_CREATE_RESPONSE_INVALID');
 
-    const startedGame = await apiRequest(
+    const startedGameResponse = await apiResponse(
       origin,
       dependencies.fetchImpl,
-      `/api/games/${gameId}/start`,
+      `/api/games/${ownedGame.id}/start`,
       {
         method: 'POST',
         expectedStatus: 200,
@@ -300,24 +435,26 @@ export async function runProductionAcceptance(environment, overrides = {}) {
       }
     );
     gameState = 'ACTIVE';
-    if (
-      startedGame.status !== 'ACTIVE' ||
-      !Array.isArray(startedGame.players) || startedGame.players.length !== 0 ||
-      !Array.isArray(startedGame.purchases) || startedGame.purchases.length !== 0
-    ) {
-      throw controlledError('PRODUCTION_ACCEPTANCE_GAME_NOT_EMPTY');
+    const startedGame = await strictResponse(
+      startedGameResponse,
+      gameSnapshotSchema.strict(),
+      'PRODUCTION_GAME_START_RESPONSE_INVALID'
+    );
+    assertOwnedGame(startedGame, ownedGame, 'ACTIVE', 'PRODUCTION_GAME_START_RESPONSE_INVALID');
+    if (startedGame.version !== createdGame.version + 1) {
+      throw controlledError('PRODUCTION_GAME_START_RESPONSE_INVALID');
     }
 
     try {
-      await dependencies.verifySpectator(origin, auth.cookie, gameId);
+      await dependencies.verifySpectator(origin, auth.cookie, ownedGame.id);
     } catch {
       throw controlledError('PUBLIC_WSS_FAILED');
     }
 
-    const voidedGame = await apiRequest(
+    const voidedGameResponse = await apiResponse(
       origin,
       dependencies.fetchImpl,
-      `/api/games/${gameId}/void`,
+      `/api/games/${ownedGame.id}/void`,
       {
         method: 'POST',
         expectedStatus: 200,
@@ -326,19 +463,27 @@ export async function runProductionAcceptance(environment, overrides = {}) {
       }
     );
     gameState = 'VOIDED';
-    if (voidedGame.status !== 'VOIDED') {
+    const voidedGame = await strictResponse(
+      voidedGameResponse,
+      gameSnapshotSchema.strict(),
+      'PRODUCTION_GAME_VOID_RESPONSE_INVALID'
+    );
+    assertOwnedGame(voidedGame, ownedGame, 'VOIDED', 'PRODUCTION_GAME_VOID_RESPONSE_INVALID');
+    if (voidedGame.version !== startedGame.version + 1) {
       throw controlledError('PRODUCTION_GAME_VOID_RESPONSE_INVALID');
     }
 
-    await apiRequest(origin, dependencies.fetchImpl, `/api/users/${temporaryUserId}`, {
-      method: 'DELETE',
-      expectedStatus: 200,
-      errorPrefix: 'PRODUCTION_USER_DELETE_FAILED',
-      auth
-    });
-    temporaryUserDeleted = true;
+    await deleteOwnedUser(
+      origin,
+      dependencies.fetchImpl,
+      auth,
+      temporaryUser,
+      'PRODUCTION_USER_DELETE_FAILED',
+      () => { temporaryUserDeleteCommitted = true; }
+    );
 
     report = {
+      acceptanceResult: 'PASS',
       healthResult: 'PASS',
       loginResult: 'PASS',
       csrfResult: 'PASS',
@@ -355,18 +500,29 @@ export async function runProductionAcceptance(environment, overrides = {}) {
       ? error
       : controlledError('PRODUCTION_ACCEPTANCE_FAILED');
   } finally {
-    if (auth !== undefined && gameId !== undefined) {
+    if (auth !== undefined && ownedGame.id !== undefined) {
       try {
         if (gameState === 'ACTIVE') {
-          await apiRequest(origin, dependencies.fetchImpl, `/api/games/${gameId}/void`, {
+          const response = await apiResponse(origin, dependencies.fetchImpl, `/api/games/${ownedGame.id}/void`, {
             method: 'POST',
             expectedStatus: 200,
             errorPrefix: 'PRODUCTION_CLEANUP_GAME_VOID_FAILED',
             auth
           });
           gameState = 'VOIDED';
+          const voided = await strictResponse(
+            response,
+            gameSnapshotSchema.strict(),
+            'PRODUCTION_CLEANUP_GAME_VOID_FAILED_RESPONSE_INVALID'
+          );
+          assertOwnedGame(
+            voided,
+            ownedGame,
+            'VOIDED',
+            'PRODUCTION_CLEANUP_GAME_VOID_FAILED_RESPONSE_INVALID'
+          );
         } else if (gameState === 'DRAFT') {
-          await apiRequest(origin, dependencies.fetchImpl, `/api/games/${gameId}/draft`, {
+          await apiResponse(origin, dependencies.fetchImpl, `/api/games/${ownedGame.id}/draft`, {
             method: 'DELETE',
             expectedStatus: 204,
             errorPrefix: 'PRODUCTION_CLEANUP_GAME_DELETE_FAILED',
@@ -380,15 +536,16 @@ export async function runProductionAcceptance(environment, overrides = {}) {
           : controlledError('PRODUCTION_ACCEPTANCE_CLEANUP_FAILED');
       }
     }
-    if (auth !== undefined && temporaryUserId !== undefined && !temporaryUserDeleted) {
+    if (auth !== undefined && temporaryUser.id !== undefined && !temporaryUserDeleteCommitted) {
       try {
-        await apiRequest(origin, dependencies.fetchImpl, `/api/users/${temporaryUserId}`, {
-          method: 'DELETE',
-          expectedStatus: 200,
-          errorPrefix: 'PRODUCTION_CLEANUP_USER_DELETE_FAILED',
-          auth
-        });
-        temporaryUserDeleted = true;
+        await deleteOwnedUser(
+          origin,
+          dependencies.fetchImpl,
+          auth,
+          temporaryUser,
+          'PRODUCTION_CLEANUP_USER_DELETE_FAILED',
+          () => { temporaryUserDeleteCommitted = true; }
+        );
       } catch (error) {
         if (cleanupError === undefined) {
           cleanupError = isControlledError(error)
@@ -409,6 +566,256 @@ function assertRecordValue(value, pattern, code) {
   return value;
 }
 
+function assertPass(value, code) {
+  if (value !== 'PASS') throw controlledError(code);
+  return value;
+}
+
+function parseUtcTimestamp(value, code) {
+  assertRecordValue(value, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/, code);
+  if (new Date(value).toISOString() !== value) throw controlledError(code);
+  return value;
+}
+
+export async function collectRepositoryMigrationEvidence(
+  migrationsRoot = new URL('../apps/api/prisma/migrations/', import.meta.url)
+) {
+  const entries = await readdir(migrationsRoot, { withFileTypes: true });
+  const migrations = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !/^\d{14}_[a-z0-9_]+$/.test(entry.name)) continue;
+    const sql = await readFile(new URL(`${entry.name}/migration.sql`, migrationsRoot));
+    migrations.push({
+      name: entry.name,
+      checksum: createHash('sha256').update(sql).digest('hex')
+    });
+  }
+  migrations.sort((left, right) => left.name.localeCompare(right.name));
+  if (migrations.length === 0) throw controlledError('PRODUCTION_MIGRATION_REPOSITORY_EMPTY');
+  return migrations;
+}
+
+function defaultRunCommand(command, arguments_) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, arguments_, {
+      shell: false,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => { stdout += chunk; });
+    child.stderr.on('data', (chunk) => { stderr += chunk; });
+    child.once('error', reject);
+    child.once('close', (exitCode) => resolve({ exitCode, stdout, stderr }));
+  });
+}
+
+async function checkedCommand(runCommand, arguments_, code) {
+  let result;
+  try {
+    result = await runCommand('docker', arguments_);
+  } catch {
+    throw controlledError(code);
+  }
+  if (
+    typeof result !== 'object' || result === null || result.exitCode !== 0 ||
+    typeof result.stdout !== 'string' || typeof result.stderr !== 'string'
+  ) {
+    throw controlledError(code);
+  }
+  return result.stdout.trim();
+}
+
+function versionAtLeast(value, required) {
+  const parsed = /^(\d+)\.(\d+)\.(\d+)(?:[-+].*)?$/.exec(value);
+  if (parsed === null) return false;
+  const actual = parsed.slice(1, 4).map(Number);
+  for (let index = 0; index < required.length; index += 1) {
+    if (actual[index] !== required[index]) return actual[index] > required[index];
+  }
+  return true;
+}
+
+async function probeDocker(runCommand) {
+  const engine = await checkedCommand(
+    runCommand,
+    ['version', '--format', '{{.Server.Version}}'],
+    'PRODUCTION_DOCKER_UNAVAILABLE'
+  );
+  if (!versionAtLeast(engine, [1, 0, 0])) throw controlledError('PRODUCTION_DOCKER_UNAVAILABLE');
+  const compose = await checkedCommand(
+    runCommand,
+    ['compose', 'version', '--short'],
+    'PRODUCTION_COMPOSE_UNAVAILABLE'
+  );
+  if (!versionAtLeast(compose, [2, 34, 0])) throw controlledError('PRODUCTION_COMPOSE_TOO_OLD');
+}
+
+function parseMigrationRows(output) {
+  let payload;
+  try {
+    payload = JSON.parse(output);
+  } catch {
+    throw controlledError('PRODUCTION_MIGRATION_EVIDENCE_INVALID');
+  }
+  if (!Array.isArray(payload?.migrations)) {
+    throw controlledError('PRODUCTION_MIGRATION_EVIDENCE_INVALID');
+  }
+  return payload.migrations.map((migration) => {
+    if (
+      typeof migration !== 'object' || migration === null ||
+      typeof migration.name !== 'string' || !/^\d{14}_[a-z0-9_]+$/.test(migration.name) ||
+      typeof migration.checksum !== 'string' || !/^[a-f0-9]{64}$/.test(migration.checksum)
+    ) {
+      throw controlledError('PRODUCTION_MIGRATION_EVIDENCE_INVALID');
+    }
+    return { name: migration.name, checksum: migration.checksum };
+  });
+}
+
+function parseChecksumRows(output, expectedNames, code) {
+  const rows = output.trim().split(/\r?\n/).map((line) => {
+    const match = /^([a-f0-9]{64}) {2}([A-Za-z0-9_.-]+)$/.exec(line);
+    if (match === null || !expectedNames.has(match[2])) throw controlledError(code);
+    return { name: match[2], sha256: match[1] };
+  });
+  if (rows.length !== expectedNames.size || new Set(rows.map(({ name }) => name)).size !== rows.length) {
+    throw controlledError(code);
+  }
+  return rows;
+}
+
+function assertAcceptanceEvidence(report) {
+  if (typeof report !== 'object' || report === null) {
+    throw controlledError('PRODUCTION_RECORD_ACCEPTANCE_INVALID');
+  }
+  for (const key of [
+    'acceptanceResult', 'healthResult', 'loginResult', 'csrfResult',
+    'passwordChangeResult', 'userCreationResult', 'gameStartResult',
+    'websocketPresenceResult', 'gameVoidResult', 'userLogicalDeleteResult'
+  ]) {
+    assertPass(report[key], 'PRODUCTION_RECORD_ACCEPTANCE_INVALID');
+  }
+  return parseUtcTimestamp(report.acceptanceTimestamp, 'PRODUCTION_RECORD_TIMESTAMP_INVALID');
+}
+
+export async function runProductionVerification(environment, overrides = {}) {
+  const runCommand = overrides.runCommand ?? defaultRunCommand;
+  await probeDocker(runCommand);
+
+  const taggedImageDigest = await checkedCommand(
+    runCommand,
+    ['image', 'inspect', 'poker-scorekeeper:local', '--format', '{{.Id}}'],
+    'PRODUCTION_IMAGE_INSPECT_FAILED'
+  );
+  assertRecordValue(
+    taggedImageDigest,
+    /^sha256:[a-f0-9]{64}$/,
+    'PRODUCTION_RECORD_IMAGE_DIGEST_INVALID'
+  );
+  const containerId = await checkedCommand(
+    runCommand,
+    ['compose', 'ps', '-q', 'app'],
+    'PRODUCTION_CONTAINER_INSPECT_FAILED'
+  );
+  assertRecordValue(
+    containerId,
+    /^[a-f0-9]{12,64}$/,
+    'PRODUCTION_CONTAINER_INSPECT_FAILED'
+  );
+  const runtime = await checkedCommand(
+    runCommand,
+    ['inspect', containerId, '--format',
+      '{{.Image}} {{.State.Status}} {{if .State.Health}}{{.State.Health.Status}}{{end}}'],
+    'PRODUCTION_CONTAINER_INSPECT_FAILED'
+  );
+  const runtimeMatch = /^(sha256:[a-f0-9]{64}) running healthy$/.exec(runtime);
+  if (runtimeMatch === null || runtimeMatch[1] !== taggedImageDigest) {
+    throw controlledError('PRODUCTION_CONTAINER_IMAGE_MISMATCH');
+  }
+  const imageDigest = runtimeMatch[1];
+
+  const migrationStatus = await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'pnpm', '--dir', 'apps/api', 'exec', 'prisma', 'migrate', 'status'],
+    'PRODUCTION_MIGRATION_STATUS_FAILED'
+  );
+  if (!migrationStatus.includes('Database schema is up to date')) {
+    throw controlledError('PRODUCTION_MIGRATION_STATUS_INVALID');
+  }
+  const appliedMigrations = parseMigrationRows(await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'node', 'scripts/database/production-migration-evidence.mjs'],
+    'PRODUCTION_MIGRATION_EVIDENCE_FAILED'
+  ));
+  const repositoryMigrations = await (overrides.repositoryMigrations ?? collectRepositoryMigrationEvidence)();
+  if (JSON.stringify(appliedMigrations) !== JSON.stringify(repositoryMigrations)) {
+    throw controlledError('PRODUCTION_MIGRATION_CHECKSUM_MISMATCH');
+  }
+  const lastMigration = repositoryMigrations.at(-1);
+
+  const origin = assertPublicOrigin(requiredEnvironment(environment, 'PUBLIC_ORIGIN'));
+  await healthCheck(origin, overrides.fetchImpl ?? globalThis.fetch);
+
+  const acceptance = await (overrides.acceptanceRunner ?? runProductionAcceptance)(
+    environment,
+    overrides.acceptanceOverrides ?? {}
+  );
+  const acceptanceTimestamp = assertAcceptanceEvidence(acceptance);
+
+  await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'node', 'scripts/database/production-backup-target.mjs'],
+    'PRODUCTION_BACKUP_TARGET_INVALID'
+  );
+  await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'sh', 'scripts/backup/backup.sh'],
+    'PRODUCTION_BACKUP_FAILED'
+  );
+  const backupStamp = await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'cat', '/data/backups/latest-stamp'],
+    'PRODUCTION_BACKUP_STAMP_FAILED'
+  );
+  assertRecordValue(backupStamp, /^\d{8}T\d{6}Z$/, 'PRODUCTION_RECORD_BACKUP_STAMP_INVALID');
+  const expectedNames = new Set([
+    `mysql-${backupStamp}.sql.gz`,
+    `avatars-${backupStamp}.tar.gz`,
+    `manifest-${backupStamp}.txt`
+  ]);
+  const recordedChecksums = parseChecksumRows(await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'cat', `/data/backups/checksums-${backupStamp}.txt`],
+    'PRODUCTION_BACKUP_CHECKSUM_FAILED'
+  ), expectedNames, 'PRODUCTION_BACKUP_CHECKSUM_INVALID');
+  const recomputedChecksums = parseChecksumRows(await checkedCommand(
+    runCommand,
+    ['compose', 'exec', '-T', 'app', 'sh', '-c',
+      `cd /data/backups && sha256sum mysql-${backupStamp}.sql.gz avatars-${backupStamp}.tar.gz manifest-${backupStamp}.txt`],
+    'PRODUCTION_BACKUP_RECHECK_FAILED'
+  ), expectedNames, 'PRODUCTION_BACKUP_RECHECK_INVALID');
+  if (JSON.stringify(recordedChecksums) !== JSON.stringify(recomputedChecksums)) {
+    throw controlledError('PRODUCTION_BACKUP_CHECKSUM_MISMATCH');
+  }
+
+  return {
+    imageDigest,
+    migrationVersion: lastMigration.name,
+    migrationChecksum: lastMigration.checksum,
+    migrationResult: 'PASS',
+    healthResult: 'PASS',
+    backupResult: 'PASS',
+    acceptanceResult: 'PASS',
+    backupStamp,
+    backupFiles: recordedChecksums,
+    acceptanceTimestamp
+  };
+}
+
 export function formatProductionVerificationRecord(evidence) {
   const imageDigest = assertRecordValue(
     evidence.imageDigest,
@@ -420,29 +827,27 @@ export function formatProductionVerificationRecord(evidence) {
     /^\d{14}_[a-z0-9_]+$/,
     'PRODUCTION_RECORD_MIGRATION_INVALID'
   );
-  const healthResult = assertRecordValue(
-    evidence.healthResult,
-    /^(?:PASS|FAIL)$/,
-    'PRODUCTION_RECORD_HEALTH_INVALID'
+  const migrationChecksum = assertRecordValue(
+    evidence.migrationChecksum,
+    /^[a-f0-9]{64}$/,
+    'PRODUCTION_RECORD_MIGRATION_CHECKSUM_INVALID'
   );
-  const backupResult = assertRecordValue(
-    evidence.backupResult,
-    /^(?:PASS|FAIL)$/,
-    'PRODUCTION_RECORD_BACKUP_INVALID'
+  const migrationResult = assertPass(evidence.migrationResult, 'PRODUCTION_RECORD_MIGRATION_INVALID');
+  const healthResult = assertPass(evidence.healthResult, 'PRODUCTION_RECORD_HEALTH_INVALID');
+  const backupResult = assertPass(evidence.backupResult, 'PRODUCTION_RECORD_BACKUP_INVALID');
+  const acceptanceResult = assertPass(
+    evidence.acceptanceResult,
+    'PRODUCTION_RECORD_ACCEPTANCE_INVALID'
   );
   const backupStamp = assertRecordValue(
     evidence.backupStamp,
     /^\d{8}T\d{6}Z$/,
     'PRODUCTION_RECORD_BACKUP_STAMP_INVALID'
   );
-  const acceptanceTimestamp = assertRecordValue(
+  const acceptanceTimestamp = parseUtcTimestamp(
     evidence.acceptanceTimestamp,
-    /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/,
     'PRODUCTION_RECORD_TIMESTAMP_INVALID'
   );
-  if (new Date(acceptanceTimestamp).toISOString() !== acceptanceTimestamp) {
-    throw controlledError('PRODUCTION_RECORD_TIMESTAMP_INVALID');
-  }
   if (!Array.isArray(evidence.backupFiles) || evidence.backupFiles.length !== 3) {
     throw controlledError('PRODUCTION_RECORD_BACKUP_FILES_INVALID');
   }
@@ -470,10 +875,12 @@ export function formatProductionVerificationRecord(evidence) {
     '|---|---|',
     `| health | ${healthResult} |`,
     `| backup | ${backupResult} |`,
-    '| acceptance | PASS |',
+    `| acceptance | ${acceptanceResult} |`,
+    `| migration | ${migrationResult} |`,
     `| acceptance timestamp | ${acceptanceTimestamp} |`,
     `| image digest | ${imageDigest} |`,
     `| migration version | ${migrationVersion} |`,
+    `| migration checksum | ${migrationChecksum} |`,
     '',
     '| Backup file | SHA-256 |',
     '|---|---|',
@@ -483,41 +890,44 @@ export function formatProductionVerificationRecord(evidence) {
 }
 
 export async function writeProductionVerificationRecord(
-  environment,
-  writeFileImpl = writeFile
+  evidence,
+  overrides = {}
 ) {
-  const backupStamp = requiredEnvironment(environment, 'PRODUCTION_BACKUP_STAMP');
-  const contents = formatProductionVerificationRecord({
-    imageDigest: requiredEnvironment(environment, 'PRODUCTION_IMAGE_DIGEST'),
-    migrationVersion: requiredEnvironment(environment, 'PRODUCTION_MIGRATION_VERSION'),
-    healthResult: requiredEnvironment(environment, 'PRODUCTION_HEALTH_RESULT'),
-    backupResult: requiredEnvironment(environment, 'PRODUCTION_BACKUP_RESULT'),
-    backupStamp,
-    backupFiles: [
-      {
-        name: `mysql-${backupStamp}.sql.gz`,
-        sha256: requiredEnvironment(environment, 'PRODUCTION_BACKUP_MYSQL_SHA256')
-      },
-      {
-        name: `avatars-${backupStamp}.tar.gz`,
-        sha256: requiredEnvironment(environment, 'PRODUCTION_BACKUP_AVATARS_SHA256')
-      },
-      {
-        name: `manifest-${backupStamp}.txt`,
-        sha256: requiredEnvironment(environment, 'PRODUCTION_BACKUP_MANIFEST_SHA256')
-      }
-    ],
-    acceptanceTimestamp: requiredEnvironment(environment, 'PRODUCTION_ACCEPTANCE_TIMESTAMP')
-  });
-  await writeFileImpl(
-    new URL('../docs/deployment/production-verification.md', import.meta.url),
-    contents,
-    'utf8'
+  const contents = formatProductionVerificationRecord(evidence);
+  const target = new URL('../docs/deployment/production-verification.md', import.meta.url);
+  const temp = new URL(
+    `production-verification.${process.pid}.${(overrides.randomId ?? randomUUID)()}.tmp`,
+    target
   );
+  const openImpl = overrides.openImpl ?? open;
+  const renameImpl = overrides.renameImpl ?? rename;
+  const rmImpl = overrides.rmImpl ?? rm;
+  let handle;
+  let published = false;
+  try {
+    handle = await openImpl(temp, 'wx', 0o600);
+    await handle.writeFile(contents, 'utf8');
+    await handle.sync();
+    await handle.close();
+    handle = undefined;
+    await renameImpl(temp, target);
+    published = true;
+  } catch {
+    throw controlledError('PRODUCTION_RECORD_WRITE_FAILED');
+  } finally {
+    if (handle !== undefined) await handle.close().catch(() => undefined);
+    if (!published) await rmImpl(temp, { force: true }).catch(() => undefined);
+  }
 }
 
 function publicErrorCode(error) {
   return isControlledError(error) ? error.message : 'PRODUCTION_ACCEPTANCE_FAILED';
+}
+
+function publicErrorOutput(error) {
+  const code = publicErrorCode(error);
+  if (typeof error?.publicDetails !== 'object' || error.publicDetails === null) return code;
+  return JSON.stringify({ code, ...error.publicDetails });
 }
 
 if (
@@ -527,7 +937,8 @@ if (
   try {
     const arguments_ = process.argv.slice(2);
     if (arguments_.length === 1 && arguments_[0] === '--record') {
-      await writeProductionVerificationRecord(process.env);
+      const evidence = await runProductionVerification(process.env);
+      await writeProductionVerificationRecord(evidence);
       process.stdout.write('production verification record written\n');
     } else if (arguments_.length === 0) {
       const report = await runProductionAcceptance(process.env);
@@ -536,7 +947,7 @@ if (
       throw controlledError('PRODUCTION_ARGUMENT_INVALID');
     }
   } catch (error) {
-    process.stderr.write(`${publicErrorCode(error)}\n`);
+    process.stderr.write(`${publicErrorOutput(error)}\n`);
     process.exitCode = 1;
   }
 }

@@ -2,7 +2,7 @@ import mariadb from 'mariadb';
 import { assertProductionTarget } from './production-preflight.mjs';
 
 const databaseUrl = process.env.DATABASE_URL ?? '';
-if (process.env.NODE_ENV === 'production') assertProductionTarget(databaseUrl);
+assertProductionTarget(databaseUrl);
 const url = new URL(databaseUrl);
 const database = url.pathname.slice(1);
 

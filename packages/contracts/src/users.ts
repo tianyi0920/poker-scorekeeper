@@ -39,8 +39,13 @@ export const userResponseSchema = z.object({
   updatedAt: z.coerce.date()
 });
 
+export const usersResponseSchema = z.object({
+  users: z.array(userResponseSchema)
+});
+
 export type CreateUserRequest = z.infer<typeof createUserSchema>;
 export type UpdateUserRequest = z.infer<typeof updateUserSchema>;
 export type ResetUserPasswordRequest = z.infer<typeof resetUserPasswordSchema>;
 export type RestoreUserRequest = z.infer<typeof restoreUserSchema>;
 export type UserResponse = z.infer<typeof userResponseSchema>;
+export type UsersResponse = z.infer<typeof usersResponseSchema>;

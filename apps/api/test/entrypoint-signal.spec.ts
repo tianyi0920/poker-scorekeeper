@@ -29,18 +29,23 @@ describe('container entrypoint signal forwarding', () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it('executes an explicit one-off command without running migrations or starting the API', async () => {
-    // Break caught: docker compose run preflight mutates the database before the guard can execute.
+  it('preflights the fixed production target before an explicit one-off command', async () => {
+    // Break caught: an explicit command bypasses target validation and can write to the wrong database.
     const bin = join(root, 'bin');
     await mkdir(bin);
     const migrationStarted = join(root, 'migration.started');
     const apiStarted = join(root, 'api.started');
     const commandResult = join(root, 'command.result');
+    const preflightResult = join(root, 'preflight.result');
     await executable(join(bin, 'pnpm'), `#!/bin/sh
 printf '%s\n' started > "$MIGRATION_STARTED_FILE"
 exit 90
 `);
     await executable(join(bin, 'node'), `#!/bin/sh
+if [ "\${1:-}" = 'scripts/database/production-preflight.mjs' ]; then
+  printf '%s\n' checked > "$PREFLIGHT_RESULT_FILE"
+  exit 0
+fi
 printf '%s\n' started > "$API_STARTED_FILE"
 exit 91
 `);
@@ -60,6 +65,7 @@ exit 23
           MIGRATION_STARTED_FILE: shellPath(migrationStarted),
           API_STARTED_FILE: shellPath(apiStarted),
           COMMAND_RESULT_FILE: shellPath(commandResult)
+          ,PREFLIGHT_RESULT_FILE: shellPath(preflightResult)
         },
         encoding: 'utf8'
       }
@@ -67,6 +73,7 @@ exit 23
 
     expect(result.status, result.stderr).toBe(23);
     expect((await readFile(commandResult, 'utf8')).trim()).toBe('safe-argument');
+    expect((await readFile(preflightResult, 'utf8')).trim()).toBe('checked');
     await expect(readFile(migrationStarted)).rejects.toMatchObject({ code: 'ENOENT' });
     await expect(readFile(apiStarted)).rejects.toMatchObject({ code: 'ENOENT' });
   });
@@ -85,6 +92,7 @@ done
 exit 0
 `);
     await executable(join(bin, 'node'), `#!/bin/sh
+if [ "\${1:-}" = 'scripts/database/production-preflight.mjs' ]; then exit 0; fi
 printf '%s\n' started > "$API_STARTED_FILE"
 exit 0
 `);
@@ -145,6 +153,7 @@ wait "$entrypoint_pid" 2>/dev/null || status=$?
     await executable(join(bin, 'pnpm'), '#!/bin/sh\nexit 7\n');
     const apiStarted = join(root, 'api.started');
     await executable(join(bin, 'node'), `#!/bin/sh
+if [ "\${1:-}" = 'scripts/database/production-preflight.mjs' ]; then exit 0; fi
 printf '%s\n' started > "$API_STARTED_FILE"
 exit 0
 `);

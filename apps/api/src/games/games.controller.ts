@@ -7,6 +7,7 @@ import {
   Inject,
   Param,
   Post,
+  Res,
   UseGuards
 } from '@nestjs/common';
 import {
@@ -24,6 +25,10 @@ import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
 import { Role } from '../generated/prisma/client.js';
 import { GamesService } from './games.service.js';
 
+interface LocationResponse {
+  setHeader(name: 'Location', value: string): void;
+}
+
 @Controller('games')
 @UseGuards(SessionGuard, RolesGuard)
 export class GamesController {
@@ -31,11 +36,14 @@ export class GamesController {
 
   @Post()
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
-  create(
+  async create(
     @CurrentUser() actor: AuthUser,
-    @Body(new ZodValidationPipe(createGameSchema)) body: CreateGameRequest
+    @Body(new ZodValidationPipe(createGameSchema)) body: CreateGameRequest,
+    @Res({ passthrough: true }) response: LocationResponse
   ): Promise<GameSnapshotDto> {
-    return this.games.create(actor, body);
+    const created = await this.games.create(actor, body);
+    response.setHeader('Location', `/api/games/${created.id}`);
+    return created;
   }
 
   @Post(':id/start')
