@@ -2,7 +2,9 @@
 
 本手册部署一个同源容器：手机浏览器访问的 PWA、`/api`、Socket.IO 与头像文件都由同一进程提供。MySQL 不在 Compose 中发布端口；群晖反向代理只连接 NAS 回环地址 `127.0.0.1:3000`。
 
-> 本项目曾通过对话传递过数据库凭据。上线前应在 MariaDB 中轮换这些凭据，只把新值写入 NAS 上权限为 `600` 的 `.env.production`。不要把该文件提交、复制到镜像或截图分享。
+> 本项目曾通过对话传递过数据库凭据。旧密码已经暴露，禁止用它连接、建库或作为回退。上线前必须先在 MariaDB 中轮换并使旧值失效，只把新值写入 NAS 上权限为 `600` 的 `.env.production`。不要把该文件提交、复制到镜像、终端输出或截图。
+
+当前仓库的生产部署尚未执行。未取得已轮换凭据、bootstrap 管理员、`SESSION_SECRET`、`CSRF_SECRET`、`PUBLIC_ORIGIN` 和明确的群晖操作方式前，停在 [生产上线检查表](./production-checklist.md) 的第 0 节。
 
 ## 1. NAS 和数据库准备
 
@@ -12,9 +14,11 @@
 
    ```sh
    cd /volume1/docker/poker-scorekeeper
-   mkdir -p data/avatars data/backups data/restore
+   install -d -m 750 /volume1/docker/poker-scorekeeper/data/avatars
+   install -d -m 750 /volume1/docker/poker-scorekeeper/data/backups
+   install -d -m 750 /volume1/docker/poker-scorekeeper/data/restore
    sudo chown -R 1000:1000 data/avatars data/backups data/restore
-   chmod 700 data/avatars data/backups data/restore
+   chmod 750 data/avatars data/backups data/restore
    ```
 
    镜像以非 root 的 `node` 用户（UID/GID 1000）运行。如果 NAS 的 ACL 覆盖传统权限，请在 File Station 同时授予该 UID 对三个目录的读写权限。Compose 挂载的是恢复父目录 `data/restore`；恢复目标 `data/restore/avatars` 必须是其中的普通子目录，不能把目标本身做 bind mount。
@@ -38,6 +42,7 @@ PORT=3000
 PUBLIC_ORIGIN=https://poker.example.com
 WS_ALLOWED_ORIGINS=https://poker-lan.example.com
 DATABASE_URL=mysql://poker_user:<password>@192.168.10.248:3306/poker_scorekeeper
+SESSION_SECRET=CHANGE_ME_TO_AN_INDEPENDENT_32_BYTE_RANDOM_VALUE
 CSRF_SECRET=CHANGE_ME_TO_AT_LEAST_32_RANDOM_BYTES
 BOOTSTRAP_ADMIN_USERNAME=rootadmin
 BOOTSTRAP_ADMIN_NICKNAME=初始管理员
@@ -48,19 +53,23 @@ MYSQL_PORT=3306
 MYSQL_USER=poker_backup_user
 MYSQL_PASSWORD=<password>
 MYSQL_DATABASE=poker_scorekeeper
+AVATAR_ROOT=/data/avatars
 ```
 
-密码含 `@`、`:`、`/` 等字符时，`DATABASE_URL` 中的用户名和密码必须做 URL 编码。`PUBLIC_ORIGIN` 与 `WS_ALLOWED_ORIGINS` 只能填写完整、精确的 `http(s)://主机[:端口]`，多个附加来源用英文逗号分隔；不要使用 `*`。首次启动会创建超级管理员并要求改密；确认已有活跃超级管理员后，可从环境文件移除三个 `BOOTSTRAP_ADMIN_*` 值并重建容器。
+`SESSION_SECRET` 与 `CSRF_SECRET` 必须分别生成，不能复用。密码含 `@`、`:`、`/` 等字符时，`DATABASE_URL` 中的用户名和密码必须做 URL 编码。生产 `PUBLIC_ORIGIN` 必须是没有用户名、密码、路径、查询串或片段的完整 `https://` 源站；`WS_ALLOWED_ORIGINS` 只允许额外的精确来源，多个值用英文逗号分隔，不要使用 `*`。首次启动会创建超级管理员并要求改密；确认已有活跃超级管理员且强制改密成功后，从环境文件移除三个 `BOOTSTRAP_ADMIN_*` 值并重建容器。
 
 ## 3. 构建、启动和检查
 
 发布与恢复校验要求 Docker Compose 2.34.0 或更高版本；脚本在任何耗时测试前检查 CLI、daemon、Buildx 和 Compose 版本并失败关闭。该最低版本保证隔离恢复所用的 `docker compose run --env-from-file` 可用。
 
-命令行部署：
+命令行部署。`production-preflight.mjs` 只执行 `SELECT`、`SHOW GRANTS` 和会话级 `USE`；它固定拒绝除 `192.168.10.248:3306/poker_scorekeeper` 之外的目标。正式 Compose 设置 `PRODUCTION_TARGET_REQUIRED=1`，因此建库、显式迁移和正常启动都会在任何写入前重新运行同一门禁：
 
 ```sh
 docker compose config --quiet
 docker compose build --pull
+docker compose run --rm app node scripts/database/production-preflight.mjs
+docker compose run --rm app node scripts/database/create-database.mjs
+docker compose run --rm app pnpm --filter @poker/api prisma migrate deploy
 docker compose up -d
 docker compose ps
 docker compose logs --tail=100 app
@@ -68,7 +77,7 @@ curl --fail http://127.0.0.1:3000/api/health/live
 curl --fail http://127.0.0.1:3000/api/health/ready
 ```
 
-容器入口会先执行 `prisma migrate deploy`，成功后才启动服务。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000`，不会把 3000 暴露到局域网，也不会发布 3306。
+容器入口先执行固定目标只读预检，再执行 `prisma migrate deploy`，成功后才启动服务。显式 `docker compose run` 命令由入口转交执行，不再被入口忽略；除预检本身外，生产一次性命令也先经过固定目标门禁。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000`，不会把 3000 暴露到局域网，也不会发布 3306。
 
 在 Container Manager 图形界面中，可选择“项目 → 新增 → 创建 docker-compose.yml”，项目路径选上述目录，项目名固定为 `poker-scorekeeper`。确认预览中只有 `app` 服务且端口映射是 `127.0.0.1:3000:3000`，再构建并启动。
 
@@ -79,10 +88,20 @@ curl --fail http://127.0.0.1:3000/api/health/ready
 - 来源：`HTTPS`、公网域名、端口 `443`，使用有效证书；
 - 目的地：`HTTP`、主机 `127.0.0.1`、端口 `3000`；
 - 自定义请求头允许 WebSocket：`Upgrade: $http_upgrade`、`Connection: $connection_upgrade`；
+- 转发真实客户端 IP 头，并保持应用只信任群晖这一跳代理；
 - 启用 HTTP/2，并在确认所有入口均为 HTTPS 后开启 HSTS。建议先用较短 `max-age` 验证，再逐步增加；
 - 路由器只转发 TCP 443 到 NAS。不要转发容器端口 3000，也不要为 MySQL 3306 新增公网转发。
 
 应用在生产环境只信任一个反向代理跳数，因此不要再串联未经配置的第二层代理。登录后分别测试普通 API、头像上传、刷新深层 PWA 路由，以及一台手机上的 Socket.IO 实时更新。若 WebSocket 失败，先检查域名是否与 `PUBLIC_ORIGIN`/`WS_ALLOWED_ORIGINS` 精确一致，再检查 DSM 的 Upgrade/Connection 请求头。
+
+自动可逆验收使用未跟踪、权限为 `600` 的 `.env.acceptance` 传递 `PUBLIC_ORIGIN`、bootstrap 用户名/当前密码与 `PRODUCTION_ADMIN_NEW_PASSWORD`；不要把值展开到命令行：
+
+```sh
+chmod 600 .env.acceptance
+docker compose run --rm --env-from-file .env.acceptance app node scripts/verify-production.mjs
+```
+
+脚本只创建一个临时普通用户和一个不含购买的空局，通过公开 HTTPS/WSS 完成登录、CSRF、强制改密、开局和房间加入，然后作废空局并逻辑删除临时用户；失败路径也只清理这两个由本轮返回 ID 标识的对象。它不会购买筹码或提交结算。如果脚本在强制改密后失败，重跑前必须把受保护验收文件中的当前密码更新为刚设置的新值，并再选择一个不同的新密码；禁止回退到已失效的初始值。脚本中的 Node WebSocket 客户端不能替代真实手机验收：仍须用手机通过公网 HTTPS 进入空局并确认观战者实时出现，之后才能记录最终验收时间。完成后安全删除 `.env.acceptance`，并按 [生产上线检查表](./production-checklist.md) 运行首次备份和生成无秘密的 [生产验证记录](./production-verification.md)。
 
 ## 5. 本地隔离容器烟测
 

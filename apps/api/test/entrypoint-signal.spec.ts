@@ -29,6 +29,48 @@ describe('container entrypoint signal forwarding', () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it('executes an explicit one-off command without running migrations or starting the API', async () => {
+    // Break caught: docker compose run preflight mutates the database before the guard can execute.
+    const bin = join(root, 'bin');
+    await mkdir(bin);
+    const migrationStarted = join(root, 'migration.started');
+    const apiStarted = join(root, 'api.started');
+    const commandResult = join(root, 'command.result');
+    await executable(join(bin, 'pnpm'), `#!/bin/sh
+printf '%s\n' started > "$MIGRATION_STARTED_FILE"
+exit 90
+`);
+    await executable(join(bin, 'node'), `#!/bin/sh
+printf '%s\n' started > "$API_STARTED_FILE"
+exit 91
+`);
+    await executable(join(bin, 'production-probe'), `#!/bin/sh
+printf '%s\n' "$*" > "$COMMAND_RESULT_FILE"
+exit 23
+`);
+
+    const result = spawnSync(
+      bash,
+      [shellPath(entrypoint), 'production-probe', 'safe-argument'],
+      {
+        cwd: repositoryRoot,
+        env: {
+          ...process.env,
+          PATH: `${shellPath(bin)}:/usr/bin:/bin`,
+          MIGRATION_STARTED_FILE: shellPath(migrationStarted),
+          API_STARTED_FILE: shellPath(apiStarted),
+          COMMAND_RESULT_FILE: shellPath(commandResult)
+        },
+        encoding: 'utf8'
+      }
+    );
+
+    expect(result.status, result.stderr).toBe(23);
+    expect((await readFile(commandResult, 'utf8')).trim()).toBe('safe-argument');
+    await expect(readFile(migrationStarted)).rejects.toMatchObject({ code: 'ENOENT' });
+    await expect(readFile(apiStarted)).rejects.toMatchObject({ code: 'ENOENT' });
+  });
+
   it('forwards TERM to an in-flight migration child and never starts the API', async () => {
     // Break caught: TERM stops only the shell while Prisma migration remains orphaned.
     const bin = join(root, 'bin');

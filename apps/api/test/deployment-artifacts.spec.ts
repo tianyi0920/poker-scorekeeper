@@ -40,6 +40,9 @@ describe('production deployment artifacts', () => {
     const entrypoint = await readRepositoryFile('scripts/docker/entrypoint.sh');
 
     expect(entrypoint).toContain('set -euo pipefail');
+    expect(entrypoint).toContain('PRODUCTION_TARGET_REQUIRED');
+    expect(entrypoint.indexOf('production-preflight.mjs'))
+      .toBeLessThan(entrypoint.indexOf('prisma migrate deploy'));
     expect(entrypoint).toMatch(/prisma migrate deploy/);
     expect(entrypoint).toMatch(/exec node apps\/api\/dist\/main\.js/);
   });
@@ -52,6 +55,7 @@ describe('production deployment artifacts', () => {
     expect(Object.keys(compose.services)).toEqual(['app']);
     expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
     expect(compose.services.app.env_file).toEqual(['.env.production']);
+    expect(compose.services.app.environment?.PRODUCTION_TARGET_REQUIRED).toBe('1');
     expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
       './data/avatars:/data/avatars',
       './data/backups:/data/backups',

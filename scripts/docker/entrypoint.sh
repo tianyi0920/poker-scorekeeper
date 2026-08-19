@@ -1,6 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+production_preflight() {
+  if [[ "${PRODUCTION_TARGET_REQUIRED:-}" == '1' ]]; then
+    node scripts/database/production-preflight.mjs >/dev/null
+  fi
+}
+
+if (( $# > 0 )); then
+  if ! (( $# >= 2 )) || [[ "$1" != 'node' || "$2" != 'scripts/database/production-preflight.mjs' ]]; then
+    production_preflight
+  fi
+  exec "$@"
+fi
+
+production_preflight
+
 migration_pid=''
 
 forward_migration_signal() {
