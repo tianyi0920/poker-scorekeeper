@@ -5,7 +5,12 @@ import { createRequire } from 'node:module';
 import { accounts, allFixtureAccounts } from './support/fixtures.js';
 import { ownedAvatarFileName } from './support/avatar-cleanup.js';
 import { openTestDatabase } from './support/database.js';
-import { restoreOwnedSettings, type SettingSnapshot } from './support/settings-ownership.js';
+import {
+  readSettingsOwnershipToken,
+  removeSettingsOwnershipToken,
+  restoreOwnedSettings,
+  type SettingsOwnershipToken
+} from './support/settings-ownership.js';
 
 const requireFromApi = createRequire(resolve('apps/api/package.json'));
 const argon2 = requireFromApi('argon2') as {
@@ -13,7 +18,7 @@ const argon2 = requireFromApi('argon2') as {
   hash(password: string, options: { type: number }): Promise<string>;
 };
 
-async function cleanupFixtures(setting: SettingSnapshot): Promise<void> {
+async function cleanupFixturesImpl(setting: SettingsOwnershipToken | undefined): Promise<void> {
   const connection = await openTestDatabase();
   const userIds = allFixtureAccounts.map(({ id }) => id);
   const fixtureUserIds = new Set(userIds);
@@ -60,7 +65,7 @@ async function cleanupFixtures(setting: SettingSnapshot): Promise<void> {
       await connection.query('DELETE FROM auth_sessions WHERE user_id = ?', [userId]);
       await connection.query('DELETE FROM active_player_locks WHERE user_id = ?', [userId]);
     }
-    await restoreOwnedSettings(connection, setting, accounts['super-admin'].id);
+    if (setting !== undefined) await restoreOwnedSettings(connection, setting);
     for (const userId of [...userIds].reverse()) {
       await connection.query('DELETE FROM users WHERE id = ?', [userId]);
     }
@@ -92,16 +97,18 @@ async function cleanupFixtures(setting: SettingSnapshot): Promise<void> {
   }
 }
 
+async function cleanupFixtures(): Promise<void> {
+  const setting = await readSettingsOwnershipToken();
+  try {
+    await cleanupFixturesImpl(setting);
+  } finally {
+    await removeSettingsOwnershipToken();
+  }
+}
+
 export default async function globalSetup(_config: FullConfig) {
   const connection = await openTestDatabase();
-  let setting: SettingSnapshot | undefined;
   try {
-    const settings = await connection.query(
-      'SELECT rake_threshold, rake_bps, version, updated_by_id FROM system_settings WHERE id = ?',
-      ['singleton']
-    ) as SettingSnapshot[];
-    setting = settings[0];
-    if (!setting) throw new Error('Task18 requires the migrated system_settings singleton');
     const ids = allFixtureAccounts.map(({ id }) => id);
     for (const id of ids) {
       const existing = await connection.query('SELECT id FROM users WHERE id = ?', [id]) as unknown[];
@@ -137,5 +144,5 @@ export default async function globalSetup(_config: FullConfig) {
     await connection.end();
   }
 
-  return async () => cleanupFixtures(setting!);
+  return cleanupFixtures;
 }

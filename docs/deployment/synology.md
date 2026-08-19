@@ -54,6 +54,8 @@ MYSQL_DATABASE=poker_scorekeeper
 
 ## 3. 构建、启动和检查
 
+发布与恢复校验要求 Docker Compose 2.34.0 或更高版本；脚本在任何耗时测试前检查 CLI、daemon、Buildx 和 Compose 版本并失败关闭。该最低版本保证隔离恢复所用的 `docker compose run --env-from-file` 可用。
+
 命令行部署：
 
 ```sh

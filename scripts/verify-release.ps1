@@ -1,21 +1,11 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+. (Join-Path $PSScriptRoot 'release/release-helpers.ps1')
 
 function Invoke-External {
   param([Parameter(Mandatory)][string] $File, [Parameter(Mandatory)][string[]] $Arguments)
   & $File @Arguments
   if ($LASTEXITCODE -ne 0) { throw "External command failed with exit code $LASTEXITCODE" }
-}
-
-function Wait-Live {
-  param([Parameter(Mandatory)][string] $Uri)
-  for ($attempt = 0; $attempt -lt 60; $attempt++) {
-    try {
-      $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri $Uri
-      if ($response.StatusCode -eq 200) { return }
-    } catch { Start-Sleep -Seconds 2 }
-  }
-  throw "Live endpoint did not become ready: $Uri"
 }
 
 function Assert-PortAvailable {
@@ -36,31 +26,6 @@ function Assert-PortAvailable {
   if ($connected) { throw "Release verification port $Port is already in use" }
 }
 
-function Write-PrivateEnvironmentFile {
-  param(
-    [Parameter(Mandatory)][string] $Path,
-    [Parameter(Mandatory)][string[]] $Lines
-  )
-  [System.IO.File]::WriteAllLines($Path, $Lines, (New-Object System.Text.UTF8Encoding($false)))
-  if ($env:OS -eq 'Windows_NT') {
-    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
-    $acl = New-Object System.Security.AccessControl.FileSecurity
-    $acl.SetAccessRuleProtection($true, $false)
-    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
-      $identity,
-      [System.Security.AccessControl.FileSystemRights]::FullControl,
-      [System.Security.AccessControl.AccessControlType]::Allow
-    )
-    $acl.AddAccessRule($rule)
-    [System.IO.File]::SetAccessControl($Path, $acl)
-  } else {
-    [System.IO.File]::SetUnixFileMode(
-      $Path,
-      [System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite
-    )
-  }
-}
-
 $node = (Get-Command node -ErrorAction Stop).Source
 $pnpmCli = $env:npm_execpath
 if ([string]::IsNullOrWhiteSpace($pnpmCli) -or -not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
@@ -70,6 +35,10 @@ $pnpmVersion = (& $node $pnpmCli --version).Trim()
 if ($LASTEXITCODE -ne 0 -or $pnpmVersion -ne '10.15.1') {
   throw "pnpm 10.15.1 is required"
 }
+
+# Docker is a mandatory release capability and must fail before the long local gates.
+$docker = (Get-Command docker -ErrorAction Stop).Source
+Assert-DockerCapabilities -Docker $docker
 
 Write-Output 'gate: pnpm install --frozen-lockfile'
 Invoke-External $node @($pnpmCli, 'install', '--frozen-lockfile')
@@ -86,12 +55,6 @@ Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCl
 Write-Output 'gate: pnpm build'
 Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'build')
 
-# Docker remains mandatory. Missing CLI, daemon, buildx, or Compose terminates the release gate.
-$docker = (Get-Command docker -ErrorAction Stop).Source
-Invoke-External $docker @('version', '--format', '{{.Server.Version}}')
-Invoke-External $docker @('buildx', 'version')
-Invoke-External $docker @('compose', 'version')
-
 $runId = ([Guid]::NewGuid().ToString('N').Substring(0, 8)).ToLowerInvariant()
 $project = "poker18verify$runId"
 if ($project -notmatch '^poker18verify[a-f0-9]{8}$') { throw 'Unsafe Compose project name' }
@@ -101,7 +64,7 @@ $restoreUser = "t18r$runId"
 $restorePassword = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
 $restoreUserCreated = $false
 $composeStarted = $false
-$restoreEnvironmentFile = $null
+$restoreEnvironmentContext = $null
 
 try {
   Write-Output 'gate: docker build'
@@ -111,12 +74,12 @@ try {
   Assert-PortAvailable -Port 3000
   $composeStarted = $true
   Invoke-External $docker ($compose + @('up', '-d', '--build'))
-  Wait-Live 'http://127.0.0.1:3000/api/health/live'
+  Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3000'
 
   Invoke-External $docker ($compose + @('exec', '-T', '-e', "TASK18_DRILL_RUN_ID=$runId", 'app', 'node', 'scripts/database/seed-release-drill.mjs'))
   Write-Output 'gate: docker compose restart app and persistent volume'
   Invoke-External $docker ($compose + @('restart', 'app'))
-  Wait-Live 'http://127.0.0.1:3000/api/health/live'
+  Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3000'
   Invoke-External $docker ($compose + @('exec', '-T', 'app', 'sh', '-lc', 'test -n "$(find /data/avatars -mindepth 1 -maxdepth 1 -type f -name ''t18usr*.webp'' -print -quit)"'))
 
   Write-Output 'gate: backup.sh'
@@ -125,10 +88,8 @@ try {
   if ($LASTEXITCODE -ne 0 -or $restoreStamp -notmatch '^[0-9]{8}T[0-9]{6}Z$') { throw 'Invalid backup stamp' }
 
   $runtimeDirectory = Join-Path (Get-Location) 'test-results/task18-runtime'
-  New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
-  $restoreEnvironmentFile = Join-Path $runtimeDirectory "restore-$runId.env"
   $restoreUrl = "mysql://$restoreUser`:$restorePassword@mysql`:3306/$restoreDatabase"
-  Write-PrivateEnvironmentFile -Path $restoreEnvironmentFile -Lines @(
+  $restoreEnvironmentContext = New-PrivateEnvironmentFile -RuntimeRoot $runtimeDirectory -RunId $runId -Lines @(
     "TASK18_RESTORE_USER=$restoreUser",
     "TASK18_RESTORE_PASSWORD=$restorePassword",
     'MYSQL_HOST=mysql',
@@ -150,6 +111,7 @@ try {
     "DATABASE_URL=$restoreUrl",
     'AVATAR_ROOT=/data/restore/avatars'
   )
+  $restoreEnvironmentFile = $restoreEnvironmentContext.Path
 
   $createRestoreUser = 'set -eu; MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE USER ''$TASK18_RESTORE_USER''@''%'' IDENTIFIED BY ''$TASK18_RESTORE_PASSWORD''; GRANT ALL PRIVILEGES ON poker_scorekeeper_restore_test.* TO ''$TASK18_RESTORE_USER''@''%'';"'
   "$restoreUser`n$restorePassword" | & $docker @($compose + @('exec', '-T', 'mysql', 'sh', '-lc', "IFS= read -r TASK18_RESTORE_USER; IFS= read -r TASK18_RESTORE_PASSWORD; export TASK18_RESTORE_USER TASK18_RESTORE_PASSWORD; $createRestoreUser"))
@@ -165,7 +127,7 @@ try {
   $restoreContainer = "$project-restore-app"
   Assert-PortAvailable -Port 3001
   Invoke-External $docker ($compose + @('run', '-d', '--name', $restoreContainer, '--no-deps', '--env-from-file', $restoreEnvironmentFile, '-p', '127.0.0.1:3001:3001', 'app'))
-  Wait-Live 'http://127.0.0.1:3001/api/health/live'
+  Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3001'
   $previousRestoredBaseUrl = $env:RESTORED_BASE_URL
   $previousDrillRunId = $env:TASK18_DRILL_RUN_ID
   try {
@@ -189,7 +151,7 @@ try {
   if ($composeStarted) {
     & $docker @($compose + @('down', '-v', '--remove-orphans')) | Out-Null
   }
-  if ($null -ne $restoreEnvironmentFile -and (Test-Path -LiteralPath $restoreEnvironmentFile -PathType Leaf)) {
-    Remove-Item -LiteralPath $restoreEnvironmentFile -Force
+  if ($null -ne $restoreEnvironmentContext) {
+    Remove-PrivateEnvironmentFile -Created $restoreEnvironmentContext
   }
 }

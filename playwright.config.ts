@@ -25,7 +25,7 @@ export default defineConfig({
   globalSetup: './tests/e2e/global-setup.ts',
   webServer: {
     command: 'node node_modules/tsx/dist/cli.mjs tests/e2e/support/server.ts',
-    url: 'http://127.0.0.1:3000/health/live',
+    url: 'http://127.0.0.1:3000/api/health/live',
     reuseExistingServer: false,
     timeout: 120_000
   },

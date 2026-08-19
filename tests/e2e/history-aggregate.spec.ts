@@ -7,7 +7,8 @@ import {
   prepareBalancedSettlement
 } from './support/api.js';
 import { loginContext } from './support/auth.js';
-import { cleanupTaskGame } from './support/database.js';
+import { cleanupTaskGame, openTestDatabase } from './support/database.js';
+import { performOwnedSettingsUpdate } from './support/settings-ownership.js';
 
 test('completed history is immutable, participant-visible in full, outsider-hidden, and all-player aggregated', async ({ browser }) => {
   const admin = await apiLogin('admin');
@@ -74,14 +75,13 @@ test('a live rake rule change invalidates the old confirmation and the refreshed
       '实时抽成',
       (createdGameId) => { gameId = createdGameId; }
     );
-    const currentResponse = await superAdmin.context.get('/api/settings/rake');
-    expect(currentResponse.status()).toBe(200);
-    const current = await currentResponse.json() as { threshold: string; bps: number; version: number };
-    const updated = await apiWrite(superAdmin, 'patch', '/api/settings/rake', {
-      threshold: '0',
-      bps: current.bps === 2000 ? 1500 : 2000,
-      version: current.version
-    });
+    const settingsConnection = await openTestDatabase();
+    const updated = await performOwnedSettingsUpdate(
+      settingsConnection,
+      superAdmin.user.id,
+      (current) => ({ threshold: '0', bps: current.rake_bps === 2000 ? 1500 : 2000 }),
+      (input) => apiWrite(superAdmin, 'patch', '/api/settings/rake', input)
+    ).finally(() => settingsConnection.end());
     expect(updated.status()).toBe(200);
 
     const stale = await apiWrite(admin, 'post', `/api/games/${prepared.game.id}/settlement-finalize`, prepared.preview);

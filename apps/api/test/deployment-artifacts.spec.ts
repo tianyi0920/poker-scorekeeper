@@ -125,6 +125,8 @@ describe('production deployment artifacts', () => {
 
   it('keeps release verification fail-closed across local, browser, image, restart, backup, and restore gates', async () => {
     const release = await readRepositoryFile('scripts/verify-release.ps1');
+    const releaseHelpers = await readRepositoryFile('scripts/release/release-helpers.ps1');
+    const releaseRuntime = `${release}\n${releaseHelpers}`;
     const rootPackage = JSON.parse(await readRepositoryFile('package.json')) as {
       packageManager: string; scripts: Record<string, string>;
     };
@@ -151,18 +153,28 @@ describe('production deployment artifacts', () => {
     expect(release).toContain('poker_scorekeeper_restore_test');
     expect(release).toMatch(/run-with-test-env\.mjs[^\r\n]+playwright[^\r\n]+test/);
     expect(release).toContain('assert-restored-api.mjs');
-    expect(release).toContain('/api/health/live');
-    expect(release).not.toContain('/api/health/ready');
+    expect(releaseRuntime).toContain('/api/health/live');
+    expect(releaseRuntime).toContain('/api/health/ready');
+    expect(release.match(/Wait-ApplicationHealthy/g)).toHaveLength(3);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3000/);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3001/);
-    expect(release).toMatch(/--env-file|--env-from-file/);
-    expect(release).toMatch(/SetUnixFileMode[\s\S]+UserRead[\s\S]+UserWrite/);
-    expect(release).toContain('SetAccessRuleProtection($true, $false)');
+    expect(releaseRuntime).toMatch(/--env-file|--env-from-file/);
+    expect(releaseRuntime).toMatch(/UnixCreateMode[\s\S]+UserRead[\s\S]+UserWrite/);
+    expect(releaseRuntime).toContain('SetAccessRuleProtection($true, $false)');
     expect(release).not.toMatch(/["']-e["'][^\r\n]+(?:PASSWORD|DATABASE_URL)/);
     expect(release).not.toMatch(/(?:Invoke-External\s+\$docker|&\s+\$docker)[^\r\n]*DATABASE_URL/);
-    expect(release).toMatch(/finally[\s\S]+Remove-Item[^\r\n]+restoreEnvironmentFile/);
+    expect(release).toMatch(/finally[\s\S]+Remove-PrivateEnvironmentFile[^\r\n]+restoreEnvironmentContext/);
     expect(release).not.toContain('ON *.*');
     expect(release).not.toMatch(/--skip|SKIP_DOCKER|continue-on-error/i);
+
+    const dockerPreflight = release.indexOf('Assert-DockerCapabilities');
+    const longLocalGate = release.indexOf("gate: pnpm install --frozen-lockfile");
+    expect(dockerPreflight).toBeGreaterThanOrEqual(0);
+    expect(dockerPreflight).toBeLessThan(longLocalGate);
+    expect(releaseRuntime).toContain('2.34.0');
+
+    const runbook = await readRepositoryFile('docs/deployment/synology.md');
+    expect(runbook).toContain('Docker Compose 2.34.0');
   });
 
   it('asserts restored completed history and uploaded avatar only in the exact isolated restore schema', async () => {

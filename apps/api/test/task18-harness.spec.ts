@@ -1,6 +1,9 @@
 import { readTestDatabaseEnvironment } from '../../../tests/e2e/support/database.js';
 import { ownedAvatarFileName } from '../../../tests/e2e/support/avatar-cleanup.js';
 import { assertRestoredHistoryPayload } from '../../../scripts/database/assert-restored-api.mjs';
+import { waitForFreshServer } from '../../../tests/e2e/support/restart.js';
+import playwrightConfiguration from '../../../playwright.config.js';
+import { createServer } from 'node:http';
 import { resolve } from 'node:path';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
@@ -86,5 +89,37 @@ describe('Task18 release harness safety', () => {
       ...detail,
       totals: { ...detail.totals, final: '-19' }
     })).toThrow('Restored history detail does not match the exact drill settlement');
+  });
+
+  it('uses the real API liveness route for Playwright startup', () => {
+    // Break caught: the SPA fallback returns 200 for /health/live and can impersonate the API.
+    const configuration = playwrightConfiguration as unknown as {
+      webServer: { url: string };
+    };
+    expect(configuration.webServer).toMatchObject({
+      url: 'http://127.0.0.1:3000/api/health/live'
+    });
+  });
+
+  it('does not accept an old SPA response as a freshly restarted API', async () => {
+    // Break caught: restart recovery treats an HTML fallback on the wrong route as API liveness.
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { 'Content-Type': 'text/html' });
+      response.end('<!doctype html><title>old build</title>');
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    const address = server.address();
+    if (address === null || typeof address === 'string') throw new Error('Expected a TCP test address');
+    try {
+      await expect(waitForFreshServer(
+        { exitCode: null },
+        `http://127.0.0.1:${address.port}`,
+        150
+      )).rejects.toThrow('Fresh Task18 API did not become live');
+    } finally {
+      await new Promise<void>((resolveClose, rejectClose) => server.close((error) => (
+        error ? rejectClose(error) : resolveClose()
+      )));
+    }
   });
 });

@@ -2,13 +2,23 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import { readTestDatabaseEnvironment } from './database.js';
 
-async function waitForFreshServer(child: ChildProcess, url: string): Promise<void> {
-  const deadline = Date.now() + 30_000;
+export async function waitForFreshServer(
+  child: Pick<ChildProcess, 'exitCode'>,
+  baseURL: string,
+  timeoutMs = 30_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     if (child.exitCode !== null) throw new Error(`Fresh Task18 API exited with status ${child.exitCode}`);
     try {
-      const response = await fetch(url);
-      if (response.ok) return;
+      const response = await fetch(`${baseURL}/api/health/live`, {
+        headers: { Accept: 'application/json' }
+      });
+      const contentType = response.headers.get('content-type') ?? '';
+      if (response.ok && contentType.includes('application/json')) {
+        const body = await response.json() as { status?: unknown };
+        if (body.status === 'ok') return;
+      }
     } catch {
       // The process is still starting.
     }
@@ -40,7 +50,7 @@ export async function startFreshApi(port: number): Promise<{ baseURL: string; st
   child.stdout?.resume();
   child.stderr?.resume();
   const baseURL = `http://127.0.0.1:${port}`;
-  await waitForFreshServer(child, `${baseURL}/health/live`);
+  await waitForFreshServer(child, baseURL);
   return {
     baseURL,
     async stop() {
