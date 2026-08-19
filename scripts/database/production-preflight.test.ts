@@ -66,6 +66,7 @@ function acceptanceReport() {
 function verificationEvidence() {
   const stamp = '20260819T093000Z';
   return {
+    deploymentId: 'deploy-20260819-abc123',
     imageDigest: `sha256:${'1'.repeat(64)}`,
     migrationVersion: '20260818000100_settlement_settler_snapshot',
     migrationChecksum: '5'.repeat(64),
@@ -473,6 +474,229 @@ describe('production acceptance safety', () => {
     expect(requested).toContain('POST /api/games/owned-game/void');
   });
 
+  it('reports the primary error and every failed cleanup with owned IDs and states', async () => {
+    // Break caught: the primary WSS error hides one or both failed cleanups and their manual targets.
+    const fetchImpl = async (input: URL | string, init: RequestInit = {}) => {
+      const path = new URL(String(input)).pathname;
+      const method = init.method ?? 'GET';
+      if (path === '/api/health/ready') {
+        return new Response('{}', { status: 200, headers: { 'strict-transport-security': 'yes' } });
+      }
+      if (path === '/api/auth/login') {
+        return new Response(JSON.stringify(authResponse('rootadmin', true)), {
+          status: 201, headers: { 'set-cookie': 'poker_session=opaque; Secure' }
+        });
+      }
+      if (path === '/api/auth/change-password') {
+        return new Response(JSON.stringify(authResponse('rootadmin', false)), { status: 200 });
+      }
+      if (path === '/api/users' && method === 'POST') {
+        return new Response(JSON.stringify(userResponse('owned-user')), {
+          status: 201, headers: { Location: '/api/users/owned-user' }
+        });
+      }
+      if (path === '/api/games' && method === 'POST') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'DRAFT')), {
+          status: 201, headers: { Location: '/api/games/owned-game' }
+        });
+      }
+      if (path === '/api/games/owned-game/start') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'ACTIVE')), { status: 200 });
+      }
+      if (path === '/api/games/owned-game/void') return new Response('{}', { status: 500 });
+      if (path === '/api/users/owned-user' && method === 'DELETE') {
+        return new Response('{}', { status: 500 });
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    };
+
+    let caught: unknown;
+    try {
+      await runProductionAcceptance({
+        PUBLIC_ORIGIN: 'https://poker.example.com',
+        BOOTSTRAP_ADMIN_USERNAME: 'rootadmin',
+        BOOTSTRAP_ADMIN_PASSWORD: 'initial-secret-value',
+        PRODUCTION_ADMIN_NEW_PASSWORD: 'rotated-secret-value'
+      }, {
+        fetchImpl,
+        verifySpectator: async () => { throw new Error('private WSS diagnostic'); },
+        randomId: () => 'abc123def456',
+        randomSecret: () => 'temporary-secret-value'
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      message: 'PRODUCTION_ACCEPTANCE_AND_CLEANUP_FAILED',
+      publicDetails: {
+        manualCleanupRequired: true,
+        acceptanceRunId: 'abc123def456',
+        primaryError: 'PUBLIC_WSS_FAILED',
+        cleanupErrors: [
+          'PRODUCTION_CLEANUP_GAME_VOID_FAILED_500',
+          'PRODUCTION_CLEANUP_USER_DELETE_FAILED_500'
+        ],
+        ownedResources: {
+          user: { id: 'owned-user', state: 'ACTIVE' },
+          game: { id: 'owned-game', state: 'ACTIVE' }
+        }
+      }
+    });
+    expect(JSON.stringify(caught)).not.toMatch(
+      /poker\.example\.com|initial-secret-value|rotated-secret-value|temporary-secret-value|opaque/
+    );
+  });
+
+  it('does not commit cleanup void state until the strict owned response passes', async () => {
+    // Break caught: a schema-valid but foreign HTTP 200 response marked the owned game VOIDED.
+    const fetchImpl = async (input: URL | string, init: RequestInit = {}) => {
+      const path = new URL(String(input)).pathname;
+      const method = init.method ?? 'GET';
+      if (path === '/api/health/ready') {
+        return new Response('{}', { status: 200, headers: { 'strict-transport-security': 'yes' } });
+      }
+      if (path === '/api/auth/login') {
+        return new Response(JSON.stringify(authResponse('rootadmin', true)), {
+          status: 201, headers: { 'set-cookie': 'poker_session=opaque; Secure' }
+        });
+      }
+      if (path === '/api/auth/change-password') {
+        return new Response(JSON.stringify(authResponse('rootadmin', false)), { status: 200 });
+      }
+      if (path === '/api/users' && method === 'POST') {
+        return new Response(JSON.stringify(userResponse('owned-user')), {
+          status: 201, headers: { Location: '/api/users/owned-user' }
+        });
+      }
+      if (path === '/api/users' && method === 'GET') {
+        return new Response(JSON.stringify({
+          users: [userResponse('owned-user', undefined, undefined, true)]
+        }), { status: 200 });
+      }
+      if (path === '/api/games' && method === 'POST') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'DRAFT')), {
+          status: 201, headers: { Location: '/api/games/owned-game' }
+        });
+      }
+      if (path === '/api/games/owned-game/start') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'ACTIVE')), { status: 200 });
+      }
+      if (path === '/api/games/owned-game/void') {
+        return new Response(JSON.stringify({
+          ...gameResponse('owned-game', 'VOIDED'),
+          name: 'foreign-game'
+        }), { status: 200 });
+      }
+      if (path === '/api/users/owned-user' && method === 'DELETE') {
+        return new Response(JSON.stringify(userResponse('owned-user', undefined, undefined, true)), {
+          status: 200
+        });
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    };
+
+    let caught: unknown;
+    try {
+      await runProductionAcceptance({
+        PUBLIC_ORIGIN: 'https://poker.example.com',
+        BOOTSTRAP_ADMIN_USERNAME: 'rootadmin',
+        BOOTSTRAP_ADMIN_PASSWORD: 'initial-secret-value',
+        PRODUCTION_ADMIN_NEW_PASSWORD: 'rotated-secret-value'
+      }, {
+        fetchImpl,
+        verifySpectator: async () => { throw new Error('private WSS diagnostic'); },
+        randomId: () => 'abc123def456',
+        randomSecret: () => 'temporary-secret-value'
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      message: 'PRODUCTION_ACCEPTANCE_AND_CLEANUP_FAILED',
+      publicDetails: {
+        cleanupErrors: ['PRODUCTION_CLEANUP_GAME_VOID_FAILED_RESPONSE_INVALID'],
+        ownedResources: {
+          user: { id: 'owned-user', state: 'DELETED' },
+          game: { id: 'owned-game', state: 'VOID_RESPONSE_RECEIVED' }
+        }
+      }
+    });
+  });
+
+  it('keeps a user on the manual list until delete response and readback are both strict', async () => {
+    // Break caught: HTTP 200 alone marks logical deletion committed despite a malformed response.
+    const fetchImpl = async (input: URL | string, init: RequestInit = {}) => {
+      const path = new URL(String(input)).pathname;
+      const method = init.method ?? 'GET';
+      if (path === '/api/health/ready') {
+        return new Response('{}', { status: 200, headers: { 'strict-transport-security': 'yes' } });
+      }
+      if (path === '/api/auth/login') {
+        return new Response(JSON.stringify(authResponse('rootadmin', true)), {
+          status: 201, headers: { 'set-cookie': 'poker_session=opaque; Secure' }
+        });
+      }
+      if (path === '/api/auth/change-password') {
+        return new Response(JSON.stringify(authResponse('rootadmin', false)), { status: 200 });
+      }
+      if (path === '/api/users' && method === 'POST') {
+        return new Response(JSON.stringify(userResponse('owned-user')), {
+          status: 201, headers: { Location: '/api/users/owned-user' }
+        });
+      }
+      if (path === '/api/games' && method === 'POST') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'DRAFT')), {
+          status: 201, headers: { Location: '/api/games/owned-game' }
+        });
+      }
+      if (path === '/api/games/owned-game/start') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'ACTIVE')), { status: 200 });
+      }
+      if (path === '/api/games/owned-game/void') {
+        return new Response(JSON.stringify(gameResponse('owned-game', 'VOIDED')), { status: 200 });
+      }
+      if (path === '/api/users/owned-user' && method === 'DELETE') {
+        return new Response('{}', { status: 200 });
+      }
+      if (path === '/api/users' && method === 'GET') {
+        return new Response(JSON.stringify({
+          users: [userResponse('owned-user', undefined, undefined, true)]
+        }), { status: 200 });
+      }
+      throw new Error(`Unexpected request: ${method} ${path}`);
+    };
+
+    let caught: unknown;
+    try {
+      await runProductionAcceptance({
+        PUBLIC_ORIGIN: 'https://poker.example.com',
+        BOOTSTRAP_ADMIN_USERNAME: 'rootadmin',
+        BOOTSTRAP_ADMIN_PASSWORD: 'initial-secret-value',
+        PRODUCTION_ADMIN_NEW_PASSWORD: 'rotated-secret-value'
+      }, {
+        fetchImpl,
+        verifySpectator: async () => undefined,
+        randomId: () => 'abc123def456',
+        randomSecret: () => 'temporary-secret-value'
+      });
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toMatchObject({
+      message: 'PRODUCTION_USER_DELETE_FAILED_RESPONSE_INVALID',
+      publicDetails: {
+        manualCleanupRequired: true,
+        acceptanceRunId: 'abc123def456',
+        primaryError: 'PRODUCTION_USER_DELETE_FAILED_RESPONSE_INVALID',
+        cleanupErrors: [],
+        ownedResources: {
+          user: { id: 'owned-user', state: 'DELETE_RESPONSE_RECEIVED' },
+          game: { id: 'owned-game', state: 'VOIDED' }
+        }
+      }
+    });
+  });
+
   it('treats a successful start response as committed before validating its body', async () => {
     // Break caught: a malformed 200 response makes cleanup delete a draft after the server made it ACTIVE.
     const requested: string[] = [];
@@ -698,6 +922,7 @@ describe('production acceptance safety', () => {
     // Break caught: the acceptance check silently falls back to HTTP polling or never joins the room.
     const listeners = new Map<string, (value?: unknown) => void>();
     const calls: Array<{ origin: string; options: Record<string, unknown> }> = [];
+    const emitted: Array<{ event: string; payload: unknown }> = [];
     let disconnected = false;
     const createSocket = (origin: string, options: Record<string, unknown>) => {
       calls.push({ origin, options });
@@ -707,9 +932,12 @@ describe('production acceptance safety', () => {
         off(event: string) { listeners.delete(event); },
         connect() { listeners.get('connect')?.(); },
         emit(event: string, payload: unknown, acknowledge: (value: unknown) => void) {
-          expect(event).toBe('game.join');
-          expect(payload).toEqual({ gameId: 'game-id', knownVersion: 0 });
-          acknowledge({ ok: true, gameId: 'game-id', version: 2, snapshotSent: true });
+          emitted.push({ event, payload });
+          if (event === 'game.join') {
+            acknowledge({ ok: true, gameId: 'game-id', version: 2, snapshotSent: true });
+            return;
+          }
+          acknowledge({ ok: true, gameId: 'game-id' });
         },
         disconnect() { disconnected = true; }
       };
@@ -734,6 +962,10 @@ describe('production acceptance safety', () => {
         }
       }
     }]);
+    expect(emitted).toEqual([
+      { event: 'game.join', payload: { gameId: 'game-id', knownVersion: 0 } },
+      { event: 'game.leave', payload: { gameId: 'game-id' } }
+    ]);
     expect(disconnected).toBe(true);
   });
 
@@ -758,6 +990,32 @@ describe('production acceptance safety', () => {
       createSocket
     )).rejects.toThrow('PUBLIC_WSS_JOIN_FAILED');
   });
+
+  it('waits for a strict acknowledged leave before disconnecting the spectator', async () => {
+    // Break caught: disconnect raced with void because acceptance never waited for presence removal.
+    const listeners = new Map<string, () => void>();
+    const createSocket = () => ({
+      io: { engine: { transport: { name: 'websocket' } } },
+      once(event: string, listener: () => void) { listeners.set(event, listener); },
+      off(event: string) { listeners.delete(event); },
+      connect() { listeners.get('connect')?.(); },
+      emit(event: string, _payload: unknown, acknowledge: (value: unknown) => void) {
+        if (event === 'game.join') {
+          acknowledge({ ok: true, gameId: 'game-id', version: 2, snapshotSent: true });
+          return;
+        }
+        acknowledge({ ok: true, gameId: 'game-id', extra: true });
+      },
+      disconnect() {}
+    });
+
+    await expect(joinProductionSpectator(
+      new URL('https://poker.example.com'),
+      'poker_session=opaque',
+      'game-id',
+      createSocket
+    )).rejects.toThrow('PUBLIC_WSS_LEAVE_FAILED');
+  });
 });
 
 describe('secret-free production verification record', () => {
@@ -767,6 +1025,7 @@ describe('secret-free production verification record', () => {
 
     for (const required of [
       `sha256:${'1'.repeat(64)}`,
+      'deploy-20260819-abc123',
       '20260818000100_settlement_settler_snapshot',
       '5'.repeat(64),
       'health | PASS',
@@ -794,15 +1053,23 @@ describe('secret-free production verification record', () => {
       `${'3'.repeat(64)}  avatars-${stamp}.tar.gz`,
       `${'4'.repeat(64)}  manifest-${stamp}.txt`
     ].join('\n');
-    const commands: string[] = [];
-    const runCommand = async (command: string, arguments_: string[]) => {
+    const commands: Array<{ key: string; options?: { cwd?: string; env?: NodeJS.ProcessEnv } }> = [];
+    const runCommand = async (
+      command: string,
+      arguments_: string[],
+      options?: { cwd?: string; env?: NodeJS.ProcessEnv }
+    ) => {
       const key = `${command} ${arguments_.join(' ')}`;
-      commands.push(key);
+      commands.push({ key, options });
       let stdout = '';
       if (key.includes('version --format')) stdout = '27.1.0';
-      else if (key.includes('compose version --short')) stdout = '2.34.0';
-      else if (key.includes('image inspect')) stdout = `sha256:${'1'.repeat(64)}`;
-      else if (key.includes('compose ps -q app')) stdout = 'a'.repeat(64);
+      else if (key.endsWith('version --short')) stdout = '2.34.0';
+      else if (key.includes('image inspect') && key.includes('{{.Id}}')) {
+        stdout = `sha256:${'1'.repeat(64)}`;
+      } else if (key.includes('image inspect') && key.includes('org.opencontainers.image.revision')) {
+        stdout = 'deploy-20260819-abc123';
+      }
+      else if (key.includes('ps -q app')) stdout = 'a'.repeat(64);
       else if (key.includes(`inspect ${'a'.repeat(64)}`)) {
         stdout = `sha256:${'1'.repeat(64)} running healthy`;
       }
@@ -810,6 +1077,7 @@ describe('secret-free production verification record', () => {
       else if (key.includes('production-migration-evidence.mjs')) {
         stdout = JSON.stringify({ migrations });
       } else if (key.includes('latest-stamp')) stdout = stamp;
+      else if (key.includes('cat /app/deployment-id')) stdout = 'deploy-20260819-abc123';
       else if (key.includes(`checksums-${stamp}.txt`) || key.includes('sha256sum mysql-')) {
         stdout = checksums;
       } else if (
@@ -821,26 +1089,88 @@ describe('secret-free production verification record', () => {
       return { exitCode: 0, stdout, stderr: '' };
     };
 
-    const evidence = await runProductionVerification({
-      PUBLIC_ORIGIN: 'https://poker.example.com'
-    }, {
-      runCommand,
-      acceptanceRunner: async () => acceptanceReport(),
-      fetchImpl: async () => new Response('{}', {
-        status: 200,
-        headers: { 'strict-transport-security': 'max-age=31536000' }
-      })
-    });
+    const previousComposeFile = process.env.COMPOSE_FILE;
+    const previousComposeProject = process.env.COMPOSE_PROJECT_NAME;
+    process.env.COMPOSE_FILE = '../attacker-compose.yml';
+    process.env.COMPOSE_PROJECT_NAME = 'attacker-project';
+    let evidence;
+    try {
+      evidence = await runProductionVerification({
+        PUBLIC_ORIGIN: 'https://poker.example.com'
+      }, {
+        runCommand,
+        acceptanceRunner: async () => acceptanceReport(),
+        fetchImpl: async (input: URL | string) => {
+          const path = new URL(String(input)).pathname;
+          return new Response(JSON.stringify(
+            path === '/api/health/deployment'
+              ? { deploymentId: 'deploy-20260819-abc123' }
+              : {}
+          ), {
+            status: 200,
+            headers: { 'strict-transport-security': 'max-age=31536000' }
+          });
+        }
+      });
+    } finally {
+      if (previousComposeFile === undefined) delete process.env.COMPOSE_FILE;
+      else process.env.COMPOSE_FILE = previousComposeFile;
+      if (previousComposeProject === undefined) delete process.env.COMPOSE_PROJECT_NAME;
+      else process.env.COMPOSE_PROJECT_NAME = previousComposeProject;
+    }
 
     expect(evidence).toEqual({
       ...verificationEvidence(),
       migrationVersion: migrations.at(-1)?.name,
       migrationChecksum: migrations.at(-1)?.checksum
     });
-    expect(commands.some((command) => command.includes('production-migration-evidence.mjs'))).toBe(true);
-    expect(commands.some((command) => command.includes('scripts/backup/backup.sh'))).toBe(true);
-    expect(commands.some((command) => command.includes('compose ps -q app'))).toBe(true);
-    expect(commands.some((command) => command.includes(`inspect ${'a'.repeat(64)}`))).toBe(true);
+    expect(commands.some(({ key }) => key.includes('production-migration-evidence.mjs'))).toBe(true);
+    expect(commands.some(({ key }) => key.includes('scripts/backup/backup.sh'))).toBe(true);
+    expect(commands.some(({ key }) => key.includes('ps -q app'))).toBe(true);
+    expect(commands.some(({ key }) => key.includes(`inspect ${'a'.repeat(64)}`))).toBe(true);
+    const expectedRoot = resolve(import.meta.dirname, '../..');
+    for (const command of commands) {
+      expect(command.options?.cwd).toBe(expectedRoot);
+      expect(command.options?.env).not.toHaveProperty('COMPOSE_FILE');
+      expect(command.options?.env).not.toHaveProperty('COMPOSE_PROJECT_NAME');
+      if (command.key.startsWith('docker compose ')) {
+        expect(command.key).toContain(
+          'docker compose --file docker-compose.yml --project-name poker-scorekeeper'
+        );
+      }
+    }
+  });
+
+  it('rejects a public origin served by a different deployment before acceptance', async () => {
+    // Break caught: a healthy unrelated origin is accepted as evidence for the inspected container.
+    const migrations = await collectRepositoryMigrationEvidence();
+    const acceptanceRunner = vi.fn();
+    const runCommand = async (_command: string, arguments_: string[]) => {
+      const key = arguments_.join(' ');
+      let stdout = '';
+      if (key.includes('version --format')) stdout = '27.1.0';
+      else if (key.endsWith('version --short')) stdout = '2.34.0';
+      else if (key.includes('image inspect') && key.includes('{{.Id}}')) stdout = `sha256:${'1'.repeat(64)}`;
+      else if (key.includes('org.opencontainers.image.revision')) stdout = 'deploy-20260819-abc123';
+      else if (key.includes('ps -q app')) stdout = 'a'.repeat(64);
+      else if (key.startsWith(`inspect ${'a'.repeat(64)}`)) stdout = `sha256:${'1'.repeat(64)} running healthy`;
+      else if (key.includes('cat /app/deployment-id')) stdout = 'deploy-20260819-abc123';
+      else if (key.includes('prisma migrate status')) stdout = 'Database schema is up to date!';
+      else if (key.includes('production-migration-evidence.mjs')) stdout = JSON.stringify({ migrations });
+      return { exitCode: 0, stdout, stderr: '' };
+    };
+
+    await expect(runProductionVerification({ PUBLIC_ORIGIN: 'https://poker.example.com' }, {
+      runCommand,
+      repositoryMigrations: async () => migrations,
+      acceptanceRunner,
+      fetchImpl: async (input: URL | string) => new Response(JSON.stringify(
+        new URL(String(input)).pathname === '/api/health/deployment'
+          ? { deploymentId: 'different-deployment' }
+          : {}
+      ), { status: 200, headers: { 'strict-transport-security': 'yes' } })
+    })).rejects.toThrow('PRODUCTION_DEPLOYMENT_MISMATCH');
+    expect(acceptanceRunner).not.toHaveBeenCalled();
   });
 
   it('fails before acceptance when Docker cannot be inspected', async () => {

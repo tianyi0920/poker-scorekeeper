@@ -5,6 +5,11 @@ import { AuditModule } from './audit/audit.module.js';
 import { BuyinsModule } from './buyins/buyins.module.js';
 import { SecurityModule } from './common/security/security.module.js';
 import { HealthController } from './health/health.controller.js';
+import {
+  DEPLOYMENT_ID_READER,
+  DeploymentIdentityController,
+  readDeploymentId
+} from './health/deployment-identity.controller.js';
 import { ReadinessController } from './health/readiness.controller.js';
 import {
   MariaDbReadinessProbe,
@@ -36,9 +41,13 @@ import { UsersModule } from './users/users.module.js';
     SettlementsModule,
     StaticModule
   ],
-  controllers: [HealthController, ReadinessController],
+  controllers: [HealthController, ReadinessController, DeploymentIdentityController],
   providers: [
     MariaDbReadinessProbe,
+    {
+      provide: DEPLOYMENT_ID_READER,
+      useValue: () => readDeploymentId()
+    },
     {
       provide: READINESS_CONNECTION_FACTORY,
       useValue: mariaDbReadinessConnectionFactory

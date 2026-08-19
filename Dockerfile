@@ -14,9 +14,12 @@ COPY packages/settlement/package.json packages/settlement/package.json
 RUN pnpm install --frozen-lockfile
 
 FROM workspace AS build
+ARG DEPLOYMENT_ID
 COPY tsconfig.base.json eslint.config.js ./
 COPY apps ./apps
 COPY packages ./packages
+COPY scripts ./scripts
+RUN node scripts/build/create-deployment-id.mjs "$DEPLOYMENT_ID"
 # Prisma Client generation reads this variable but does not connect during the build.
 ENV DATABASE_URL=mysql://build:build@127.0.0.1:3306/poker_scorekeeper_build
 RUN pnpm -r build
@@ -34,6 +37,8 @@ COPY packages/settlement/package.json packages/settlement/package.json
 RUN pnpm install --prod --frozen-lockfile
 
 FROM node:24-bookworm-slim AS runtime
+ARG DEPLOYMENT_ID
+LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID
 ENV NODE_ENV=production \
     PORT=3000 \
     WEB_DIST_ROOT=/app/apps/web/dist \
@@ -66,6 +71,7 @@ COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=build /app/packages/settlement/dist ./packages/settlement/dist
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
+COPY --from=build --chmod=0444 /app/deployment-id ./deployment-id
 COPY scripts ./scripts
 RUN chmod 0555 scripts/docker/entrypoint.sh \
     && chmod 0444 scripts/docker/healthcheck.mjs scripts/backup/restore-input-guard.mjs \

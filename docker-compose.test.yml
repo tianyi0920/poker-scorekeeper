@@ -21,6 +21,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        DEPLOYMENT_ID: test-build-20260819
     image: poker-scorekeeper:test-local
     restart: "no"
     entrypoint: []

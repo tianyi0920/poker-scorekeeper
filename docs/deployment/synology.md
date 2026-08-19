@@ -39,6 +39,7 @@ chmod 600 .env.production
 
 ```dotenv
 PORT=3000
+DEPLOYMENT_ID=replace_with_git_revision_or_release_id
 PUBLIC_ORIGIN=https://poker.example.com
 WS_ALLOWED_ORIGINS=https://poker-lan.example.com
 DATABASE_URL=mysql://poker_user:<password>@192.168.10.248:3306/poker_scorekeeper
@@ -56,7 +57,7 @@ MYSQL_DATABASE=poker_scorekeeper
 AVATAR_ROOT=/data/avatars
 ```
 
-`SESSION_SECRET` 与 `CSRF_SECRET` 必须分别生成，不能复用。密码含 `@`、`:`、`/` 等字符时，`DATABASE_URL` 中的用户名和密码必须做 URL 编码。生产 `PUBLIC_ORIGIN` 必须是没有用户名、密码、路径、查询串或片段的完整 `https://` 源站；`WS_ALLOWED_ORIGINS` 只允许额外的精确来源，多个值用英文逗号分隔，不要使用 `*`。首次启动会创建超级管理员并要求改密；确认已有活跃超级管理员且强制改密成功后，从环境文件移除三个 `BOOTSTRAP_ADMIN_*` 值并重建容器。
+`DEPLOYMENT_ID` 使用本轮 Git revision 或发布 ID，必须匹配 `^[a-z0-9][a-z0-9._-]{7,63}$`；它不是秘密，但必须在构建前固定，不能用任意运行时环境值冒充已部署代码。`SESSION_SECRET` 与 `CSRF_SECRET` 必须分别生成，不能复用。密码含 `@`、`:`、`/` 等字符时，`DATABASE_URL` 中的用户名和密码必须做 URL 编码。生产 `PUBLIC_ORIGIN` 必须是没有用户名、密码、路径、查询串或片段的完整 `https://` 源站；`WS_ALLOWED_ORIGINS` 只允许额外的精确来源，多个值用英文逗号分隔，不要使用 `*`。首次启动会创建超级管理员并要求改密；确认已有活跃超级管理员且强制改密成功后，从环境文件移除三个 `BOOTSTRAP_ADMIN_*` 值并重建容器。
 
 ## 3. 构建、启动和检查
 
@@ -65,19 +66,19 @@ AVATAR_ROOT=/data/avatars
 命令行部署。`production-preflight.mjs` 只执行 `SELECT`、`SHOW GRANTS` 和会话级 `USE`；它固定拒绝除 `192.168.10.248:3306/poker_scorekeeper` 之外的目标。生产镜像入口无条件运行该门禁，不依赖可遗漏的环境开关；`create-database.mjs` 的验证与真实执行路径也都无条件固定目标。只有 `docker-compose.test.yml` 通过显式替换镜像入口运行内部隔离测试栈，生产镜像中没有测试 opt-out：
 
 ```sh
-docker compose config --quiet
-docker compose build --pull
-docker compose run --rm app node scripts/database/production-preflight.mjs
-docker compose run --rm app node scripts/database/create-database.mjs
-docker compose run --rm app pnpm --filter @poker/api prisma migrate deploy
-docker compose up -d
-docker compose ps
-docker compose logs --tail=100 app
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production config --quiet
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production build --pull
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app node scripts/database/production-preflight.mjs
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app node scripts/database/create-database.mjs
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app pnpm --filter @poker/api prisma migrate deploy
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production up -d
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production ps
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production logs --tail=100 app
 curl --fail http://127.0.0.1:3000/api/health/live
 curl --fail http://127.0.0.1:3000/api/health/ready
 ```
 
-容器入口先执行固定目标只读预检，再执行 `prisma migrate deploy`，成功后才启动服务。显式 `docker compose run` 命令由入口转交执行，不再被入口忽略；除预检本身外，生产一次性命令也先经过固定目标门禁。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000`，不会把 3000 暴露到局域网，也不会发布 3306。
+容器入口先执行固定目标只读预检，再执行 `prisma migrate deploy`，成功后才启动服务。显式 `docker compose run` 命令由入口转交执行，不再被入口忽略；除预检本身外，生产一次性命令也先经过固定目标门禁。构建把同一个 `DEPLOYMENT_ID` 固化到 OCI revision label 和只读 `/app/deployment-id`，公开的 `/api/health/deployment` 只读取该镜像文件。最终记录器必须证明 label、运行容器文件与 `PUBLIC_ORIGIN` 公开端点三者一致。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000`，不会把 3000 暴露到局域网，也不会发布 3306。
 
 在 Container Manager 图形界面中，可选择“项目 → 新增 → 创建 docker-compose.yml”，项目路径选上述目录，项目名固定为 `poker-scorekeeper`。确认预览中只有 `app` 服务且端口映射是 `127.0.0.1:3000:3000`，再构建并启动。
 
@@ -98,10 +99,10 @@ curl --fail http://127.0.0.1:3000/api/health/ready
 
 ```sh
 chmod 600 .env.acceptance
-docker compose run --rm --env-from-file .env.acceptance app node scripts/verify-production.mjs
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm --env-from-file .env.acceptance app node scripts/verify-production.mjs
 ```
 
-脚本只创建一个临时普通用户和一个不含购买的空局，通过公开 HTTPS/WSS 完成登录、CSRF、强制改密、开局和房间加入，然后作废空局并逻辑删除临时用户。创建响应必须同时提供可识别的 `Location` 与严格共享 contract；脚本会在读取 JSON 前记录本轮精确归属，响应截断也只清理该 ID。若成功创建却无法证明归属，脚本立即停止、不猜测 ID，并只输出不含 URL/凭据的 `acceptanceRunId` 与人工清理类型。它不会购买筹码或提交结算。如果脚本在强制改密后失败，重跑前必须把受保护验收文件中的当前密码更新为刚设置的新值，并再选择一个不同的新密码；禁止回退到已失效的初始值。脚本中的 Node WebSocket 客户端不能替代真实手机验收：仍须用手机通过公网 HTTPS 进入空局并确认观战者实时出现，之后才能记录最终验收时间。完成后安全删除 `.env.acceptance`，并按 [生产上线检查表](./production-checklist.md) 运行首次备份和生成无秘密的 [生产验证记录](./production-verification.md)。
+脚本只创建一个临时普通用户和一个不含购买的空局，通过公开 HTTPS/WSS 完成登录、CSRF、强制改密、开局、房间加入和有 ACK 的离开，再作废空局并逻辑删除临时用户。离开 ACK 只有在服务端完成 presence 移除与发布后才返回，避免断开连接与作废空局竞态。创建响应必须同时提供可识别的 `Location` 与严格共享 contract；脚本会在读取 JSON 前记录本轮精确归属，响应截断也只清理该 ID。若成功创建却无法证明归属，脚本立即停止、不猜测 ID，并只输出不含 URL/凭据的 `acceptanceRunId` 与人工清理类型。primary 与全部 cleanup 错误会合并报告；任何未由严格响应及读回确认的对象仍保留在 `manualCleanupRequired` 的 owned ID/state 清单中，不会吞掉第二个错误或猜测删除。它不会购买筹码或提交结算。如果脚本在强制改密后失败，重跑前必须把受保护验收文件中的当前密码更新为刚设置的新值，并再选择一个不同的新密码；禁止回退到已失效的初始值。脚本中的 Node WebSocket 客户端不能替代真实手机验收：仍须用手机通过公网 HTTPS 进入空局并确认观战者实时出现，之后才能记录最终验收时间。完成后安全删除 `.env.acceptance`，并按 [生产上线检查表](./production-checklist.md) 运行首次备份和生成无秘密的 [生产验证记录](./production-verification.md)。
 
 ## 5. 本地隔离容器烟测
 
@@ -138,8 +139,8 @@ docker compose -p poker17smoke -f docker-compose.test.yml down -v --remove-orpha
 先手动运行并检查：
 
 ```sh
-docker compose exec -T app node scripts/database/production-backup-target.mjs
-docker compose exec -T app /app/scripts/backup/backup.sh
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production exec -T app node scripts/database/production-backup-target.mjs
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production exec -T app /app/scripts/backup/backup.sh
 cat data/backups/latest-stamp
 ls -la data/backups
 ```
@@ -147,7 +148,7 @@ ls -la data/backups
 然后在 DSM“控制面板 → 任务计划”新增每日任务，工作目录设为项目目录，命令只写：
 
 ```sh
-docker compose exec -T app node scripts/database/production-backup-target.mjs && docker compose exec -T app /app/scripts/backup/backup.sh
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production exec -T app node scripts/database/production-backup-target.mjs && docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production exec -T app /app/scripts/backup/backup.sh
 ```
 
 不要把密码附加到计划任务命令。应定期将 `data/backups` 加密复制到另一台设备或另一存储池；同盘备份不能防止磁盘或整机故障。
@@ -178,21 +179,21 @@ test "$(stat -c %a .env.restore)" = 600
 
 ```sh
 STAMP=$(date -u +%Y%m%dT%H%M%SZ)
-docker compose exec -T app node scripts/database/production-backup-target.mjs
-docker compose exec -T app /app/scripts/backup/backup.sh
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production exec -T app node scripts/database/production-backup-target.mjs
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production exec -T app /app/scripts/backup/backup.sh
 docker image tag poker-scorekeeper:local "poker-scorekeeper:rollback-$STAMP"
-docker compose build --pull
-docker compose up -d
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production build --pull
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production up -d
 curl --fail http://127.0.0.1:3000/api/health/ready
 ```
 
-应用代码需回滚时，将保留的镜像重新标为 `poker-scorekeeper:local`，再执行 `docker compose up -d --no-build`。数据库迁移可能是向前兼容但不可自动逆转；如确需数据库回退，只能从备份恢复到新的隔离库，验证后在停机窗口人工切换，不能对活动库直接运行恢复脚本。
+应用代码需回滚时，将保留的镜像重新标为 `poker-scorekeeper:local`，再执行 `docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production up -d --no-build`。数据库迁移可能是向前兼容但不可自动逆转；如确需数据库回退，只能从备份恢复到新的隔离库，验证后在停机窗口人工切换，不能对活动库直接运行恢复脚本。
 
 常用排障：
 
 ```sh
-docker compose ps
-docker compose logs --tail=200 app
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production ps
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production logs --tail=200 app
 curl -i http://127.0.0.1:3000/api/health/live
 curl -i http://127.0.0.1:3000/api/health/ready
 df -h /volume1/docker/poker-scorekeeper

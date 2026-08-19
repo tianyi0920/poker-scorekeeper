@@ -8,6 +8,12 @@ const createDatabasePath = fileURLToPath(
   new URL('../../../scripts/database/create-database.mjs', import.meta.url)
 );
 
+function productionCommandEnvironment(databaseUrl: string): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = { ...process.env, DATABASE_URL: databaseUrl };
+  delete environment.NODE_ENV;
+  return environment;
+}
+
 describe('database safety guard', () => {
   it('allows an isolated test database', () => {
     const result = spawnSync(process.execPath, [guardPath], {
@@ -38,40 +44,36 @@ describe('database safety guard', () => {
 });
 
 describe('database creation preflight', () => {
-  it('accepts the production database name without connecting in validation mode', () => {
+  it('rejects a local target even when NODE_ENV is absent', () => {
     const result = spawnSync(process.execPath, [createDatabasePath, '--validate-only'], {
-      env: {
-        ...process.env,
-        DATABASE_URL: 'mysql://example:example@127.0.0.1:1/poker_scorekeeper'
-      },
-      encoding: 'utf8'
-    });
-
-    expect(result.status).toBe(0);
-    expect(result.stderr).toBe('');
-  });
-
-  it('rejects an invalid database name before connecting', () => {
-    const result = spawnSync(process.execPath, [createDatabasePath, '--validate-only'], {
-      env: {
-        ...process.env,
-        DATABASE_URL: 'mysql://example:example@127.0.0.1:1/Bad-Name'
-      },
+      env: productionCommandEnvironment(
+        'mysql://example:example@127.0.0.1:3306/poker_scorekeeper'
+      ),
       encoding: 'utf8'
     });
 
     expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain('Invalid database name');
+    expect(result.stderr).toContain('PRODUCTION_DATABASE_HOST_INVALID');
   });
 
-  it('rejects every non-production target when the creation command runs in production', () => {
-    // Break caught: the production create command mutates a test or attacker-selected schema.
+  it('rejects a non-production database on the exact host before connecting', () => {
     const result = spawnSync(process.execPath, [createDatabasePath, '--validate-only'], {
-      env: {
-        ...process.env,
-        NODE_ENV: 'production',
-        DATABASE_URL: 'mysql://example:example@tianyi.wiki:8306/poker_scorekeeper'
-      },
+      env: productionCommandEnvironment(
+        'mysql://example:example@192.168.10.248:3306/poker_scorekeeper_test'
+      ),
+      encoding: 'utf8'
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain('PRODUCTION_DATABASE_NAME_INVALID');
+  });
+
+  it('rejects an alternate remote target even when NODE_ENV is absent', () => {
+    // Break caught: omitting NODE_ENV selected an attacker-controlled database target.
+    const result = spawnSync(process.execPath, [createDatabasePath, '--validate-only'], {
+      env: productionCommandEnvironment(
+        'mysql://example:example@tianyi.wiki:8306/poker_scorekeeper'
+      ),
       encoding: 'utf8'
     });
 
@@ -81,13 +83,11 @@ describe('database creation preflight', () => {
     expect(result.stderr).not.toContain('example:example');
   });
 
-  it('accepts only the exact production target in production validation mode', () => {
+  it('accepts only the exact production target when NODE_ENV is absent', () => {
     const result = spawnSync(process.execPath, [createDatabasePath, '--validate-only'], {
-      env: {
-        ...process.env,
-        NODE_ENV: 'production',
-        DATABASE_URL: 'mysql://example:example@192.168.10.248:3306/poker_scorekeeper'
-      },
+      env: productionCommandEnvironment(
+        'mysql://example:example@192.168.10.248:3306/poker_scorekeeper'
+      ),
       encoding: 'utf8'
     });
 

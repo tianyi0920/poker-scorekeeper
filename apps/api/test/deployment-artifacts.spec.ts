@@ -5,6 +5,7 @@ import { parse } from 'yaml';
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 
 interface ComposeService {
+  build?: { args?: Record<string, string> };
   ports?: unknown;
   env_file?: unknown;
   volumes?: unknown;
@@ -32,6 +33,10 @@ describe('production deployment artifacts', () => {
     expect(dockerfile).toMatch(/apps\/web\/dist/);
     expect(dockerfile).toMatch(/apps\/api\/prisma/);
     expect(dockerfile).toMatch(/apps\/api\/dist/);
+    expect(dockerfile.match(/^ARG DEPLOYMENT_ID$/gm)).toHaveLength(2);
+    expect(dockerfile).toContain('node scripts/build/create-deployment-id.mjs "$DEPLOYMENT_ID"');
+    expect(dockerfile).toContain('LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID');
+    expect(dockerfile).toContain('/app/deployment-id ./deployment-id');
     expect(dockerfile).toMatch(/^USER node$/m);
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"');
     expect(dockerfile).not.toMatch(/FROM .*:latest/);
@@ -58,6 +63,9 @@ describe('production deployment artifacts', () => {
     expect(Object.keys(compose.services)).toEqual(['app']);
     expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
     expect(compose.services.app.env_file).toEqual(['.env.production']);
+    expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe(
+      '${DEPLOYMENT_ID:?DEPLOYMENT_ID is required}'
+    );
     expect(compose.services.app.environment).not.toHaveProperty('PRODUCTION_TARGET_REQUIRED');
     expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
       './data/avatars:/data/avatars',
@@ -84,6 +92,7 @@ describe('production deployment artifacts', () => {
     expect(databaseUrl).toContain('@mysql:3306/poker_scorekeeper_test');
     expect(databaseUrl).not.toMatch(/tianyi\.wiki|192\.168\.10\.248|poker_scorekeeper(?:\?|$)/);
     expect(compose.services.mysql.environment?.MYSQL_DATABASE).toBe('poker_scorekeeper_test');
+    expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe('test-build-20260819');
     expect(compose.services.app.entrypoint).toEqual([]);
     expect(compose.services.app.command).toEqual([
       '/usr/bin/tini', '-g', '--', 'sh', '-c',

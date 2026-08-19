@@ -4,7 +4,7 @@ import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { open, readFile, readdir, rename, rm } from 'node:fs/promises';
 import { createRequire } from 'node:module';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const requireFromWeb = createRequire(new URL('../apps/web/package.json', import.meta.url));
 const { io } = requireFromWeb('socket.io-client');
@@ -12,12 +12,17 @@ const {
   authSessionResponseSchema,
   canonicalPublicIdSchema,
   gameJoinAckSchema,
+  gameLeaveAckSchema,
   gameSnapshotSchema,
   userResponseSchema,
   usersResponseSchema
 } = requireFromWeb('@poker/contracts');
 const SESSION_COOKIE_NAME = 'poker_session';
 const REQUEST_TIMEOUT_MS = 10_000;
+const REPOSITORY_ROOT = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]$/, '');
+const COMPOSE_PREFIX = [
+  'compose', '--file', 'docker-compose.yml', '--project-name', 'poker-scorekeeper'
+];
 
 function controlledError(code, publicDetails) {
   const error = new Error(code);
@@ -121,6 +126,28 @@ async function healthCheck(origin, fetchImpl) {
   if (!response.headers.get('strict-transport-security')) throw controlledError('HSTS_MISSING');
 }
 
+function validatedDeploymentId(value, code = 'PRODUCTION_DEPLOYMENT_ID_INVALID') {
+  if (typeof value !== 'string' || !/^[a-z0-9][a-z0-9._-]{7,63}$/.test(value)) {
+    throw controlledError(code);
+  }
+  return value;
+}
+
+async function publicDeploymentId(origin, fetchImpl) {
+  const response = await timedFetch(
+    fetchImpl,
+    new URL('/api/health/deployment', origin),
+    { method: 'GET', headers: { Accept: 'application/json' } },
+    'PUBLIC_DEPLOYMENT_FAILED_0'
+  );
+  if (!response.ok) throw statusError('PUBLIC_DEPLOYMENT_FAILED', response.status);
+  const body = await responseJson(response, 'PUBLIC_DEPLOYMENT_RESPONSE_INVALID');
+  if (Object.keys(body).length !== 1) {
+    throw controlledError('PUBLIC_DEPLOYMENT_RESPONSE_INVALID');
+  }
+  return validatedDeploymentId(body.deploymentId, 'PUBLIC_DEPLOYMENT_RESPONSE_INVALID');
+}
+
 async function apiResponse(origin, fetchImpl, path, options) {
   const headers = { Accept: 'application/json' };
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
@@ -207,7 +234,14 @@ export async function joinProductionSpectator(
             finish(controlledError('PUBLIC_WSS_JOIN_FAILED'));
             return;
           }
-          finish();
+          socket.emit('game.leave', { gameId }, (leaveAcknowledgement) => {
+            const leave = gameLeaveAckSchema.safeParse(leaveAcknowledgement);
+            if (!leave.success || !leave.data.ok || leave.data.gameId !== gameId) {
+              finish(controlledError('PUBLIC_WSS_LEAVE_FAILED'));
+              return;
+            }
+            finish();
+          });
         });
       };
       socket.once('connect_error', onConnectError);
@@ -275,14 +309,21 @@ async function assertDeletedUserReadback(origin, fetchImpl, auth, expected, erro
   assertOwnedUser(user, expected, true, `${errorPrefix}_RESPONSE_INVALID`);
 }
 
-async function deleteOwnedUser(origin, fetchImpl, auth, expected, errorPrefix, onCommitted) {
+async function deleteOwnedUser(
+  origin,
+  fetchImpl,
+  auth,
+  expected,
+  errorPrefix,
+  { onResponse, onConfirmed }
+) {
   const response = await apiResponse(origin, fetchImpl, `/api/users/${expected.id}`, {
     method: 'DELETE',
     expectedStatus: 200,
     errorPrefix,
     auth
   });
-  onCommitted();
+  onResponse();
   let responseError;
   try {
     const deleted = await strictResponse(
@@ -296,6 +337,63 @@ async function deleteOwnedUser(origin, fetchImpl, auth, expected, errorPrefix, o
   }
   await assertDeletedUserReadback(origin, fetchImpl, auth, expected, `${errorPrefix}_READBACK_FAILED`);
   if (responseError !== undefined) throw responseError;
+  onConfirmed();
+}
+
+function ownedResourceStates(temporaryUser, temporaryUserState, ownedGame, gameState) {
+  const resources = {};
+  if (temporaryUser.id !== undefined) {
+    resources.user = { id: temporaryUser.id, state: temporaryUserState };
+  }
+  if (ownedGame.id !== undefined) {
+    resources.game = { id: ownedGame.id, state: gameState };
+  }
+  return resources;
+}
+
+function acceptanceFailure(
+  primaryError,
+  cleanupErrors,
+  runId,
+  temporaryUser,
+  temporaryUserState,
+  ownedGame,
+  gameState
+) {
+  const primaryRequiresManualCleanup = primaryError?.publicDetails?.manualCleanupRequired === true;
+  const userRequiresManualCleanup = temporaryUser.id !== undefined && temporaryUserState !== 'DELETED';
+  const gameRequiresManualCleanup = ownedGame.id !== undefined && !['DELETED', 'VOIDED'].includes(gameState);
+  const manualCleanupRequired = (
+    primaryRequiresManualCleanup || userRequiresManualCleanup || gameRequiresManualCleanup ||
+    cleanupErrors.length > 0
+  );
+
+  if (cleanupErrors.length === 0 && !manualCleanupRequired) return primaryError;
+  if (cleanupErrors.length === 0 && primaryError?.publicDetails?.manualCleanupRequired === true) {
+    return primaryError;
+  }
+
+  const details = {
+    manualCleanupRequired,
+    acceptanceRunId: runId,
+    ...(primaryError === undefined ? {} : { primaryError: primaryError.message }),
+    cleanupErrors: cleanupErrors.map((error) => error.message),
+    ownedResources: ownedResourceStates(
+      temporaryUser,
+      temporaryUserState,
+      ownedGame,
+      gameState
+    )
+  };
+  if (Array.isArray(primaryError?.publicDetails?.resources)) {
+    details.resources = primaryError.publicDetails.resources;
+  }
+
+  if (primaryError !== undefined && cleanupErrors.length > 0) {
+    return controlledError('PRODUCTION_ACCEPTANCE_AND_CLEANUP_FAILED', details);
+  }
+  if (primaryError !== undefined) return controlledError(primaryError.message, details);
+  return controlledError('PRODUCTION_ACCEPTANCE_CLEANUP_FAILED', details);
 }
 
 export async function runProductionAcceptance(environment, overrides = {}) {
@@ -321,10 +419,10 @@ export async function runProductionAcceptance(environment, overrides = {}) {
     nickname: `验收-${runId}`
   };
   const ownedGame = { id: undefined, name: `生产验收-${runId}` };
-  let temporaryUserDeleteCommitted = false;
+  let temporaryUserState;
   let gameState;
   let primaryError;
-  let cleanupError;
+  const cleanupErrors = [];
   let report;
 
   try {
@@ -388,6 +486,7 @@ export async function runProductionAcceptance(environment, overrides = {}) {
     } catch {
       throw ownershipFailure('PRODUCTION_USER_OWNERSHIP_UNCONFIRMED', runId, ['TEMPORARY_USER']);
     }
+    temporaryUserState = 'ACTIVE';
     const createdUser = await strictResponse(
       createdUserResponse,
       userResponseSchema.strict(),
@@ -462,7 +561,7 @@ export async function runProductionAcceptance(environment, overrides = {}) {
         auth
       }
     );
-    gameState = 'VOIDED';
+    gameState = 'VOID_RESPONSE_RECEIVED';
     const voidedGame = await strictResponse(
       voidedGameResponse,
       gameSnapshotSchema.strict(),
@@ -472,6 +571,7 @@ export async function runProductionAcceptance(environment, overrides = {}) {
     if (voidedGame.version !== startedGame.version + 1) {
       throw controlledError('PRODUCTION_GAME_VOID_RESPONSE_INVALID');
     }
+    gameState = 'VOIDED';
 
     await deleteOwnedUser(
       origin,
@@ -479,7 +579,10 @@ export async function runProductionAcceptance(environment, overrides = {}) {
       auth,
       temporaryUser,
       'PRODUCTION_USER_DELETE_FAILED',
-      () => { temporaryUserDeleteCommitted = true; }
+      {
+        onResponse: () => { temporaryUserState = 'DELETE_RESPONSE_RECEIVED'; },
+        onConfirmed: () => { temporaryUserState = 'DELETED'; }
+      }
     );
 
     report = {
@@ -509,7 +612,7 @@ export async function runProductionAcceptance(environment, overrides = {}) {
             errorPrefix: 'PRODUCTION_CLEANUP_GAME_VOID_FAILED',
             auth
           });
-          gameState = 'VOIDED';
+          gameState = 'VOID_RESPONSE_RECEIVED';
           const voided = await strictResponse(
             response,
             gameSnapshotSchema.strict(),
@@ -521,6 +624,7 @@ export async function runProductionAcceptance(environment, overrides = {}) {
             'VOIDED',
             'PRODUCTION_CLEANUP_GAME_VOID_FAILED_RESPONSE_INVALID'
           );
+          gameState = 'VOIDED';
         } else if (gameState === 'DRAFT') {
           await apiResponse(origin, dependencies.fetchImpl, `/api/games/${ownedGame.id}/draft`, {
             method: 'DELETE',
@@ -531,12 +635,12 @@ export async function runProductionAcceptance(environment, overrides = {}) {
           gameState = 'DELETED';
         }
       } catch (error) {
-        cleanupError = isControlledError(error)
+        cleanupErrors.push(isControlledError(error)
           ? error
-          : controlledError('PRODUCTION_ACCEPTANCE_CLEANUP_FAILED');
+          : controlledError('PRODUCTION_ACCEPTANCE_CLEANUP_FAILED'));
       }
     }
-    if (auth !== undefined && temporaryUser.id !== undefined && !temporaryUserDeleteCommitted) {
+    if (auth !== undefined && temporaryUser.id !== undefined && temporaryUserState === 'ACTIVE') {
       try {
         await deleteOwnedUser(
           origin,
@@ -544,20 +648,30 @@ export async function runProductionAcceptance(environment, overrides = {}) {
           auth,
           temporaryUser,
           'PRODUCTION_CLEANUP_USER_DELETE_FAILED',
-          () => { temporaryUserDeleteCommitted = true; }
+          {
+            onResponse: () => { temporaryUserState = 'DELETE_RESPONSE_RECEIVED'; },
+            onConfirmed: () => { temporaryUserState = 'DELETED'; }
+          }
         );
       } catch (error) {
-        if (cleanupError === undefined) {
-          cleanupError = isControlledError(error)
-            ? error
-            : controlledError('PRODUCTION_ACCEPTANCE_CLEANUP_FAILED');
-        }
+        cleanupErrors.push(isControlledError(error)
+          ? error
+          : controlledError('PRODUCTION_ACCEPTANCE_CLEANUP_FAILED'));
       }
     }
   }
 
-  if (primaryError !== undefined) throw primaryError;
-  if (cleanupError !== undefined) throw cleanupError;
+  if (primaryError !== undefined || cleanupErrors.length > 0) {
+    throw acceptanceFailure(
+      primaryError,
+      cleanupErrors,
+      runId,
+      temporaryUser,
+      temporaryUserState,
+      ownedGame,
+      gameState
+    );
+  }
   return report;
 }
 
@@ -595,9 +709,10 @@ export async function collectRepositoryMigrationEvidence(
   return migrations;
 }
 
-function defaultRunCommand(command, arguments_) {
+function defaultRunCommand(command, arguments_, options) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, arguments_, {
+      ...options,
       shell: false,
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -613,10 +728,21 @@ function defaultRunCommand(command, arguments_) {
   });
 }
 
+function productionCommandOptions() {
+  const environment = { ...process.env };
+  delete environment.COMPOSE_FILE;
+  delete environment.COMPOSE_PROJECT_NAME;
+  return { cwd: REPOSITORY_ROOT, env: environment };
+}
+
+function composeCommand(...arguments_) {
+  return [...COMPOSE_PREFIX, ...arguments_];
+}
+
 async function checkedCommand(runCommand, arguments_, code) {
   let result;
   try {
-    result = await runCommand('docker', arguments_);
+    result = await runCommand('docker', arguments_, productionCommandOptions());
   } catch {
     throw controlledError(code);
   }
@@ -648,7 +774,7 @@ async function probeDocker(runCommand) {
   if (!versionAtLeast(engine, [1, 0, 0])) throw controlledError('PRODUCTION_DOCKER_UNAVAILABLE');
   const compose = await checkedCommand(
     runCommand,
-    ['compose', 'version', '--short'],
+    composeCommand('version', '--short'),
     'PRODUCTION_COMPOSE_UNAVAILABLE'
   );
   if (!versionAtLeast(compose, [2, 34, 0])) throw controlledError('PRODUCTION_COMPOSE_TOO_OLD');
@@ -716,9 +842,15 @@ export async function runProductionVerification(environment, overrides = {}) {
     /^sha256:[a-f0-9]{64}$/,
     'PRODUCTION_RECORD_IMAGE_DIGEST_INVALID'
   );
+  const imageDeploymentId = validatedDeploymentId(await checkedCommand(
+    runCommand,
+    ['image', 'inspect', 'poker-scorekeeper:local', '--format',
+      '{{index .Config.Labels "org.opencontainers.image.revision"}}'],
+    'PRODUCTION_IMAGE_DEPLOYMENT_ID_FAILED'
+  ));
   const containerId = await checkedCommand(
     runCommand,
-    ['compose', 'ps', '-q', 'app'],
+    composeCommand('ps', '-q', 'app'),
     'PRODUCTION_CONTAINER_INSPECT_FAILED'
   );
   assertRecordValue(
@@ -737,10 +869,18 @@ export async function runProductionVerification(environment, overrides = {}) {
     throw controlledError('PRODUCTION_CONTAINER_IMAGE_MISMATCH');
   }
   const imageDigest = runtimeMatch[1];
+  const containerDeploymentId = validatedDeploymentId(await checkedCommand(
+    runCommand,
+    composeCommand('exec', '-T', 'app', 'cat', '/app/deployment-id'),
+    'PRODUCTION_CONTAINER_DEPLOYMENT_ID_FAILED'
+  ));
+  if (containerDeploymentId !== imageDeploymentId) {
+    throw controlledError('PRODUCTION_DEPLOYMENT_MISMATCH');
+  }
 
   const migrationStatus = await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'pnpm', '--dir', 'apps/api', 'exec', 'prisma', 'migrate', 'status'],
+    composeCommand('exec', '-T', 'app', 'pnpm', '--dir', 'apps/api', 'exec', 'prisma', 'migrate', 'status'),
     'PRODUCTION_MIGRATION_STATUS_FAILED'
   );
   if (!migrationStatus.includes('Database schema is up to date')) {
@@ -748,7 +888,7 @@ export async function runProductionVerification(environment, overrides = {}) {
   }
   const appliedMigrations = parseMigrationRows(await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'node', 'scripts/database/production-migration-evidence.mjs'],
+    composeCommand('exec', '-T', 'app', 'node', 'scripts/database/production-migration-evidence.mjs'),
     'PRODUCTION_MIGRATION_EVIDENCE_FAILED'
   ));
   const repositoryMigrations = await (overrides.repositoryMigrations ?? collectRepositoryMigrationEvidence)();
@@ -759,6 +899,13 @@ export async function runProductionVerification(environment, overrides = {}) {
 
   const origin = assertPublicOrigin(requiredEnvironment(environment, 'PUBLIC_ORIGIN'));
   await healthCheck(origin, overrides.fetchImpl ?? globalThis.fetch);
+  const publicDeployment = await publicDeploymentId(
+    origin,
+    overrides.fetchImpl ?? globalThis.fetch
+  );
+  if (publicDeployment !== containerDeploymentId) {
+    throw controlledError('PRODUCTION_DEPLOYMENT_MISMATCH');
+  }
 
   const acceptance = await (overrides.acceptanceRunner ?? runProductionAcceptance)(
     environment,
@@ -768,17 +915,17 @@ export async function runProductionVerification(environment, overrides = {}) {
 
   await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'node', 'scripts/database/production-backup-target.mjs'],
+    composeCommand('exec', '-T', 'app', 'node', 'scripts/database/production-backup-target.mjs'),
     'PRODUCTION_BACKUP_TARGET_INVALID'
   );
   await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'sh', 'scripts/backup/backup.sh'],
+    composeCommand('exec', '-T', 'app', 'sh', 'scripts/backup/backup.sh'),
     'PRODUCTION_BACKUP_FAILED'
   );
   const backupStamp = await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'cat', '/data/backups/latest-stamp'],
+    composeCommand('exec', '-T', 'app', 'cat', '/data/backups/latest-stamp'),
     'PRODUCTION_BACKUP_STAMP_FAILED'
   );
   assertRecordValue(backupStamp, /^\d{8}T\d{6}Z$/, 'PRODUCTION_RECORD_BACKUP_STAMP_INVALID');
@@ -789,13 +936,13 @@ export async function runProductionVerification(environment, overrides = {}) {
   ]);
   const recordedChecksums = parseChecksumRows(await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'cat', `/data/backups/checksums-${backupStamp}.txt`],
+    composeCommand('exec', '-T', 'app', 'cat', `/data/backups/checksums-${backupStamp}.txt`),
     'PRODUCTION_BACKUP_CHECKSUM_FAILED'
   ), expectedNames, 'PRODUCTION_BACKUP_CHECKSUM_INVALID');
   const recomputedChecksums = parseChecksumRows(await checkedCommand(
     runCommand,
-    ['compose', 'exec', '-T', 'app', 'sh', '-c',
-      `cd /data/backups && sha256sum mysql-${backupStamp}.sql.gz avatars-${backupStamp}.tar.gz manifest-${backupStamp}.txt`],
+    composeCommand('exec', '-T', 'app', 'sh', '-c',
+      `cd /data/backups && sha256sum mysql-${backupStamp}.sql.gz avatars-${backupStamp}.tar.gz manifest-${backupStamp}.txt`),
     'PRODUCTION_BACKUP_RECHECK_FAILED'
   ), expectedNames, 'PRODUCTION_BACKUP_RECHECK_INVALID');
   if (JSON.stringify(recordedChecksums) !== JSON.stringify(recomputedChecksums)) {
@@ -803,6 +950,7 @@ export async function runProductionVerification(environment, overrides = {}) {
   }
 
   return {
+    deploymentId: containerDeploymentId,
     imageDigest,
     migrationVersion: lastMigration.name,
     migrationChecksum: lastMigration.checksum,
@@ -817,6 +965,10 @@ export async function runProductionVerification(environment, overrides = {}) {
 }
 
 export function formatProductionVerificationRecord(evidence) {
+  const deploymentId = validatedDeploymentId(
+    evidence.deploymentId,
+    'PRODUCTION_RECORD_DEPLOYMENT_ID_INVALID'
+  );
   const imageDigest = assertRecordValue(
     evidence.imageDigest,
     /^sha256:[a-f0-9]{64}$/,
@@ -878,6 +1030,7 @@ export function formatProductionVerificationRecord(evidence) {
     `| acceptance | ${acceptanceResult} |`,
     `| migration | ${migrationResult} |`,
     `| acceptance timestamp | ${acceptanceTimestamp} |`,
+    `| deployment ID | ${deploymentId} |`,
     `| image digest | ${imageDigest} |`,
     `| migration version | ${migrationVersion} |`,
     `| migration checksum | ${migrationChecksum} |`,

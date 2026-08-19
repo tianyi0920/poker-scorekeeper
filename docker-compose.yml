@@ -3,6 +3,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        DEPLOYMENT_ID: ${DEPLOYMENT_ID:?DEPLOYMENT_ID is required}
     image: poker-scorekeeper:local
     restart: unless-stopped
     env_file:
