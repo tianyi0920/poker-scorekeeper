@@ -154,13 +154,19 @@ describe.sequential('game lifecycle concurrency', () => {
 
     let settled = false;
     const start = games.start(draft.id, authUser(actor)).finally(() => { settled = true; });
+    const startResult = start.then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
     await delay(200);
     expect(settled).toBe(false);
     await prisma.user.update({ where: { id: actor.id }, data: { role: Role.USER } });
     releaseSingleton();
     await blocker;
 
-    await expect(start).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(startResult).resolves.toMatchObject({
+      status: 'rejected', reason: { code: 'FORBIDDEN' }
+    });
     await expect(prisma.game.findUniqueOrThrow({ where: { id: draft.id } }))
       .resolves.toMatchObject({ status: GameStatus.DRAFT, version: 1 });
     await expect(prisma.auditLog.count({
@@ -188,13 +194,19 @@ describe.sequential('game lifecycle concurrency', () => {
     let settled = false;
     const settlement = games.beginSettlement(active.id, authUser(actor))
       .finally(() => { settled = true; });
+    const settlementResult = settlement.then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    );
     await delay(200);
     expect(settled).toBe(false);
     releaseActor();
     await blocker;
 
     try {
-      await expect(settlement).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      await expect(settlementResult).resolves.toMatchObject({
+        status: 'rejected', reason: { code: 'FORBIDDEN' }
+      });
       await expect(prisma.game.findUniqueOrThrow({ where: { id: active.id } }))
         .resolves.toMatchObject({ status: GameStatus.ACTIVE, version: 1, stoppedAt: null });
       await expect(prisma.auditLog.count({

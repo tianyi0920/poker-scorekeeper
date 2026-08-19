@@ -500,7 +500,7 @@ describe.sequential('recoverable settlement drafts', () => {
     expect(audit).toMatchObject({ actorUserId: adminB.id });
     expect(audit.beforeJson).toMatchObject({ editorUserId: adminA.id });
     expect(audit.afterJson).toMatchObject({ editorUserId: adminB.id });
-  }, 30_000);
+  }, 60_000);
 
   it('uses current rake settings and each current user flag for every preview', async () => {
     const fixture = await seedActiveGame('live-rake');

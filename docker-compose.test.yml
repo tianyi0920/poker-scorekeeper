@@ -48,6 +48,7 @@ services:
     volumes:
       - avatar_test_data:/data/avatars
       - backup_test_data:/data/backups
+      - restore_test_data:/data/restore
     healthcheck:
       test: ["CMD", "node", "scripts/docker/healthcheck.mjs"]
       interval: 3s
@@ -64,3 +65,4 @@ volumes:
   mysql_test_data:
   avatar_test_data:
   backup_test_data:
+  restore_test_data:

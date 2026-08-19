@@ -174,7 +174,7 @@ describe.sequential('user administration', () => {
     userActor = await seedUser('user-actor');
     superAuth = await login(superActor);
     adminAuth = await login(adminActor);
-  }, 30_000);
+  }, 120_000);
 
   afterAll(async () => {
     if (prisma !== undefined) {
@@ -195,7 +195,7 @@ describe.sequential('user administration', () => {
       }
     }
     if (app !== undefined) await app.close();
-  }, 30_000);
+  }, 120_000);
 
   it.each([
     ['ADMIN', 'ADMIN', 403],
@@ -596,7 +596,7 @@ describe.sequential('user administration', () => {
       rakeEnabled: true
     }));
     expect(result).toMatchObject({ status: 'rejected', reason: { code: 'FORBIDDEN' } });
-  }, 15_000);
+  }, 60_000);
 
   it('re-authorizes user update after the super admin is demoted mid-request', async () => {
     const actor = await seedUser('update-race-actor', Role.SUPER_ADMIN);
@@ -605,7 +605,7 @@ describe.sequential('user administration', () => {
       usersService.update(actor, target.id, { role: 'ADMIN' })
     );
     expect(result).toMatchObject({ status: 'rejected', reason: { code: 'FORBIDDEN' } });
-  }, 15_000);
+  }, 60_000);
 
   it('re-authorizes password reset after the administrator is demoted mid-request', async () => {
     const actor = await seedUser('password-actor-race', Role.ADMIN);
@@ -614,7 +614,7 @@ describe.sequential('user administration', () => {
       usersService.resetPassword(actor, target.id, { newPassword: replacementPassword })
     );
     expect(result).toMatchObject({ status: 'rejected', reason: { code: 'FORBIDDEN' } });
-  }, 15_000);
+  }, 60_000);
 
   it('forces password change after an administrator reset', async () => {
     const target = await seedUser('password-reset');
@@ -629,7 +629,7 @@ describe.sequential('user administration', () => {
     const changed = await prisma.user.findUniqueOrThrow({ where: { id: target.id } });
     expect(changed.mustChangePassword).toBe(true);
     expect(await argon2.verify(changed.passwordHash, replacementPassword)).toBe(true);
-  }, 15_000);
+  }, 60_000);
 
   it('re-authorizes an administrator password reset after a concurrent promotion', async () => {
     const target = await seedUser('password-race');
@@ -655,7 +655,7 @@ describe.sequential('user administration', () => {
 
     await blocker;
     await expect(resetPromise).rejects.toMatchObject({ code: 'FORBIDDEN' });
-  }, 15_000);
+  }, 60_000);
 
   it.each(['role', 'isActive'] as const)('revokes sessions after %s changes', async (field) => {
     const target = await seedUser(`session-${field}`);

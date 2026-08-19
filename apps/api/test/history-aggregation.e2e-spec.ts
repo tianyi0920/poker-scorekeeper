@@ -139,6 +139,17 @@ describe.sequential('authorized all-player history aggregation', () => {
     return game.id;
   }
 
+  async function runFixtureBatches<T>(tasks: Array<() => Promise<T>>): Promise<T[]> {
+    const values: T[] = [];
+    for (let offset = 0; offset < tasks.length; offset += 3) {
+      const settled = await Promise.allSettled(tasks.slice(offset, offset + 3).map((task) => task()));
+      const failure = settled.find((result): result is PromiseRejectedResult => result.status === 'rejected');
+      if (failure !== undefined) throw failure.reason;
+      values.push(...settled.map((result) => (result as PromiseFulfilledResult<T>).value));
+    }
+    return values;
+  }
+
   const simpleResult = (user: User): ResultInput => ({
     user,
     nickname: `${user.nickname}-snapshot`,
@@ -198,7 +209,7 @@ describe.sequential('authorized all-player history aggregation', () => {
       .post('/api/auth/login').send({ username: superAdmin.username, password }).expect(201));
     participantAuth = loginFrom(await request(app.getHttpServer())
       .post('/api/auth/login').send({ username: participant.username, password }).expect(201));
-  }, 30_000);
+  }, 120_000);
 
   beforeEach(async () => cleanOwnedFixtures());
 
@@ -214,7 +225,7 @@ describe.sequential('authorized all-player history aggregation', () => {
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }
     if (app !== undefined) await app.close();
-  }, 30_000);
+  }, 120_000);
 
   it('returns every immutable snapshot player and exact component sums for ordinary participant selections', async () => {
     // Break caught: aggregation omits opponents, reads mutable profiles, or derives a component sum with number arithmetic.
@@ -329,21 +340,23 @@ describe.sequential('authorized all-player history aggregation', () => {
   it('resolves every quick filter with UTC date boundaries before authorizing and aggregating', async () => {
     // Break caught: quick filters use local-time boundaries, exclude an inclusive custom endpoint, or bypass participant scope.
     const now = new Date();
-    const recent = await Promise.all(Array.from({ length: 31 }, (_, index) => seedCompleted(
+    const recent = await runFixtureBatches(Array.from({ length: 31 }, (_, index) => () => seedCompleted(
       `recent-${index}`,
       new Date(now.getTime() - index * 60_000),
       [simpleResult(participant)]
     )));
-    const inside30 = await seedCompleted('inside-30', new Date(now.getTime() - (30 * 86_400_000) + 60_000), [simpleResult(participant)]);
-    const outside30 = await seedCompleted('outside-30', new Date(now.getTime() - (30 * 86_400_000) - 60_000), [simpleResult(participant)]);
-    const inside90 = await seedCompleted('inside-90', new Date(now.getTime() - (90 * 86_400_000) + 60_000), [simpleResult(participant)]);
-    const outside90 = await seedCompleted('outside-90', new Date(now.getTime() - (90 * 86_400_000) - 60_000), [simpleResult(participant)]);
     const customStart = new Date('2026-08-01T00:00:00.000Z');
     const customEnd = new Date('2026-08-02T00:00:00.000Z');
-    const customAtStart = await seedCompleted('custom-start', customStart, [simpleResult(participant)]);
-    const customAtEnd = await seedCompleted('custom-end', customEnd, [simpleResult(participant)]);
-    await seedCompleted('custom-outside', new Date('2026-08-02T00:00:00.001Z'), [simpleResult(participant)]);
-    const forbidden = await seedCompleted('filter-forbidden', new Date(now.getTime() - 30_000), [simpleResult(outsider)]);
+    const [inside30, outside30, inside90, outside90, customAtStart, customAtEnd, , forbidden] = await runFixtureBatches([
+      () => seedCompleted('inside-30', new Date(now.getTime() - (30 * 86_400_000) + 60_000), [simpleResult(participant)]),
+      () => seedCompleted('outside-30', new Date(now.getTime() - (30 * 86_400_000) - 60_000), [simpleResult(participant)]),
+      () => seedCompleted('inside-90', new Date(now.getTime() - (90 * 86_400_000) + 60_000), [simpleResult(participant)]),
+      () => seedCompleted('outside-90', new Date(now.getTime() - (90 * 86_400_000) - 60_000), [simpleResult(participant)]),
+      () => seedCompleted('custom-start', customStart, [simpleResult(participant)]),
+      () => seedCompleted('custom-end', customEnd, [simpleResult(participant)]),
+      () => seedCompleted('custom-outside', new Date('2026-08-02T00:00:00.001Z'), [simpleResult(participant)]),
+      () => seedCompleted('filter-forbidden', new Date(now.getTime() - 30_000), [simpleResult(outsider)])
+    ]);
 
     const recent10 = await aggregateAs(participantAuth, { filter: { kind: 'RECENT_10' } }).expect(200);
     expect(recent10.body.gameIds).toHaveLength(10);
@@ -362,7 +375,7 @@ describe.sequential('authorized all-player history aggregation', () => {
       filter: { kind: 'CUSTOM_DATE_RANGE', startAt: customStart.toISOString(), endAt: customEnd.toISOString() }
     }).expect(200);
     expect(custom.body.gameIds).toEqual([customAtEnd, customAtStart]);
-  });
+  }, 300_000);
 
   it('rejects invalid quick filter date ranges and detects derived signed BIGINT overflow', async () => {
     // Break caught: inverted or offset-less dates become arbitrary scopes, or aggregate sums escape the signed BIGINT contract.

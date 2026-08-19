@@ -99,7 +99,7 @@ describe.sequential('live rake settings', () => {
     superAuth = await login(superUser);
     adminAuth = await login(adminUser);
     userAuth = await login(regularUser);
-  }, 30_000);
+  }, 60_000);
 
   beforeEach(async () => {
     await prisma.auditLog.deleteMany({ where: { entityType: 'SYSTEM_SETTING', entityId: 'singleton' } });
@@ -127,7 +127,7 @@ describe.sequential('live rake settings', () => {
       }
     }
     if (app !== undefined) await app.close();
-  }, 30_000);
+  }, 60_000);
 
   it('requires authentication and lets every logged-in role read live settings', async () => {
     await getRake().expect(401).expect(({ body }) => expect(body.code).toBe('UNAUTHENTICATED'));

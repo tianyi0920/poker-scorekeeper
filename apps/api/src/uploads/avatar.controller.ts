@@ -11,7 +11,6 @@ import {
   UseGuards,
   UseInterceptors
 } from '@nestjs/common';
-import { FileInterceptor } from '@nestjs/platform-express';
 import {
   selectPresetAvatarSchema,
   type SelectPresetAvatarRequest
@@ -25,10 +24,10 @@ import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
 import { Role } from '../generated/prisma/client.js';
 import {
   AvatarService,
-  MAX_AVATAR_BYTES,
   type AvatarResponse,
   type UploadedAvatarFile
 } from './avatar.service.js';
+import { AvatarUploadInterceptor } from './avatar-upload.interceptor.js';
 import { PRESET_AVATARS, type PresetAvatar } from './preset-avatars.js';
 
 @Controller()
@@ -52,9 +51,7 @@ export class AvatarController {
 
   @Post('me/avatar/upload')
   @UseGuards(SessionGuard)
-  @UseInterceptors(FileInterceptor('file', {
-    limits: { fileSize: MAX_AVATAR_BYTES, files: 1 }
-  }))
+  @UseInterceptors(AvatarUploadInterceptor)
   upload(
     @CurrentUser() user: AuthUser,
     @UploadedFile() file: UploadedAvatarFile | undefined

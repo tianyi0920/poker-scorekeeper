@@ -84,6 +84,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .settlement-metric--final { border: 1px solid rgb(240 202 115 / .52); border-radius: 9px; background: rgb(240 202 115 / .08); }.settlement-metric--final .settlement-metric { background: transparent; }.settlement-metric--final dd { color: var(--gold); font-size: .9rem; }
 .raw-profit.money--positive { color: var(--positive); }.raw-profit.money--negative { color: var(--negative); }.raw-profit.money--neutral { color: var(--text); }
 .game-heading { display: flex; min-width: 0; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.game-heading > div:first-child { min-width: 0; }
 .game-heading h2 { margin: 0; overflow: hidden; color: var(--text); font-size: 1.32rem; text-overflow: ellipsis; white-space: nowrap; }
 .game-heading-actions { display: grid; flex: 0 0 auto; justify-items: end; gap: 4px; }.game-heading-actions .button { width: auto; min-height: var(--touch-target); padding: 4px 8px; font-size: .72rem; }
 .status-pill { display: inline-flex; min-height: 28px; align-items: center; flex: 0 0 auto; padding: 4px 10px; border-radius: var(--radius-pill); font-size: .72rem; font-weight: 800; }

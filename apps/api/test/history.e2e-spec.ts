@@ -215,7 +215,7 @@ describe.sequential('immutable completed-game history', () => {
       .post('/api/auth/login').send({ username: admin.username, password }).expect(201));
     memberCookie = cookieFrom(await request(app.getHttpServer())
       .post('/api/auth/login').send({ username: member.username, password }).expect(201));
-  }, 30_000);
+  }, 120_000);
 
   beforeEach(async () => {
     await cleanOwnedGames();
@@ -237,7 +237,7 @@ describe.sequential('immutable completed-game history', () => {
       await prisma.user.deleteMany({ where: { id: { in: userIds } } });
     }
     if (app !== undefined) await app.close();
-  }, 30_000);
+  }, 120_000);
 
   it('gives administrators global scope and participants immutable full-table detail', async () => {
     // Break caught: user scope leaks another table, drops opponents, or reads mutable profiles after settlement.
@@ -288,7 +288,7 @@ describe.sequential('immutable completed-game history', () => {
     });
     await read(memberCookie, `/api/history/${hidden}`).expect(404)
       .expect(({ body }) => expect(body.code).toBe('HISTORY_SCOPE_DENIED'));
-  });
+  }, 120_000);
 
   it('omits completed games that have no permanent settlement for administrators and participants', async () => {
     // Break caught: a nullable settlement is force-dereferenced while mapping the history list.

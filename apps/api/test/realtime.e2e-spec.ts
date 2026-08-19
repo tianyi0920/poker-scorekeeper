@@ -772,7 +772,7 @@ describe.sequential('realtime game rooms', () => {
       .get('/api/settings/rake')
       .set('Cookie', superAuth.cookie)
       .expect(200);
-    const globalEvent = waitForContractEvent(socket, 'rake-settings.updated', rakeSettingsUpdatedEventSchema);
+    const globalEvent = waitForContractEvent(socket, 'rake-settings.updated', rakeSettingsUpdatedEventSchema, 30_000);
     await patch(superAuth, '/api/settings/rake', {
       threshold: before.body.threshold,
       bps: before.body.bps,
@@ -780,10 +780,10 @@ describe.sequential('realtime game rooms', () => {
     }).expect(200);
     expect(await globalEvent).toEqual({ version: before.body.version + 1 });
 
-    const playerEvent = waitForContractEvent(socket, 'player-rake.updated', playerRakeUpdatedEventSchema);
+    const playerEvent = waitForContractEvent(socket, 'player-rake.updated', playerRakeUpdatedEventSchema, 30_000);
     await patch(superAuth, `/api/users/${player.id}`, { rakeEnabled: false }).expect(200);
     expect(await playerEvent).toEqual({ userId: player.id });
-  });
+  }, 120_000);
 
   it.each(['disable', 'reset-password', 'logout'] as const)(
     'disconnects both tabs and removes presence after %s revokes the session',

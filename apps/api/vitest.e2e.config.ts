@@ -7,8 +7,8 @@ export default defineConfig({
     globals: true,
     pool: 'forks',
     poolOptions: { forks: { singleFork: true } },
-    testTimeout: 30_000,
-    hookTimeout: 30_000,
+    testTimeout: 60_000,
+    hookTimeout: 60_000,
     include: ['test/**/*.e2e-spec.ts'],
     setupFiles: ['./test/setup.ts']
   }

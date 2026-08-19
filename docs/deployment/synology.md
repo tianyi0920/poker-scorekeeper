@@ -104,6 +104,10 @@ docker volume ls --filter label=com.docker.compose.project=poker17smoke
 docker compose -p poker17smoke -f docker-compose.test.yml down -v --remove-orphans
 ```
 
+合并或发布前在开发机运行 `pnpm verify:release`。该命令固定要求 pnpm 10.15.1，并依次执行受保护的测试库连通检查、类型检查、单元/集成测试、Chromium 与 WebKit 移动端 E2E、构建、镜像构建、Compose 迁移与健康检查、应用重启卷持久性，以及备份到全新 `poker_scorekeeper_restore_test` 的隔离恢复。恢复后还会用同一镜像连接恢复库，核验已完成历史和上传头像。任何 Docker CLI、daemon、buildx、Compose、测试库或浏览器能力缺失都会令命令失败，不会跳过发布关卡。
+
+发布校验只使用 `docker-compose.test.yml` 的内部 MySQL 和按本轮随机标识命名的 Compose 项目；它绝不能连接 NAS 生产服务。脚本结束时只清理本轮 Compose 项目及其命名卷。若命令失败，应保留完整失败阶段和报告供审计，修复环境或代码后从头重跑，不要把失败阶段改成可选项。
+
 ## 6. 每日备份与 14 天保留
 
 备份脚本先取得 `data/backups/.backup.lock`，再使用 MySQL 单事务、`--skip-add-locks` 导出，随后只打包头像目录顶层中已提交且符合受控命名的 `.webp` 文件；上传点文件、临时文件、目录和软链接不会进入归档。dump 不包含 `LOCK TABLES` 语句，恢复账号无需该权限。只有完整集合才发布校验文件和单调前进的 `latest-stamp`。密码来自容器环境的 `MYSQL_PASSWORD`，不会出现在命令参数或日志中。脚本只清理符合本项目精确数字时间戳命名且超过 14 天的普通文件。

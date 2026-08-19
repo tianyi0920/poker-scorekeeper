@@ -122,4 +122,44 @@ describe('production deployment artifacts', () => {
     expect(artifacts).toMatch(/replace_me|<password>|CHANGE_ME/);
     expect(artifacts).not.toMatch(/mysql:\/\/[^:\s]+:(?!replace_me|<password>|CHANGE_ME)[^@\s]+@(?:tianyi\.wiki|192\.168\.10\.248)/);
   });
+
+  it('keeps release verification fail-closed across local, browser, image, restart, backup, and restore gates', async () => {
+    const release = await readRepositoryFile('scripts/verify-release.ps1');
+    const rootPackage = JSON.parse(await readRepositoryFile('package.json')) as {
+      packageManager: string; scripts: Record<string, string>;
+    };
+
+    expect(rootPackage.packageManager).toBe('pnpm@10.15.1');
+    expect(rootPackage.scripts['verify:release']).toBe(
+      'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1'
+    );
+    for (const required of [
+      'pnpm install --frozen-lockfile',
+      'pnpm typecheck',
+      'pnpm test',
+      'test:integration',
+      'playwright test',
+      'pnpm build',
+      'docker build',
+      'docker compose',
+      'restart app',
+      'backup.sh',
+      'restore.sh',
+      'assert-restored-data.mjs'
+    ]) expect(release).toContain(required);
+    expect(release).toContain('10.15.1');
+    expect(release).toContain('poker_scorekeeper_restore_test');
+    expect(release).not.toContain('ON *.*');
+    expect(release).not.toMatch(/--skip|SKIP_DOCKER|continue-on-error/i);
+  });
+
+  it('asserts restored completed history and uploaded avatar only in the exact isolated restore schema', async () => {
+    const assertion = await readRepositoryFile('scripts/database/assert-restored-data.mjs');
+    expect(assertion).toContain("poker_scorekeeper_restore_test");
+    expect(assertion).toMatch(/COMPLETED/);
+    expect(assertion).toMatch(/settlements/);
+    expect(assertion).toMatch(/avatar_kind_snapshot/);
+    expect(assertion).toMatch(/RESTORE_AVATAR_ROOT/);
+    expect(assertion).not.toMatch(/DROP\s+(?:DATABASE|TABLE)|TRUNCATE|DELETE\s+FROM/i);
+  });
 });
