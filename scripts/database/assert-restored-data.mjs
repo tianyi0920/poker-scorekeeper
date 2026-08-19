@@ -25,21 +25,43 @@ const connection = await mariadb.createConnection({
 });
 try {
   const rows = await connection.query(
-    `SELECT g.id, g.status, gp.avatar_kind_snapshot, gp.avatar_value_snapshot,
-            COUNT(DISTINCT s.id) AS settlement_count, COUNT(DISTINCT sr.id) AS result_count
+    `SELECT g.id, g.status, s.buy_in_total, s.cash_out_total, s.room_fee,
+            s.other_fee, s.rake_total, s.final_total
        FROM games g
-       JOIN game_players gp ON gp.game_id = g.id
        JOIN settlements s ON s.game_id = g.id
-       JOIN settlement_results sr ON sr.settlement_id = s.id AND sr.game_player_id = gp.id
       WHERE g.name = ?
-      GROUP BY g.id, g.status, gp.avatar_kind_snapshot, gp.avatar_value_snapshot`,
+      `,
     [`Task18 release drill ${runId}`]
   );
-  if (rows.length !== 1 || rows[0].status !== 'COMPLETED' || rows[0].avatar_kind_snapshot !== 'UPLOAD'
-    || Number(rows[0].settlement_count) !== 1 || Number(rows[0].result_count) !== 1) {
+  if (rows.length !== 1 || rows[0].status !== 'COMPLETED'
+    || String(rows[0].buy_in_total) !== '900' || String(rows[0].cash_out_total) !== '900'
+    || String(rows[0].room_fee) !== '20' || String(rows[0].other_fee) !== '0'
+    || String(rows[0].rake_total) !== '0' || String(rows[0].final_total) !== '-20') {
     throw new Error('Restored completed history is incomplete');
   }
-  const avatar = rows[0].avatar_value_snapshot;
+  const players = await connection.query(
+    `SELECT gp.nickname_snapshot, gp.avatar_kind_snapshot, gp.avatar_value_snapshot,
+            sr.buy_in, sr.cash_out, sr.raw_profit, sr.room_fee_share,
+            sr.other_fee_share, sr.after_fee_profit, sr.rake_amount, sr.final_amount
+       FROM game_players gp
+       JOIN settlement_results sr ON sr.game_player_id = gp.id
+       JOIN settlements s ON s.id = sr.settlement_id AND s.game_id = gp.game_id
+      WHERE gp.game_id = ?
+      ORDER BY gp.seat_no`,
+    [rows[0].id]
+  );
+  const expectedPlayers = [
+    [`Drill admin ${runId}`, 'PRESET', '600', '900', '300', '20', '0', '280', '0', '280'],
+    [`Drill player ${runId}`, 'UPLOAD', '300', '0', '-300', '0', '0', '-300', '0', '-300']
+  ];
+  const fields = ['nickname_snapshot', 'avatar_kind_snapshot', 'buy_in', 'cash_out', 'raw_profit',
+    'room_fee_share', 'other_fee_share', 'after_fee_profit', 'rake_amount', 'final_amount'];
+  if (players.length !== expectedPlayers.length || !players.every((player, index) => (
+    fields.every((field, fieldIndex) => String(player[field]) === expectedPlayers[index][fieldIndex])
+  ))) {
+    throw new Error('Restored settlement participants or amounts are incomplete');
+  }
+  const avatar = players[1].avatar_value_snapshot;
   if (!/^[a-z0-9]{3,30}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/.test(avatar)) {
     throw new Error('Restored avatar filename is not controlled');
   }

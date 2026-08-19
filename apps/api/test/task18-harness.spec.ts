@@ -1,0 +1,90 @@
+import { readTestDatabaseEnvironment } from '../../../tests/e2e/support/database.js';
+import { ownedAvatarFileName } from '../../../tests/e2e/support/avatar-cleanup.js';
+import { assertRestoredHistoryPayload } from '../../../scripts/database/assert-restored-api.mjs';
+import { resolve } from 'node:path';
+
+const repositoryRoot = resolve(import.meta.dirname, '../../..');
+
+describe('Task18 release harness safety', () => {
+  it('replaces a poisoned parent DATABASE_URL with the guarded .env.local test target', async () => {
+    // Break caught: Playwright's API process inherits an unrelated parent DATABASE_URL.
+    const previous = process.env.DATABASE_URL;
+    const previousDirectory = process.cwd();
+    process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
+    try {
+      process.chdir(repositoryRoot);
+      await readTestDatabaseEnvironment();
+      const effective = new URL(process.env.DATABASE_URL!);
+      expect({
+        protocol: effective.protocol,
+        hostname: effective.hostname,
+        port: effective.port,
+        pathname: effective.pathname
+      }).toEqual({
+        protocol: 'mysql:',
+        hostname: 'tianyi.wiki',
+        port: '8306',
+        pathname: '/poker_scorekeeper_test'
+      });
+    } finally {
+      process.chdir(previousDirectory);
+      if (previous === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous;
+    }
+  });
+
+  it('accepts only direct-child UUID uploads owned by the current fixture user allowlist', () => {
+    // Break caught: a poisoned users.avatar_value can delete another direct child or a nested path.
+    const fixtureIds = new Set(['t18-run-player']);
+    const owned = 't18-run-player-01234567-89ab-4cde-8fab-0123456789ab.webp';
+    expect(ownedAvatarFileName('t18-run-player', owned, fixtureIds)).toBe(owned);
+    for (const candidate of [
+      'other-user-01234567-89ab-4cde-8fab-0123456789ab.webp',
+      't18-run-player-01234567-89ab-1cde-8fab-0123456789ab.webp',
+      '../t18-run-player-01234567-89ab-4cde-8fab-0123456789ab.webp',
+      'nested/t18-run-player-01234567-89ab-4cde-8fab-0123456789ab.webp'
+    ]) {
+      expect(ownedAvatarFileName('t18-run-player', candidate, fixtureIds)).toBeUndefined();
+    }
+    expect(ownedAvatarFileName('not-allowlisted', owned, fixtureIds)).toBeUndefined();
+  });
+
+  it('requires restored history to expose both participants and every exact settlement amount', () => {
+    // Break caught: the restore gate accepts a reachable server whose history is partial or from another image/database.
+    const runId = 'abc12345';
+    const gameId = `t18gam${runId}`;
+    const list = {
+      items: [{
+        gameId,
+        name: `Task18 release drill ${runId}`,
+        completedAt: '2026-08-19T00:00:00.000Z',
+        settledByNickname: `Drill admin ${runId}`,
+        final: '-20'
+      }],
+      nextCursor: null
+    };
+    const detail = {
+      immutable: true,
+      game: { id: gameId, name: `Task18 release drill ${runId}` },
+      totals: { buyIn: '900', cashOut: '900', roomFee: '20', otherFee: '0', rake: '0', final: '-20' },
+      players: [
+        {
+          nickname: `Drill admin ${runId}`,
+          buyIn: '600', cashOut: '900', rawProfit: '300', roomFeeShare: '20',
+          otherFeeShare: '0', afterFeeProfit: '280', rakeAmount: '0', finalAmount: '280'
+        },
+        {
+          nickname: `Drill player ${runId}`,
+          buyIn: '300', cashOut: '0', rawProfit: '-300', roomFeeShare: '0',
+          otherFeeShare: '0', afterFeeProfit: '-300', rakeAmount: '0', finalAmount: '-300'
+        }
+      ]
+    };
+
+    expect(() => assertRestoredHistoryPayload(runId, list, detail)).not.toThrow();
+    expect(() => assertRestoredHistoryPayload(runId, list, {
+      ...detail,
+      totals: { ...detail.totals, final: '-19' }
+    })).toThrow('Restored history detail does not match the exact drill settlement');
+  });
+});

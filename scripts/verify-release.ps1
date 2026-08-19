@@ -7,7 +7,7 @@ function Invoke-External {
   if ($LASTEXITCODE -ne 0) { throw "External command failed with exit code $LASTEXITCODE" }
 }
 
-function Wait-Ready {
+function Wait-Live {
   param([Parameter(Mandatory)][string] $Uri)
   for ($attempt = 0; $attempt -lt 60; $attempt++) {
     try {
@@ -15,7 +15,50 @@ function Wait-Ready {
       if ($response.StatusCode -eq 200) { return }
     } catch { Start-Sleep -Seconds 2 }
   }
-  throw "Health endpoint did not become ready: $Uri"
+  throw "Live endpoint did not become ready: $Uri"
+}
+
+function Assert-PortAvailable {
+  param([Parameter(Mandatory)][int] $Port)
+  $client = New-Object System.Net.Sockets.TcpClient
+  $connected = $false
+  try {
+    $attempt = $client.BeginConnect('127.0.0.1', $Port, $null, $null)
+    if ($attempt.AsyncWaitHandle.WaitOne(250)) {
+      try {
+        $client.EndConnect($attempt)
+        $connected = $client.Connected
+      } catch { $connected = $false }
+    }
+  } finally {
+    $client.Dispose()
+  }
+  if ($connected) { throw "Release verification port $Port is already in use" }
+}
+
+function Write-PrivateEnvironmentFile {
+  param(
+    [Parameter(Mandatory)][string] $Path,
+    [Parameter(Mandatory)][string[]] $Lines
+  )
+  [System.IO.File]::WriteAllLines($Path, $Lines, (New-Object System.Text.UTF8Encoding($false)))
+  if ($env:OS -eq 'Windows_NT') {
+    $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().User
+    $acl = New-Object System.Security.AccessControl.FileSecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+      $identity,
+      [System.Security.AccessControl.FileSystemRights]::FullControl,
+      [System.Security.AccessControl.AccessControlType]::Allow
+    )
+    $acl.AddAccessRule($rule)
+    [System.IO.File]::SetAccessControl($Path, $acl)
+  } else {
+    [System.IO.File]::SetUnixFileMode(
+      $Path,
+      [System.IO.UnixFileMode]::UserRead -bor [System.IO.UnixFileMode]::UserWrite
+    )
+  }
 }
 
 $node = (Get-Command node -ErrorAction Stop).Source
@@ -39,7 +82,7 @@ Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCl
 Write-Output 'gate: API test:integration'
 Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, '--filter', '@poker/api', 'test:integration')
 Write-Output 'gate: pnpm exec playwright test'
-Invoke-External $node @($pnpmCli, 'exec', 'playwright', 'test')
+Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'exec', 'playwright', 'test')
 Write-Output 'gate: pnpm build'
 Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'build')
 
@@ -58,20 +101,22 @@ $restoreUser = "t18r$runId"
 $restorePassword = ([Guid]::NewGuid().ToString('N') + [Guid]::NewGuid().ToString('N'))
 $restoreUserCreated = $false
 $composeStarted = $false
+$restoreEnvironmentFile = $null
 
 try {
   Write-Output 'gate: docker build'
   Invoke-External $docker @('build', '-t', 'poker-scorekeeper:verify', '.')
   Invoke-External $docker ($compose + @('config', '--quiet'))
   Write-Output 'gate: docker compose migration and health'
+  Assert-PortAvailable -Port 3000
   $composeStarted = $true
   Invoke-External $docker ($compose + @('up', '-d', '--build'))
-  Wait-Ready 'http://127.0.0.1:3000/api/health/ready'
+  Wait-Live 'http://127.0.0.1:3000/api/health/live'
 
   Invoke-External $docker ($compose + @('exec', '-T', '-e', "TASK18_DRILL_RUN_ID=$runId", 'app', 'node', 'scripts/database/seed-release-drill.mjs'))
   Write-Output 'gate: docker compose restart app and persistent volume'
   Invoke-External $docker ($compose + @('restart', 'app'))
-  Wait-Ready 'http://127.0.0.1:3000/api/health/ready'
+  Wait-Live 'http://127.0.0.1:3000/api/health/live'
   Invoke-External $docker ($compose + @('exec', '-T', 'app', 'sh', '-lc', 'test -n "$(find /data/avatars -mindepth 1 -maxdepth 1 -type f -name ''t18usr*.webp'' -print -quit)"'))
 
   Write-Output 'gate: backup.sh'
@@ -79,43 +124,72 @@ try {
   $restoreStamp = (& $docker @($compose + @('exec', '-T', 'app', 'cat', '/data/backups/latest-stamp'))).Trim()
   if ($LASTEXITCODE -ne 0 -or $restoreStamp -notmatch '^[0-9]{8}T[0-9]{6}Z$') { throw 'Invalid backup stamp' }
 
+  $runtimeDirectory = Join-Path (Get-Location) 'test-results/task18-runtime'
+  New-Item -ItemType Directory -Path $runtimeDirectory -Force | Out-Null
+  $restoreEnvironmentFile = Join-Path $runtimeDirectory "restore-$runId.env"
+  $restoreUrl = "mysql://$restoreUser`:$restorePassword@mysql`:3306/$restoreDatabase"
+  Write-PrivateEnvironmentFile -Path $restoreEnvironmentFile -Lines @(
+    "TASK18_RESTORE_USER=$restoreUser",
+    "TASK18_RESTORE_PASSWORD=$restorePassword",
+    'MYSQL_HOST=mysql',
+    'MYSQL_PORT=3306',
+    "MYSQL_USER=$restoreUser",
+    "MYSQL_PASSWORD=$restorePassword",
+    "RESTORE_DATABASE=$restoreDatabase",
+    "CONFIRM_RESTORE_DATABASE=$restoreDatabase",
+    "CONFIRM_RESTORE_ACTION=RESTORE $restoreDatabase",
+    "SQL_ARCHIVE=/data/backups/mysql-$restoreStamp.sql.gz",
+    "AVATAR_ARCHIVE=/data/backups/avatars-$restoreStamp.tar.gz",
+    "MANIFEST_FILE=/data/backups/manifest-$restoreStamp.txt",
+    "CHECKSUM_FILE=/data/backups/checksums-$restoreStamp.txt",
+    'RESTORE_AVATAR_PARENT=/data/restore',
+    'RESTORE_AVATAR_ROOT=/data/restore/avatars',
+    "TASK18_DRILL_RUN_ID=$runId",
+    'PORT=3001',
+    'PUBLIC_ORIGIN=http://127.0.0.1:3001',
+    "DATABASE_URL=$restoreUrl",
+    'AVATAR_ROOT=/data/restore/avatars'
+  )
+
   $createRestoreUser = 'set -eu; MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "CREATE USER ''$TASK18_RESTORE_USER''@''%'' IDENTIFIED BY ''$TASK18_RESTORE_PASSWORD''; GRANT ALL PRIVILEGES ON poker_scorekeeper_restore_test.* TO ''$TASK18_RESTORE_USER''@''%'';"'
-  Invoke-External $docker ($compose + @('exec', '-T', '-e', "TASK18_RESTORE_USER=$restoreUser", '-e', "TASK18_RESTORE_PASSWORD=$restorePassword", 'mysql', 'sh', '-lc', $createRestoreUser))
+  "$restoreUser`n$restorePassword" | & $docker @($compose + @('exec', '-T', 'mysql', 'sh', '-lc', "IFS= read -r TASK18_RESTORE_USER; IFS= read -r TASK18_RESTORE_PASSWORD; export TASK18_RESTORE_USER TASK18_RESTORE_PASSWORD; $createRestoreUser"))
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to create the isolated restore account' }
   $restoreUserCreated = $true
 
   Write-Output 'gate: restore.sh into poker_scorekeeper_restore_test'
-  $restoreEnvironment = @(
-    '-e', "MYSQL_USER=$restoreUser",
-    '-e', "MYSQL_PASSWORD=$restorePassword",
-    '-e', "RESTORE_DATABASE=$restoreDatabase",
-    '-e', "CONFIRM_RESTORE_DATABASE=$restoreDatabase",
-    '-e', "CONFIRM_RESTORE_ACTION=RESTORE $restoreDatabase",
-    '-e', "SQL_ARCHIVE=/data/backups/mysql-$restoreStamp.sql.gz",
-    '-e', "AVATAR_ARCHIVE=/data/backups/avatars-$restoreStamp.tar.gz",
-    '-e', "MANIFEST_FILE=/data/backups/manifest-$restoreStamp.txt",
-    '-e', "CHECKSUM_FILE=/data/backups/checksums-$restoreStamp.txt",
-    '-e', 'RESTORE_AVATAR_PARENT=/data/restore',
-    '-e', 'RESTORE_AVATAR_ROOT=/data/restore/avatars'
-  )
-  Invoke-External $docker ($compose + @('exec', '-T') + $restoreEnvironment + @('app', 'sh', 'scripts/backup/restore.sh'))
+  Invoke-External $docker ($compose + @('run', '--rm', '-T', '--no-deps', '--env-from-file', $restoreEnvironmentFile, '--entrypoint', 'sh', 'app', 'scripts/backup/restore.sh'))
 
-  $assertEnvironment = @('-e', "MYSQL_USER=$restoreUser", '-e', "MYSQL_PASSWORD=$restorePassword", '-e', "RESTORE_DATABASE=$restoreDatabase", '-e', 'RESTORE_AVATAR_ROOT=/data/restore/avatars', '-e', "TASK18_DRILL_RUN_ID=$runId")
-  $avatarFile = (& $docker @($compose + @('exec', '-T') + $assertEnvironment + @('app', 'node', 'scripts/database/assert-restored-data.mjs', '--print-avatar-path'))).Trim()
+  $avatarFile = (& $docker @($compose + @('run', '--rm', '-T', '--no-deps', '--env-from-file', $restoreEnvironmentFile, '--entrypoint', 'node', 'app', 'scripts/database/assert-restored-data.mjs', '--print-avatar-path'))).Trim()
   if ($LASTEXITCODE -ne 0 -or $avatarFile -notmatch '^[a-z0-9-]+\.webp$') { throw 'Restored data assertion failed' }
 
-  $restoreUrl = "mysql://$restoreUser`:$restorePassword@mysql`:3306/$restoreDatabase"
   $restoreContainer = "$project-restore-app"
-  Invoke-External $docker ($compose + @('run', '-d', '--name', $restoreContainer, '--no-deps', '-e', 'PORT=3001', '-e', 'PUBLIC_ORIGIN=http://127.0.0.1:3001', '-e', "DATABASE_URL=$restoreUrl", '-e', 'AVATAR_ROOT=/data/restore/avatars', '-p', '127.0.0.1:3001:3001', 'app'))
-  Wait-Ready 'http://127.0.0.1:3001/api/health/ready'
+  Assert-PortAvailable -Port 3001
+  Invoke-External $docker ($compose + @('run', '-d', '--name', $restoreContainer, '--no-deps', '--env-from-file', $restoreEnvironmentFile, '-p', '127.0.0.1:3001:3001', 'app'))
+  Wait-Live 'http://127.0.0.1:3001/api/health/live'
+  $previousRestoredBaseUrl = $env:RESTORED_BASE_URL
+  $previousDrillRunId = $env:TASK18_DRILL_RUN_ID
+  try {
+    $env:RESTORED_BASE_URL = 'http://127.0.0.1:3001'
+    $env:TASK18_DRILL_RUN_ID = $runId
+    Invoke-External $node @('scripts/database/assert-restored-api.mjs')
+  } finally {
+    if ($null -eq $previousRestoredBaseUrl) { Remove-Item Env:RESTORED_BASE_URL -ErrorAction SilentlyContinue }
+    else { $env:RESTORED_BASE_URL = $previousRestoredBaseUrl }
+    if ($null -eq $previousDrillRunId) { Remove-Item Env:TASK18_DRILL_RUN_ID -ErrorAction SilentlyContinue }
+    else { $env:TASK18_DRILL_RUN_ID = $previousDrillRunId }
+  }
   $avatarResponse = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "http://127.0.0.1:3001/avatars/uploads/$avatarFile"
   if ($avatarResponse.StatusCode -ne 200) { throw 'Restored avatar did not load from the restored image' }
   Write-Output 'release verification passed'
 } finally {
   if ($restoreUserCreated) {
     $dropRestoreUser = 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysql -uroot -e "DROP USER IF EXISTS ''$TASK18_RESTORE_USER''@''%''"'
-    & $docker @($compose + @('exec', '-T', '-e', "TASK18_RESTORE_USER=$restoreUser", 'mysql', 'sh', '-lc', $dropRestoreUser)) | Out-Null
+    $restoreUser | & $docker @($compose + @('exec', '-T', 'mysql', 'sh', '-lc', "IFS= read -r TASK18_RESTORE_USER; export TASK18_RESTORE_USER; $dropRestoreUser")) | Out-Null
   }
   if ($composeStarted) {
     & $docker @($compose + @('down', '-v', '--remove-orphans')) | Out-Null
+  }
+  if ($null -ne $restoreEnvironmentFile -and (Test-Path -LiteralPath $restoreEnvironmentFile -PathType Leaf)) {
+    Remove-Item -LiteralPath $restoreEnvironmentFile -Force
   }
 }

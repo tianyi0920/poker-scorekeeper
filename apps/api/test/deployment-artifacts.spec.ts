@@ -149,6 +149,18 @@ describe('production deployment artifacts', () => {
     ]) expect(release).toContain(required);
     expect(release).toContain('10.15.1');
     expect(release).toContain('poker_scorekeeper_restore_test');
+    expect(release).toMatch(/run-with-test-env\.mjs[^\r\n]+playwright[^\r\n]+test/);
+    expect(release).toContain('assert-restored-api.mjs');
+    expect(release).toContain('/api/health/live');
+    expect(release).not.toContain('/api/health/ready');
+    expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3000/);
+    expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3001/);
+    expect(release).toMatch(/--env-file|--env-from-file/);
+    expect(release).toMatch(/SetUnixFileMode[\s\S]+UserRead[\s\S]+UserWrite/);
+    expect(release).toContain('SetAccessRuleProtection($true, $false)');
+    expect(release).not.toMatch(/["']-e["'][^\r\n]+(?:PASSWORD|DATABASE_URL)/);
+    expect(release).not.toMatch(/(?:Invoke-External\s+\$docker|&\s+\$docker)[^\r\n]*DATABASE_URL/);
+    expect(release).toMatch(/finally[\s\S]+Remove-Item[^\r\n]+restoreEnvironmentFile/);
     expect(release).not.toContain('ON *.*');
     expect(release).not.toMatch(/--skip|SKIP_DOCKER|continue-on-error/i);
   });

@@ -4,7 +4,7 @@ import { readTestDatabaseEnvironment } from './database.js';
 
 async function main(): Promise<void> {
   const { values } = await readTestDatabaseEnvironment();
-  for (const [key, value] of Object.entries(values)) process.env[key] ??= value;
+  for (const [key, value] of Object.entries(values)) process.env[key] = value;
 
   process.env.NODE_ENV = 'test';
   process.env.PORT = '3000';

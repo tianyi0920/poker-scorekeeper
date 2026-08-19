@@ -3,7 +3,9 @@ import { readdir, unlink } from 'node:fs/promises';
 import { resolve, sep } from 'node:path';
 import { createRequire } from 'node:module';
 import { accounts, allFixtureAccounts } from './support/fixtures.js';
+import { ownedAvatarFileName } from './support/avatar-cleanup.js';
 import { openTestDatabase } from './support/database.js';
+import { restoreOwnedSettings, type SettingSnapshot } from './support/settings-ownership.js';
 
 const requireFromApi = createRequire(resolve('apps/api/package.json'));
 const argon2 = requireFromApi('argon2') as {
@@ -11,16 +13,10 @@ const argon2 = requireFromApi('argon2') as {
   hash(password: string, options: { type: number }): Promise<string>;
 };
 
-interface SettingSnapshot {
-  rake_threshold: bigint;
-  rake_bps: number;
-  version: number;
-  updated_by_id: string | null;
-}
-
 async function cleanupFixtures(setting: SettingSnapshot): Promise<void> {
   const connection = await openTestDatabase();
   const userIds = allFixtureAccounts.map(({ id }) => id);
+  const fixtureUserIds = new Set(userIds);
   const avatarRoot = resolve('test-results/task18-runtime/avatars');
   const uploadedPaths: string[] = [];
   try {
@@ -56,15 +52,15 @@ async function cleanupFixtures(setting: SettingSnapshot): Promise<void> {
       const rows = await connection.query(
         'SELECT avatar_kind, avatar_value FROM users WHERE id = ?', [userId]
       ) as Array<{ avatar_kind: string; avatar_value: string }>;
-      if (rows[0]?.avatar_kind === 'UPLOAD') uploadedPaths.push(rows[0].avatar_value);
+      if (rows[0]?.avatar_kind === 'UPLOAD') {
+        const owned = ownedAvatarFileName(userId, rows[0].avatar_value, fixtureUserIds);
+        if (owned !== undefined) uploadedPaths.push(owned);
+      }
       await connection.query('DELETE FROM audit_logs WHERE actor_user_id = ? OR (entity_type = ? AND entity_id = ?)', [userId, 'USER', userId]);
       await connection.query('DELETE FROM auth_sessions WHERE user_id = ?', [userId]);
       await connection.query('DELETE FROM active_player_locks WHERE user_id = ?', [userId]);
     }
-    await connection.query(
-      'UPDATE system_settings SET rake_threshold = ?, rake_bps = ?, version = ?, updated_by_id = ? WHERE id = ?',
-      [setting.rake_threshold, setting.rake_bps, setting.version, setting.updated_by_id, 'singleton']
-    );
+    await restoreOwnedSettings(connection, setting, accounts['super-admin'].id);
     for (const userId of [...userIds].reverse()) {
       await connection.query('DELETE FROM users WHERE id = ?', [userId]);
     }
@@ -76,15 +72,16 @@ async function cleanupFixtures(setting: SettingSnapshot): Promise<void> {
     await connection.end();
   }
 
-  const fixtureIdPattern = allFixtureAccounts
-    .map(({ id }) => id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
-    .join('|');
-  const ownedAvatarPattern = new RegExp(
-    `^(?:${fixtureIdPattern})-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\.webp$`
-  );
   const entries = await readdir(avatarRoot, { withFileTypes: true });
   for (const entry of entries) {
-    if (entry.isFile() && ownedAvatarPattern.test(entry.name)) uploadedPaths.push(entry.name);
+    if (!entry.isFile()) continue;
+    for (const userId of fixtureUserIds) {
+      const owned = ownedAvatarFileName(userId, entry.name, fixtureUserIds);
+      if (owned !== undefined) {
+        uploadedPaths.push(owned);
+        break;
+      }
+    }
   }
   for (const relativePath of new Set(uploadedPaths)) {
     const target = resolve(avatarRoot, relativePath);

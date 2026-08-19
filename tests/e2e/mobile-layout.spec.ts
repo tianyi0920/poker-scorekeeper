@@ -10,7 +10,7 @@ import {
 import { cleanupTaskGame } from './support/database.js';
 import { tablePlayers } from './support/fixtures.js';
 
-test('12-seat table has no horizontal overflow, 44px actions, console errors, or hidden self seat', async ({ page }, testInfo) => {
+for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table has no horizontal overflow, undersized actions, console errors, or hidden self seat`, async ({ page }, testInfo) => {
   const admin = await apiLogin('admin');
   const playerSessions: ApiSession[] = [];
   let gameId: string | undefined;
@@ -32,12 +32,12 @@ test('12-seat table has no horizontal overflow, 44px actions, console errors, or
 
     const game = await createStartedGame(
       admin,
-      `十二人布局 ${testInfo.project.name}`,
+      `${playerCount}人布局 ${testInfo.project.name}`,
       '300',
       (createdGameId) => { gameId = createdGameId; }
     );
     gameId = game.id;
-    for (const [index, account] of tablePlayers.entries()) {
+    for (const [index, account] of tablePlayers.slice(0, playerCount).entries()) {
       const session = await apiLoginAccount(account);
       playerSessions.push(session);
       const bought = await apiBuyHands(session, game.id, 1, `layout-${testInfo.project.name}-${index}`);
@@ -45,8 +45,7 @@ test('12-seat table has no horizontal overflow, 44px actions, console errors, or
     }
 
     await page.goto(`/games/${game.id}`);
-    await expect(page.getByTestId('round-table')).toHaveClass(/round-table--compact/);
-    await expect(page.getByTestId('table-seat')).toHaveCount(12);
+    await expect(page.getByTestId('table-seat')).toHaveCount(playerCount);
     await expect(page.getByTestId('seat-self')).toBeVisible();
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
@@ -59,7 +58,7 @@ test('12-seat table has no horizontal overflow, 44px actions, console errors, or
       .filter(({ width, height }) => width > 0 && height > 0 && (width < 44 || height < 44)));
     expect(undersized, JSON.stringify(undersized)).toEqual([]);
     expect(consoleErrors).toEqual([]);
-    await testInfo.attach(`12-seat-${testInfo.project.name}`, {
+    await testInfo.attach(`${playerCount}-seat-${testInfo.project.name}`, {
       body: await page.screenshot({ fullPage: true }),
       contentType: 'image/png'
     });

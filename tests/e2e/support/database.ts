@@ -25,6 +25,9 @@ export async function readTestDatabaseEnvironment(): Promise<TestDatabaseEnviron
   ) {
     throw new Error('Task18 refuses every database except mysql://tianyi.wiki:8306/poker_scorekeeper_test');
   }
+  // The validated file is authoritative even when the Playwright parent was
+  // launched from a shell carrying an unrelated DATABASE_URL.
+  process.env.DATABASE_URL = values.DATABASE_URL;
   return { values, url };
 }
 
