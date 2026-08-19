@@ -1089,10 +1089,12 @@ describe('secret-free production verification record', () => {
       return { exitCode: 0, stdout, stderr: '' };
     };
 
-    const previousComposeFile = process.env.COMPOSE_FILE;
-    const previousComposeProject = process.env.COMPOSE_PROJECT_NAME;
-    process.env.COMPOSE_FILE = '../attacker-compose.yml';
-    process.env.COMPOSE_PROJECT_NAME = 'attacker-project';
+    const composeEnvironment = Object.entries(process.env).filter(([key]) => (
+      ['compose_file', 'compose_project_name'].includes(key.toLowerCase())
+    ));
+    for (const [key] of composeEnvironment) delete process.env[key];
+    process.env.compose_file = '../attacker-compose.yml';
+    process.env.CoMpOsE_PrOjEcT_NaMe = 'attacker-project';
     let evidence;
     try {
       evidence = await runProductionVerification({
@@ -1113,10 +1115,12 @@ describe('secret-free production verification record', () => {
         }
       });
     } finally {
-      if (previousComposeFile === undefined) delete process.env.COMPOSE_FILE;
-      else process.env.COMPOSE_FILE = previousComposeFile;
-      if (previousComposeProject === undefined) delete process.env.COMPOSE_PROJECT_NAME;
-      else process.env.COMPOSE_PROJECT_NAME = previousComposeProject;
+      for (const key of Object.keys(process.env)) {
+        if (['compose_file', 'compose_project_name'].includes(key.toLowerCase())) {
+          delete process.env[key];
+        }
+      }
+      for (const [key, value] of composeEnvironment) process.env[key] = value;
     }
 
     expect(evidence).toEqual({
@@ -1131,8 +1135,9 @@ describe('secret-free production verification record', () => {
     const expectedRoot = resolve(import.meta.dirname, '../..');
     for (const command of commands) {
       expect(command.options?.cwd).toBe(expectedRoot);
-      expect(command.options?.env).not.toHaveProperty('COMPOSE_FILE');
-      expect(command.options?.env).not.toHaveProperty('COMPOSE_PROJECT_NAME');
+      expect(Object.keys(command.options?.env ?? {}).filter((key) => (
+        ['compose_file', 'compose_project_name'].includes(key.toLowerCase())
+      ))).toEqual([]);
       if (command.key.startsWith('docker compose ')) {
         expect(command.key).toContain(
           'docker compose --file docker-compose.yml --project-name poker-scorekeeper'

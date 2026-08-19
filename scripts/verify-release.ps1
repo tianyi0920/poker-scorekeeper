@@ -56,6 +56,10 @@ Write-Output 'gate: pnpm build'
 Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'build')
 
 $runId = ([Guid]::NewGuid().ToString('N').Substring(0, 8)).ToLowerInvariant()
+$git = (Get-Command git -ErrorAction Stop).Source
+$deploymentId = Get-ReleaseDeploymentId -Git $git -RepositoryRoot $PSScriptRoot -RunId $runId
+$previousDeploymentId = [Environment]::GetEnvironmentVariable('DEPLOYMENT_ID', 'Process')
+$env:DEPLOYMENT_ID = $deploymentId
 $project = "poker18verify$runId"
 if ($project -notmatch '^poker18verify[a-f0-9]{8}$') { throw 'Unsafe Compose project name' }
 $compose = @('compose', '-p', $project, '-f', 'docker-compose.test.yml')
@@ -68,7 +72,9 @@ $restoreEnvironmentContext = $null
 
 try {
   Write-Output 'gate: docker build'
-  Invoke-External $docker @('build', '-t', 'poker-scorekeeper:verify', '.')
+  Invoke-External $docker @(
+    'build', '--build-arg', "DEPLOYMENT_ID=$deploymentId", '-t', 'poker-scorekeeper:verify', '.'
+  )
   Invoke-External $docker ($compose + @('config', '--quiet'))
   Write-Output 'gate: docker compose migration and health'
   Assert-PortAvailable -Port 3000
@@ -153,5 +159,10 @@ try {
   }
   if ($null -ne $restoreEnvironmentContext) {
     Remove-PrivateEnvironmentFile -Created $restoreEnvironmentContext
+  }
+  if ($null -eq $previousDeploymentId) {
+    Remove-Item Env:DEPLOYMENT_ID -ErrorAction SilentlyContinue
+  } else {
+    $env:DEPLOYMENT_ID = $previousDeploymentId
   }
 }

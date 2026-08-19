@@ -17,6 +17,25 @@ function Assert-DockerCapabilities {
   }
 }
 
+function Get-ReleaseDeploymentId {
+  param(
+    [Parameter(Mandatory)][string] $Git,
+    [Parameter(Mandatory)][string] $RepositoryRoot,
+    [Parameter(Mandatory)][string] $RunId
+  )
+
+  if ($RunId -notmatch '^[a-f0-9]{8}$') { throw 'Release run ID is invalid' }
+  $revisionOutput = & $Git -C $RepositoryRoot rev-parse --verify HEAD
+  if ($LASTEXITCODE -ne 0) { throw 'Unable to resolve the release Git revision' }
+  $revision = ($revisionOutput -join '').Trim().ToLowerInvariant()
+  if ($revision -notmatch '^[a-f0-9]{40}$') { throw 'Release Git revision is invalid' }
+  $deploymentId = "releaseverify-$revision-$RunId"
+  if ($deploymentId -notmatch '^[a-z0-9][a-z0-9._-]{7,63}$') {
+    throw 'Release deployment ID is invalid'
+  }
+  return $deploymentId
+}
+
 function Wait-HealthResponse {
   param(
     [Parameter(Mandatory)][string] $Uri,

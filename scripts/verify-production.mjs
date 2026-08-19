@@ -730,8 +730,10 @@ function defaultRunCommand(command, arguments_, options) {
 
 function productionCommandOptions() {
   const environment = { ...process.env };
-  delete environment.COMPOSE_FILE;
-  delete environment.COMPOSE_PROJECT_NAME;
+  const forbidden = new Set(['COMPOSE_FILE', 'COMPOSE_PROJECT_NAME']);
+  for (const key of Object.keys(environment)) {
+    if (forbidden.has(key.toUpperCase())) delete environment[key];
+  }
   return { cwd: REPOSITORY_ROOT, env: environment };
 }
 

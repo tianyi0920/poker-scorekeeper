@@ -6,7 +6,7 @@
 
 All safely executable Task 19 code, tests, documentation, and offline verification are complete on `codex/poker-scorekeeper`. No production deployment or live acceptance was performed. The production record remains explicitly `NOT_EXECUTED`.
 
-The original baseline was clean at `0b1cbcf1bc6566e6543752997020c0ec029ea506`; review-fix round 1 started clean at `136afc01797b74cafd8d51960b43694838930e78`, and review-fix round 2 started clean at `0fd6b39d298a0414ca4a42a824c12e0db8e8312b`. No command connected to, queried, created, migrated, backed up, restored, or modified `192.168.10.248:3306/poker_scorekeeper`. No command used the database password previously exposed in chat, and no credential, Cookie, token, connection URL, or other secret was printed or committed.
+The original baseline was clean at `0b1cbcf1bc6566e6543752997020c0ec029ea506`; review-fix round 1 started clean at `136afc01797b74cafd8d51960b43694838930e78`, review-fix round 2 started clean at `0fd6b39d298a0414ca4a42a824c12e0db8e8312b`, and review-fix round 3 started clean at `0a3ae6a223929359896bbf7933f7a4cea67a95ac`. No command connected to, queried, created, migrated, backed up, restored, or modified `192.168.10.248:3306/poker_scorekeeper`. No command used the database password previously exposed in chat, and no credential, Cookie, token, connection URL, or other secret was printed or committed.
 
 ## Delivered
 
@@ -18,6 +18,7 @@ The original baseline was clean at `0b1cbcf1bc6566e6543752997020c0ec029ea506`; r
 - Acceptance cleanup is limited to IDs proven by exact `Location` headers for this run. Ownership and HTTP-success state are recorded before response-body validation, so truncated JSON still cleans the exact user/game and an ACTIVE game is voided rather than draft-deleted. Missing/unrecognizable ownership fails closed, stops further creation, avoids guessed deletion, and emits only a run marker plus manual-cleanup resource type. Primary and every cleanup failure are aggregated without secrets; the report preserves the run ID and each owned user/game ID and last proven state. A logical deletion is committed only after both its strict exact response and list readback pass.
 - Login, password change, user create/delete/list readback, game create/start/void, and WSS join/leave acknowledgements are parsed by shared contracts and checked against the exact username, nickname, role, game name, ID, status, and empty-game invariants for this run. Logical deletion additionally requires `isActive=false`, non-null `deletedAt`, and a confirmed list readback.
 - `--record` no longer accepts evidence-shaped environment variables. Every Docker command runs from the fixed repository root with inherited `COMPOSE_FILE`/`COMPOSE_PROJECT_NAME` removed; every Compose command names `docker-compose.yml` and project `poker-scorekeeper`. It checks Docker/Compose before acceptance, then proves the same deployment through the image digest and OCI deployment label, the running container's read-only deployment asset, and the public origin's same-source deployment endpoint. It also collects Prisma migrate status, exact repository/database migration checksums, public HTTPS health/HSTS, and a newly executed/recomputed backup. Only all-PASS evidence can be formatted. Publication uses a same-directory exclusive temporary file, file flush/fsync, and atomic rename; failures remove only the temporary file and preserve the prior record.
+- Release verification derives a non-secret `releaseverify-{full Git SHA}-{run ID}` deployment ID from the fixed repository and current release run instead of trusting parent `DEPLOYMENT_ID`. The direct Docker build receives it through an explicit build argument, and the isolated Compose build consumes the same internally assigned value; the previous parent value is restored afterward.
 - The production checklist and Synology runbook make rotated credentials, independent session/CSRF secrets, the exact HTTPS origin, Docker/Compose capabilities, directory modes, fixed database target, loopback-only port, reverse-proxy/WebSocket/real-IP settings, router TCP 443 boundary, real-phone observation, first backup, and secret-free evidence mandatory.
 - `.env.example` now includes the required secret-free `SESSION_SECRET` and non-secret immutable `DEPLOYMENT_ID` placeholders. The initial verification document contains no fabricated evidence and remains `NOT_EXECUTED`.
 
@@ -61,6 +62,11 @@ Ruling: explicit commands must be executed by the entrypoint. Every production-i
 - WSS leave RED: the successful fake socket observed only `game.join`, while a malformed leave acknowledgement was never consulted. Acceptance now sends `game.leave`, validates it with `gameLeaveAckSchema`, and waits for the gateway's post-presence-publish ACK before disconnecting. The three strict WSS cases pass 3/3.
 - Database-safety interface RED: the legacy suite genuinely passed only 4/6 because it expected production `create-database.mjs` to accept a local target when `NODE_ENV` was absent. The six cases now express one boundary: isolated destructive tests use their dedicated test guard, while production creation always rejects local, alternate remote, and wrong-schema targets and accepts only the exact production target, independent of `NODE_ENV`. The suite passes 6/6 without connection.
 
+### Review fix round 3 (`0a3ae6a` baseline)
+
+- Release deployment-ID RED: a real PowerShell run with fake Node/Git/Docker boundaries recorded the attacker-controlled parent ID, no Docker build argument, and the same poisoned value at the Compose boundary. A second RED required a current-run suffix instead of a reusable commit-only marker. The release helper now validates a full repository `HEAD` SHA and the eight-hex release run ID, derives a Dockerfile-valid `releaseverify-{SHA}-{run ID}` value, overrides the process value for both build paths, passes it explicitly to direct `docker build`, and restores the prior environment afterward. The PowerShell boundary plus deployment artifact group passes 10/10; the existing release-helper group remains 5/5.
+- Windows environment RED: lower/mixed-case `compose_file` and `CoMpOsE_PrOjEcT_NaMe` survived the copied environment and reached every Docker command. Sanitization now compares every copied key case-insensitively and removes all variants. The focused collector regression passes as part of the 34/34 Task 19 suite.
+
 ## Verification
 
 All commands used Node 24.19.0 and pnpm 10.15.1. Prisma generation/type/build used only `mysql://build:build@127.0.0.1:3306/poker_scorekeeper_build`, which does not connect.
@@ -68,6 +74,7 @@ All commands used Node 24.19.0 and pnpm 10.15.1. Prisma generation/type/build us
 - Task 19 focused suite: 34/34 passed; deployment-ID build writer: 5/5 passed.
 - Production/database safety validation: 6/6 passed.
 - Production deployment artifact policy: 9/9 passed.
+- Release deployment-ID PowerShell boundary: 1/1 passed; existing release helpers: 5/5 passed.
 - Public immutable deployment identity endpoint: 6/6 passed.
 - Real Bash entrypoint behavior/signal group: 3/3 passed.
 - `@poker/contracts`: 53/53 passed.
@@ -76,7 +83,7 @@ All commands used Node 24.19.0 and pnpm 10.15.1. Prisma generation/type/build us
 - API pure unit/static/script group: 179 passed, one existing Windows-only `O_NOFOLLOW` test skipped.
 - Root workspace `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - Direct ESLint for the new `.mjs` and Task 19 test files: passed.
-- `node --check` for both new Node scripts and Bash syntax for the entrypoint: passed.
+- PowerShell AST parsing for the release script/helpers, `node --check` for the verification script, and Bash syntax for the entrypoint: passed.
 - Runtime LF checks, `git diff --check`, and added-lines/untracked-file credential/private-key/token scan: passed.
 - `pnpm audit --prod --audit-level high`: no known vulnerabilities.
 - `pnpm verify:release`: exited 1 at `scripts/verify-release.ps1:40` because `docker` is not installed. It failed before `gate: pnpm install --frozen-lockfile` and never emitted `release verification passed`, preserving the mandatory Docker gate.
@@ -99,4 +106,4 @@ Do not use the old password as a fallback. Do not infer any missing value. Until
 
 ## Review Handoff
 
-Round-2 review findings are implemented and locally verified. Re-review the fixed Docker/Compose execution context and three-source deployment binding; aggregate primary/cleanup failures and last-proven object states; strict logical-delete confirmation; acknowledged WSS leave ordering; and unconditional exact-target database creation semantics. Independent reviewer dispatch remains the controller's responsibility because this worker was explicitly prohibited from spawning subagents.
+Round-3 review findings are implemented and locally verified. Re-review the Git-derived release deployment ID and explicit direct/Compose build propagation, plus case-insensitive removal of inherited Compose target variables. Independent reviewer dispatch remains the controller's responsibility because this worker was explicitly prohibited from spawning subagents.

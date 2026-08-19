@@ -92,7 +92,9 @@ describe('production deployment artifacts', () => {
     expect(databaseUrl).toContain('@mysql:3306/poker_scorekeeper_test');
     expect(databaseUrl).not.toMatch(/tianyi\.wiki|192\.168\.10\.248|poker_scorekeeper(?:\?|$)/);
     expect(compose.services.mysql.environment?.MYSQL_DATABASE).toBe('poker_scorekeeper_test');
-    expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe('test-build-20260819');
+    expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe(
+      '${DEPLOYMENT_ID:-test-build-20260819}'
+    );
     expect(compose.services.app.entrypoint).toEqual([]);
     expect(compose.services.app.command).toEqual([
       '/usr/bin/tini', '-g', '--', 'sh', '-c',
