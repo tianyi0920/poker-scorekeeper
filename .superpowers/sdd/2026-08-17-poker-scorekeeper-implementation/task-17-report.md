@@ -71,20 +71,26 @@ Round 4 TDD evidence: against `56d979d`, the new dual-recipient TERM test reache
 
 Round 5 TDD evidence: against `7b74525`, the focused RED exited 130 but left the recorded database state because local ownership was never established. With only the CREATE option added, the focused test passed 1/1 in 4.99 seconds. The complete backup/restore and input-guard group then passed 42/42.
 
+## Windows Checkout Line-ending Regression Fix (2026-08-19)
+
+- Root cause: this Windows checkout has `core.autocrlf=true` and the repository had no `.gitattributes`. Git therefore materialized Linux runtime scripts as CRLF even though their tracked blobs were LF. The same blobs checked out as LF in the deployment worktree, while this worktree produced a collection-time `SyntaxError` for the restore-input guard and would copy CRLF shell scripts into the Linux Docker image.
+- TDD: a new deployment-artifact regression first failed with `ENOENT` because `.gitattributes` did not exist. It requires explicit `*.sh text eol=lf`, `*.mjs text eol=lf`, and `*.mts text eol=lf` rules and verifies the checked-out bytes of the entrypoint, backup/restore scripts, healthcheck, and restore-input guard files contain no carriage returns. It then passed 7/7 after the minimal attributes file and mechanical Git-index rematerialization.
+- Scope: all tracked shell, `.mjs`, and `.mts` runtime files were checked for local edits before rematerialization. Only six previously-CRLF deployment files changed in the working tree, and their Git blobs/content are unchanged; the two already-LF database scripts remain unchanged. This preserves Linux parsing now and on future Windows checkouts.
+
 ## Verification
 
 - `@poker/contracts`: 53/53 tests passed.
 - `@poker/settlement`: 14/14 tests passed.
 - `@poker/web`: 125/125 tests passed; focused GamePage 13/13 passed.
-- API pure unit/static/script suites: 156 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. This includes backup/restore 35/35 and restore-input guard 7/7.
+- API pure unit/static/script suites: 157 passed, with one Windows-only skip for the Linux avatar-serving `O_NOFOLLOW` symlink behavior; restore input descriptor behavior is covered separately by the cross-platform guard suite. The count includes the new 7/7 deployment-artifact line-ending policy suite, backup/restore 35/35, and restore-input guard 7/7.
 - Security/readiness E2E: 29/29 passed, including raw malformed JSON/urlencoded requests, malformed/encoded namespace paths, and repeated readiness timeouts.
 - `pnpm lint`, `pnpm typecheck`, and `pnpm build`: passed.
 - `pnpm audit --prod --audit-level high`: `No known vulnerabilities found`.
-- pnpm 10.15.1 `install --frozen-lockfile`: passed against the final lockfile and override.
+- Node 24.19.0 and pnpm 10.15.1 `install --frozen-lockfile`: passed against the final lockfile and override; `pnpm audit --prod --audit-level high` reported no known vulnerabilities.
 - Production-only dependency install: Prisma CLI loaded, compiled API entry imported, and workspace production packages resolved.
-- Prisma `generate` and database-free `migrate diff`: passed with `deepmerge-ts` 8.0.1.
+- Prisma `generate` and database-free schema-to-same-schema `migrate diff --script`: passed with `deepmerge-ts` 8.0.1 and a `127.0.0.1` placeholder URL.
 - Sharp WebP transform: passed with 0.35.3.
-- GNU Bash 5.2 syntax checks for entrypoint/backup/restore and `node --check` for compiled API entry: passed.
+- GNU Bash 5.2 syntax checks for entrypoint/backup/restore, `node --check` for the compiled API entry and deployment Node scripts, and a side-effect-free compiled API import: passed.
 - `git diff --check` and deployment secret/placeholder assertions: passed.
 
 ## Concerns / Environment Limits

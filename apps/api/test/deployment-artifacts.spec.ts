@@ -87,6 +87,26 @@ describe('production deployment artifacts', () => {
     expect(ignore.split(/\r?\n/)).toContain('!.env.example');
   });
 
+  it('keeps Linux deployment scripts and Node modules checked out with LF endings on Windows', async () => {
+    // Break caught: core.autocrlf converts Docker runtime scripts to CRLF, which breaks Linux shell parsing.
+    const attributes = await readRepositoryFile('.gitattributes');
+    for (const rule of ['*.sh text eol=lf', '*.mjs text eol=lf', '*.mts text eol=lf']) {
+      expect(attributes.split(/\r?\n/)).toContain(rule);
+    }
+
+    const runtimeFiles = [
+      'scripts/docker/entrypoint.sh',
+      'scripts/backup/backup.sh',
+      'scripts/backup/restore.sh',
+      'scripts/docker/healthcheck.mjs',
+      'scripts/backup/restore-input-guard.mjs',
+      'scripts/backup/restore-input-guard.d.mts'
+    ];
+    for (const path of runtimeFiles) {
+      expect(await readFile(resolve(repositoryRoot, path))).not.toContain(0x0d);
+    }
+  });
+
   it('documents Synology production and remote-test database hosts using placeholders only', async () => {
     // Break caught: a real database credential is copied into an image, compose file, or runbook.
     const paths = [
