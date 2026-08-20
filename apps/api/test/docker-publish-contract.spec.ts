@@ -17,6 +17,8 @@ function imageIdentity(architecture: string, revision = commit) {
   };
 }
 
+type ImageIdentity = ReturnType<typeof imageIdentity>;
+
 describe('Docker publication contract', () => {
   it('derives fixed release metadata from a stable tag and full lowercase commit', () => {
     // Break caught: a fixed release loses its immutable full-commit tracking tag.
@@ -197,7 +199,7 @@ describe('Docker publication contract', () => {
       imageIdentity('arm64', commit.toUpperCase())
     ],
     [imageIdentity('amd64'), imageIdentity('arm64'), imageIdentity('s390x')]
-  ])('rejects missing, duplicate, extra, or inconsistent platform image identities', (labels) => {
+  ])('rejects missing, duplicate, extra, or inconsistent platform image identities', (...labels: ImageIdentity[]) => {
     // Break caught: an incomplete or mismatched per-platform image identity passes promotion.
     expect(() => contract.assertImageIdentity(labels, commit)).toThrow('IMAGE_IDENTITY_MISMATCH');
   });

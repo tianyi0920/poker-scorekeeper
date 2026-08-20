@@ -53,7 +53,7 @@ function stepsFor(workflow: Workflow, jobName: string) {
 function requiredStep(workflow: Workflow, jobName: string, stepName: string) {
   const matches = stepsFor(workflow, jobName).filter((step) => step.name === stepName);
   if (matches.length !== 1) throw new Error(`Expected one ${jobName}/${stepName} step`);
-  const step = matches[0];
+  const step = matches[0]!;
   if (step.if !== undefined) throw new Error(`Required step is conditional: ${jobName}/${stepName}`);
   if (step["continue-on-error"] !== undefined) {
     throw new Error(`Required step may continue on error: ${jobName}/${stepName}`);
@@ -405,16 +405,17 @@ describe("GitHub Actions Docker publication workflows", () => {
       for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
         const steps = job.steps ?? [];
         for (let loginIndex = 0; loginIndex < steps.length; loginIndex += 1) {
-          const login = steps[loginIndex];
+          const login = steps[loginIndex]!;
           if (!login.uses?.startsWith("docker/login-action@")) continue;
           actualJobs.push(jobName);
           expect(login.if).toBeUndefined();
           expect(login["continue-on-error"]).toBeUndefined();
           const guard = steps[loginIndex - 1];
-          expect(guard?.name).toBe("Refuse an unexpected Docker Hub account");
-          expect(guard?.if).toBeUndefined();
-          expect(guard?.["continue-on-error"]).toBeUndefined();
-          expect(guard?.env).toEqual({
+          if (!guard) throw new Error(`Missing account guard before ${workflowName}/${jobName}`);
+          expect(guard.name).toBe("Refuse an unexpected Docker Hub account");
+          expect(guard.if).toBeUndefined();
+          expect(guard["continue-on-error"]).toBeUndefined();
+          expect(guard.env).toEqual({
             DOCKERHUB_USERNAME: "${{ secrets.DOCKERHUB_USERNAME }}",
           });
           const guardLines = executableLines(guard);

@@ -80,7 +80,8 @@ function validateExtremeSpaceEnvironmentTemplate(
 
     const assignment = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
     if (!assignment) throw new Error("unrecognized template line");
-    const [, key, rawValue] = assignment;
+    const key = assignment[1]!;
+    const rawValue = assignment[2]!;
     if (!approvedKeySet.has(key)) throw new Error("unapproved assignment key");
     assignmentKeys.push(key);
 
@@ -113,9 +114,11 @@ function validateExtremeSpaceEnvironmentTemplate(
 
   const approvedDatabaseLine = `DATABASE_URL=${approvedSensitiveValues.DATABASE_URL}`;
   const mysqlLines = lines.filter((line) => /mysql:\/\//i.test(line));
+  const mysqlLine = mysqlLines[0];
   if (
     mysqlLines.length !== 1 ||
-    mysqlLines[0].trim() !== approvedDatabaseLine
+    mysqlLine === undefined ||
+    mysqlLine.trim() !== approvedDatabaseLine
   ) {
     throw new Error("unexpected credential-bearing mysql URL");
   }
@@ -177,11 +180,11 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
 
   const shellBlocks = [...content.matchAll(/```sh\r?\n([\s\S]*?)```/g)].map(
-    (match) => match[1],
+    (match) => match[1]!,
   );
   const shellCommands = shellBlocks.flatMap((block) => block.split(/\r?\n/));
   const indexOfCommand = (command: string) => shellCommands.indexOf(command);
-  for (const [before, after] of [
+  const orderedCommandPairs: ReadonlyArray<readonly [string, string]> = [
     [
       "export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper",
       'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
@@ -226,7 +229,8 @@ function validateExtremeSpaceRunbook(content: string): void {
       'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
       'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
     ],
-  ]) {
+  ];
+  for (const [before, after] of orderedCommandPairs) {
     if (indexOfCommand(before) >= indexOfCommand(after)) {
       throw new Error(
         `Extreme Space command order is invalid: ${before} must precede ${after}`,
@@ -237,7 +241,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   for (const match of content.matchAll(
     /\b(?:[A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|KEY)|DATABASE_URL)\s*=\s*([^\s`#]+)/g,
   )) {
-    const value = match[1].trim().replace(/^['"]|['"]$/g, "");
+    const value = match[1]!.trim().replace(/^['"]|['"]$/g, "");
     if (
       !/^(?:CHANGE_ME(?:_[A-Z0-9_]+)?|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(
         value,
@@ -249,7 +253,7 @@ function validateExtremeSpaceRunbook(content: string): void {
     }
   }
   for (const match of content.matchAll(/mysql:\/\/[^:\s]+:([^@\s]+)@/gi)) {
-    if (!/^(?:CHANGE_ME|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(match[1])) {
+    if (!/^(?:CHANGE_ME|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(match[1]!)) {
       throw new Error(
         "runbook contains a non-placeholder database URL credential",
       );
