@@ -7,3 +7,4 @@ apps/api/src/generated/prisma/
 .env
 .env.*
 !.env.example
+!.env.extremespace.example

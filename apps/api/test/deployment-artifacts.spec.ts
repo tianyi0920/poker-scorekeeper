@@ -6,9 +6,13 @@ const repositoryRoot = resolve(import.meta.dirname, '../../..');
 
 interface ComposeService {
   build?: { args?: Record<string, string> };
+  image?: string;
+  restart?: string;
   ports?: unknown;
   env_file?: unknown;
   volumes?: unknown;
+  read_only?: boolean;
+  tmpfs?: unknown;
   healthcheck?: unknown;
   security_opt?: string[];
   cap_drop?: string[];
@@ -132,6 +136,52 @@ describe('production deployment artifacts', () => {
       expect(ignore.split(/\r?\n/)).toContain(pattern);
     }
     expect(ignore.split(/\r?\n/)).toContain('!.env.example');
+  });
+
+  it('provides a fixed-version registry compose bundle without a database service', async () => {
+    const compose = parse(await readRepositoryFile('docker-compose.registry.yml')) as {
+      services: { app: ComposeService };
+    };
+
+    expect(Object.keys(compose.services)).toEqual(['app']);
+    expect(compose.services.app.build).toBeUndefined();
+    expect(compose.services.app.image).toBe(
+      'docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION:?POKER_IMAGE_VERSION is required}'
+    );
+    expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
+    expect(compose.services.app.env_file).toEqual(['.env.production']);
+    expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
+      './data/avatars:/data/avatars',
+      './data/backups:/data/backups',
+      './data/restore:/data/restore'
+    ]));
+    expect(compose.services.app.read_only).toBe(true);
+    expect(compose.services.app.cap_drop).toContain('ALL');
+    expect(compose.services.app.restart).toBe('unless-stopped');
+    expect(compose.services.app.tmpfs).toContain('/tmp:size=64m,mode=1777');
+    expect(compose.services.app.security_opt).toContain('no-new-privileges:true');
+    expect(compose.services.app.healthcheck).toMatchObject({
+      test: ['CMD', 'node', 'scripts/docker/healthcheck.mjs']
+    });
+  });
+
+  it('provides a secret-free Extreme Space environment template', async () => {
+    const environment = await readRepositoryFile('.env.extremespace.example');
+
+    expect(environment).toContain('POKER_IMAGE_VERSION=1.0.0');
+    expect(environment).toContain('PUBLIC_ORIGIN=https://poker.example.com');
+    expect(environment).toContain(
+      'DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper'
+    );
+    expect(environment).toContain('MYSQL_HOST=192.168.10.248');
+    expect(environment).toContain('MYSQL_PORT=3306');
+    expect(environment).toContain('MYSQL_DATABASE=poker_scorekeeper');
+    expect(environment).toContain('SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES');
+    expect(environment).toContain('CSRF_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES');
+    expect(environment).toContain('BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_UNIQUE_STRONG_PASSWORD');
+    expect(environment).toContain('MYSQL_PASSWORD=CHANGE_ME');
+    expect(environment).not.toMatch(/mysql:\/\/[^:\s]+:(?!CHANGE_ME)[^@\s]+@/);
+    expect(environment).not.toMatch(/(?:PASSWORD|SECRET)=((?!CHANGE_ME|<password>|replace_me).)+/i);
   });
 
   it('keeps Linux deployment scripts and Node modules checked out with LF endings on Windows', async () => {
