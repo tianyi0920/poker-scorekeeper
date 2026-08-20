@@ -8,6 +8,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: poker-scorekeeper-publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   IMAGE_REPOSITORY: docker.io/tianyi920/poker-scorekeeper
 
@@ -93,6 +97,12 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
         with:
@@ -100,6 +110,14 @@ jobs:
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Recheck fixed-tag absence before publication
+        shell: bash
+        env:
+          VERSION: ${{ needs.metadata.outputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$VERSION"
 
       - name: Refuse an unexpected Docker Hub account
         shell: bash
@@ -156,12 +174,19 @@ jobs:
         shell: bash
         env:
           FIXED_IMAGE: docker.io/tianyi920/poker-scorekeeper:${{ needs.publish.outputs.version }}
+          COMMIT_IMAGE: docker.io/tianyi920/poker-scorekeeper:sha-${{ github.sha }}
         run: |
           set -euo pipefail
-          docker buildx imagetools inspect --raw "$FIXED_IMAGE" > raw-index.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$COMMIT_IMAGE" > commit-manifest.json
+          VERIFIED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest.json)"
+          COMMIT_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' commit-manifest.json)"
+          [[ "$COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]
+          DIGEST_IMAGE="${IMAGE_REPOSITORY}@${VERIFIED_DIGEST}"
+          docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json
           node scripts/release/docker-publish-contract.mjs manifest raw-index.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$FIXED_IMAGE" > amd64-image.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$FIXED_IMAGE" > arm64-image.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$DIGEST_IMAGE" > amd64-image.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$DIGEST_IMAGE" > arm64-image.json
           jq -n \
             --slurpfile amd64 amd64-image.json \
             --slurpfile arm64 arm64-image.json \
@@ -170,11 +195,12 @@ jobs:
               {os: $arm64[0].os, architecture: $arm64[0].architecture, labels: $arm64[0].config.Labels}
             ]' > platform-identities.json
           node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$GITHUB_SHA"
-          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest.json
-          docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}" > commit-manifest.json
-          VERIFIED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest.json)"
-          COMMIT_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' commit-manifest.json)"
-          [[ "$COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest-final.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$COMMIT_IMAGE" > commit-manifest-final.json
+          FINAL_FIXED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest-final.json)"
+          FINAL_COMMIT_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' commit-manifest-final.json)"
+          [[ "$FINAL_FIXED_DIGEST" == "$VERIFIED_DIGEST" ]]
+          [[ "$FINAL_COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]
           printf 'verified_digest=%s\n' "$VERIFIED_DIGEST" >> "$GITHUB_OUTPUT"
 
   promote_latest:

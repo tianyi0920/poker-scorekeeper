@@ -9,20 +9,32 @@ async function readRepositoryFile(path: string) {
   return readFile(resolve(repositoryRoot, path), 'utf8');
 }
 
+type WorkflowStep = {
+  name?: string;
+  id?: string;
+  if?: string | boolean;
+  uses?: string;
+  run?: string;
+  env?: Record<string, string>;
+  with?: Record<string, unknown>;
+  "continue-on-error"?: boolean | string;
+};
+
+type WorkflowJob = {
+  needs?: string | string[];
+  uses?: string;
+  if?: string | boolean;
+  permissions?: Record<string, string>;
+  env?: Record<string, string>;
+  services?: Record<string, Record<string, unknown>>;
+  steps?: WorkflowStep[];
+};
+
 type Workflow = {
   on?: Record<string, unknown>;
   permissions?: Record<string, string>;
-  jobs?: Record<
-    string,
-    {
-      needs?: string | string[];
-      uses?: string;
-      permissions?: Record<string, string>;
-      env?: Record<string, string>;
-      services?: Record<string, Record<string, unknown>>;
-      steps?: Array<Record<string, unknown>>;
-    }
-  >;
+  concurrency?: { group?: string; "cancel-in-progress"?: boolean };
+  jobs?: Record<string, WorkflowJob>;
 };
 
 async function readWorkflow(name: string) {
@@ -30,12 +42,42 @@ async function readWorkflow(name: string) {
   return { source, workflow: parse(source) as Workflow };
 }
 
-function runScripts(workflow: Workflow) {
-  return Object.values(workflow.jobs ?? {})
-    .flatMap((job) => job.steps ?? [])
-    .map((step) => step.run)
-    .filter((run): run is string => typeof run === "string")
-    .join("\n");
+function stepsFor(workflow: Workflow, jobName: string) {
+  const job = workflow.jobs?.[jobName];
+  if (!job) throw new Error(`Missing required job: ${jobName}`);
+  if (job.if !== undefined) throw new Error(`Required job is conditional: ${jobName}`);
+  return job.steps ?? [];
+}
+
+function requiredStep(workflow: Workflow, jobName: string, stepName: string) {
+  const matches = stepsFor(workflow, jobName).filter((step) => step.name === stepName);
+  if (matches.length !== 1) throw new Error(`Expected one ${jobName}/${stepName} step`);
+  const step = matches[0];
+  if (step.if !== undefined) throw new Error(`Required step is conditional: ${jobName}/${stepName}`);
+  if (step["continue-on-error"] !== undefined) {
+    throw new Error(`Required step may continue on error: ${jobName}/${stepName}`);
+  }
+  return step;
+}
+
+function requiredRunStep(workflow: Workflow, jobName: string, stepName: string) {
+  const step = requiredStep(workflow, jobName, stepName);
+  if (typeof step.run !== "string") throw new Error(`Missing run script: ${jobName}/${stepName}`);
+  return step;
+}
+
+function executableLines(step: WorkflowStep) {
+  if (typeof step.run !== "string") return [];
+  return step.run
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+}
+
+function lineIndex(lines: string[], matcher: string | RegExp) {
+  return lines.findIndex((line) =>
+    typeof matcher === "string" ? line === matcher : matcher.test(line),
+  );
 }
 
 function actionReferences(workflow: Workflow) {
@@ -47,7 +89,7 @@ function actionReferences(workflow: Workflow) {
 describe("GitHub Actions Docker publication workflows", () => {
   it("makes verification reusable for pull requests and branch pushes with only read permission", async () => {
     // Break caught: an ordinary verification event can publish, receive write permission, or omit a required CI entry point.
-    const { source, workflow } = await readWorkflow("verify.yml");
+    const { workflow } = await readWorkflow("verify.yml");
 
     expect(Object.keys(workflow.on ?? {}).sort()).toEqual([
       "pull_request",
@@ -55,12 +97,17 @@ describe("GitHub Actions Docker publication workflows", () => {
       "workflow_call",
     ]);
     expect(workflow.permissions).toEqual({ contents: "read" });
-    expect(source).not.toMatch(
-      /(?:packages|id-token|actions|attestations):\s*write/,
+    expect(actionReferences(workflow)).not.toEqual(
+      expect.arrayContaining([
+        expect.stringMatching(/^docker\/(?:login|build-push)-action@/),
+      ]),
     );
-    expect(source).not.toMatch(
-      /docker\/(?:login|build-push)-action|imagetools create|push:\s*true/,
-    );
+    for (const step of stepsFor(workflow, "verify")) {
+      expect(step["continue-on-error"]).toBeUndefined();
+      expect(executableLines(step)).not.toEqual(
+        expect.arrayContaining([expect.stringMatching(/imagetools create|docker push/)]),
+      );
+    }
   });
 
   it("isolates MySQL and gives every database-backed command the guarded public CI environment", async () => {
@@ -99,112 +146,125 @@ describe("GitHub Actions Docker publication workflows", () => {
       }),
     );
 
-    const scripts = runScripts(workflow);
-    expect(scripts).toContain(
-      "node scripts/database/run-with-ci-test-env.mjs --check-only",
-    );
-    expect(scripts).toMatch(
-      /run-with-ci-test-env\.mjs pnpm --filter @poker\/api prisma migrate deploy/,
-    );
-    expect(scripts).toMatch(/run-with-ci-test-env\.mjs pnpm test/);
-    expect(scripts).toMatch(
-      /run-with-ci-test-env\.mjs pnpm --filter @poker\/api test:integration/,
-    );
-    expect(scripts).toMatch(
-      /run-with-ci-test-env\.mjs pnpm exec playwright test/,
-    );
-    expect(scripts).not.toMatch(
-      /(?:^|\n)\s*(?:pnpm test|pnpm --filter @poker\/api test:integration|pnpm exec playwright test)/,
-    );
+    expect(executableLines(requiredRunStep(workflow, "verify", "Check guarded CI database connectivity")))
+      .toContain("node scripts/database/run-with-ci-test-env.mjs --check-only");
+    expect(executableLines(requiredRunStep(workflow, "verify", "Apply migrations to the isolated CI database")))
+      .toContain("node scripts/database/run-with-ci-test-env.mjs pnpm --filter @poker/api prisma migrate deploy");
+    expect(executableLines(requiredRunStep(workflow, "verify", "Run full package tests")))
+      .toContain("node scripts/database/run-with-ci-test-env.mjs pnpm test");
+    expect(executableLines(requiredRunStep(workflow, "verify", "Run API integration tests")))
+      .toContain("node scripts/database/run-with-ci-test-env.mjs pnpm --filter @poker/api test:integration");
+    expect(executableLines(requiredRunStep(workflow, "verify", "Run the 23-test browser suite")))
+      .toContain("node scripts/database/run-with-ci-test-env.mjs pnpm exec playwright test");
   });
 
   it("runs the complete verification sequence and validates registry Compose with disposable example files", async () => {
     // Break caught: release verification skips a required suite or validates Compose with an undisclosed environment file.
-    const { source, workflow } = await readWorkflow("verify.yml");
-    const scripts = runScripts(workflow);
+    const { workflow } = await readWorkflow("verify.yml");
+    const stepNames = stepsFor(workflow, "verify").map((step) => step.name);
     const ordered = [
-      "pnpm install --frozen-lockfile",
-      "run-with-ci-test-env.mjs --check-only",
-      "run-with-ci-test-env.mjs pnpm --filter @poker/api prisma migrate deploy",
-      "pnpm lint",
-      "pnpm typecheck",
-      "run-with-ci-test-env.mjs pnpm test",
-      "run-with-ci-test-env.mjs pnpm --filter @poker/api test:integration",
-      "pnpm exec playwright install --with-deps chromium webkit",
-      "run-with-ci-test-env.mjs pnpm exec playwright test",
-      "pnpm build",
-      "docker compose --env-file test-results/extremespace-compose.env -f docker-compose.registry.yml config --quiet",
+      "Install frozen dependencies",
+      "Check guarded CI database connectivity",
+      "Apply migrations to the isolated CI database",
+      "Lint and typecheck",
+      "Run full package tests",
+      "Run API integration tests",
+      "Install browser engines",
+      "Run the 23-test browser suite",
+      "Build all packages",
+      "Validate registry Compose and repository hygiene",
     ];
     let position = -1;
-    for (const command of ordered) {
-      const next = scripts.indexOf(command);
-      expect(next, command).toBeGreaterThan(position);
+    for (const stepName of ordered) {
+      requiredStep(workflow, "verify", stepName);
+      const next = stepNames.indexOf(stepName);
+      expect(next, stepName).toBeGreaterThan(position);
       position = next;
     }
-    expect(scripts).toContain(
+    expect(executableLines(requiredRunStep(workflow, "verify", "Install frozen dependencies")))
+      .toContain("pnpm install --frozen-lockfile");
+    expect(executableLines(requiredRunStep(workflow, "verify", "Lint and typecheck")))
+      .toEqual(expect.arrayContaining(["pnpm lint", "pnpm typecheck"]));
+    expect(executableLines(requiredRunStep(workflow, "verify", "Install browser engines")))
+      .toContain("pnpm exec playwright install --with-deps chromium webkit");
+    expect(executableLines(requiredRunStep(workflow, "verify", "Build all packages")))
+      .toContain("pnpm build");
+    const composeLines = executableLines(
+      requiredRunStep(workflow, "verify", "Validate registry Compose and repository hygiene"),
+    );
+    expect(composeLines).toEqual(expect.arrayContaining([
+      "rm -f test-results/extremespace-compose.env .env.production",
+      "trap cleanup EXIT",
       "cp .env.extremespace.example test-results/extremespace-compose.env",
-    );
-    expect(scripts).toContain("cp .env.extremespace.example .env.production");
-    expect(scripts).toMatch(
-      /cleanup\(\)[\s\S]*rm -f test-results\/extremespace-compose\.env \.env\.production/,
-    );
-    expect(scripts).toContain("trap cleanup EXIT");
-    expect(scripts).toContain("git diff --check");
-    expect(source).not.toMatch(/secrets\./);
+      "cp .env.extremespace.example .env.production",
+      "docker compose --env-file test-results/extremespace-compose.env -f docker-compose.registry.yml config --quiet",
+      "git diff --check",
+    ]));
+    expect(JSON.stringify(workflow)).not.toMatch(/secrets\./);
   });
 
-  it("publishes only stable version tags after reusable verification and a fail-closed preflight", async () => {
-    // Break caught: a branch, prerelease, or already-existing fixed tag reaches Docker Hub authentication or publication.
-    const { source, workflow } = await readWorkflow("publish-docker.yml");
+  it("serializes each release ref and rechecks fixed-tag absence in the publishing job", async () => {
+    // Break caught: concurrent runs or a failed-job rerun can overwrite a fixed tag after the early metadata preflight.
+    const { workflow } = await readWorkflow("publish-docker.yml");
     const push = workflow.on?.push as { tags?: string[]; branches?: string[] };
 
     expect(Object.keys(workflow.on ?? {})).toEqual(["push"]);
     expect(push.tags).toEqual(["v*.*.*"]);
     expect(push.branches).toBeUndefined();
     expect(workflow.permissions).toEqual({ contents: "read" });
+    expect(workflow.concurrency).toEqual({
+      group: "poker-scorekeeper-publish-${{ github.ref }}",
+      "cancel-in-progress": false,
+    });
     expect(workflow.jobs?.verify?.uses).toBe("./.github/workflows/verify.yml");
     expect(workflow.jobs?.metadata?.needs).toBe("verify");
-    const scripts = runScripts(workflow);
-    expect(scripts).toContain("docker-publish-contract.mjs metadata");
-    expect(scripts).toContain(
-      "docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper",
+    const metadataLines = executableLines(
+      requiredRunStep(workflow, "metadata", "Validate immutable release metadata and fixed-tag absence"),
     );
-    expect(
-      source.indexOf("docker-publish-contract.mjs tag-absent"),
-    ).toBeLessThan(source.indexOf("docker/login-action@"));
-    expect(source).not.toMatch(/continue-on-error/);
+    expect(metadataLines.some((line) => line.includes("docker-publish-contract.mjs metadata"))).toBe(true);
+    expect(metadataLines).toContain(
+      'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$version"',
+    );
+
+    const publishSteps = stepsFor(workflow, "publish");
+    const recheck = requiredRunStep(workflow, "publish", "Recheck fixed-tag absence before publication");
+    expect(recheck.env).toEqual({ VERSION: "${{ needs.metadata.outputs.version }}" });
+    expect(executableLines(recheck)).toContain(
+      'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$VERSION"',
+    );
+    const recheckIndex = publishSteps.indexOf(recheck);
+    const accountIndex = publishSteps.indexOf(
+      requiredRunStep(workflow, "publish", "Refuse an unexpected Docker Hub account"),
+    );
+    const loginIndex = publishSteps.indexOf(requiredStep(workflow, "publish", "Log in to Docker Hub"));
+    const pushIndex = publishSteps.indexOf(requiredStep(workflow, "publish", "Push fixed and full-commit tags"));
+    expect([accountIndex, loginIndex, pushIndex]).toEqual([
+      recheckIndex + 1,
+      recheckIndex + 2,
+      recheckIndex + 3,
+    ]);
   });
 
   it("smokes one unique local amd64 candidate before pushing exactly two identified platforms", async () => {
     // Break caught: publication skips local runtime proof, smokes a pullable tag, or pushes an incomplete platform set.
-    const { source, workflow } = await readWorkflow("publish-docker.yml");
-    const candidateScripts = (workflow.jobs?.candidate?.steps ?? [])
-      .map((step) => step.run)
-      .filter((run): run is string => typeof run === "string")
-      .join("\n");
-    const pushJob = workflow.jobs?.publish;
-    const buildPush = (pushJob?.steps ?? []).find(
-      (step) =>
-        typeof step.uses === "string" &&
-        step.uses.startsWith("docker/build-push-action@"),
+    const { workflow } = await readWorkflow("publish-docker.yml");
+    const candidateLines = executableLines(
+      requiredRunStep(workflow, "candidate", "Build and smoke the unique amd64 candidate"),
     );
+    const pushJob = workflow.jobs?.publish;
+    const buildPush = requiredStep(workflow, "publish", "Push fixed and full-commit tags");
 
     expect(workflow.jobs?.candidate?.needs).toBe("metadata");
-    expect(candidateScripts).toContain("--platform linux/amd64");
-    expect(candidateScripts).toContain(
-      '--build-arg "DEPLOYMENT_ID=$EXPECTED_COMMIT"',
-    );
-    expect(candidateScripts).toContain(
+    expect(candidateLines).toEqual(expect.arrayContaining([
+      "--platform linux/amd64 \\",
+      '--build-arg "DEPLOYMENT_ID=$EXPECTED_COMMIT" \\',
       "bash scripts/ci/verify-candidate-image.sh",
-    );
-    expect(candidateScripts).toMatch(
-      /POKER_TEST_IMAGE="poker-scorekeeper:candidate-\$\{EXPECTED_COMMIT\}-\$\{candidate_suffix\}"/,
-    );
-    expect(candidateScripts).toMatch(
-      /COMPOSE_PROJECT_NAME="poker-candidate-\$\{project_suffix\}"/,
-    );
-    expect(candidateScripts).not.toMatch(/docker pull/);
+    ]));
+    expect(candidateLines.some((line) => /^POKER_TEST_IMAGE="poker-scorekeeper:candidate-/.test(line))).toBe(true);
+    expect(candidateLines.some((line) => /^COMPOSE_PROJECT_NAME="poker-candidate-/.test(line))).toBe(true);
+    expect(candidateLines.some((line) => /docker pull/.test(line))).toBe(false);
     expect(pushJob?.needs).toEqual(["metadata", "candidate"]);
+    expect(buildPush.uses).toMatch(/^docker\/build-push-action@[0-9a-f]{40}$/);
     expect(buildPush?.with).toEqual(
       expect.objectContaining({
         platforms: "linux/amd64,linux/arm64",
@@ -227,88 +287,148 @@ describe("GitHub Actions Docker publication workflows", () => {
         buildPush?.with && (buildPush.with as Record<string, unknown>).tags,
       ),
     ).not.toContain(":latest");
-    expect(source).toContain("secrets.DOCKERHUB_USERNAME");
-    expect(source).toContain("secrets.DOCKERHUB_TOKEN");
-    expect(source).not.toMatch(/secrets\.(?!DOCKERHUB_(?:USERNAME|TOKEN))/);
+    expect(JSON.stringify(workflow)).not.toMatch(/secrets\.(?!DOCKERHUB_(?:USERNAME|TOKEN))/);
   });
 
-  it("checks the Docker Hub account without logging it and verifies remote identity before digest-only latest promotion", async () => {
-    // Break caught: an unexpected account can push, or latest can be rebuilt before platform provenance is verified.
-    const { source, workflow } = await readWorkflow("publish-docker.yml");
-    const scripts = runScripts(workflow);
-    const usernameChecks =
-      scripts.match(
-        /\[\[\s+"\$DOCKERHUB_USERNAME"\s+==\s+'tianyi920'\s+\]\]/g,
-      ) ?? [];
-
-    expect(usernameChecks.length).toBeGreaterThanOrEqual(2);
-    expect(scripts).not.toMatch(
-      /echo[^\n]*DOCKERHUB_USERNAME|printf[^\n]*DOCKERHUB_USERNAME/,
-    );
+  it("binds all remote publication checks to one digest and re-reads both tags", async () => {
+    // Break caught: tag mutation can switch the raw index or one platform config between separate verification commands.
+    const { workflow } = await readWorkflow("publish-docker.yml");
     expect(workflow.jobs?.remote_verify?.needs).toBe("publish");
-    expect(scripts).toContain(
-      'imagetools inspect --raw "$FIXED_IMAGE" > raw-index.json',
+    const verifyStep = requiredRunStep(
+      workflow,
+      "remote_verify",
+      "Verify the remote index and both platform identities",
     );
-    expect(scripts).toContain(
-      "docker-publish-contract.mjs manifest raw-index.json",
+    expect(verifyStep.env).toEqual({
+      FIXED_IMAGE: "docker.io/tianyi920/poker-scorekeeper:${{ needs.publish.outputs.version }}",
+      COMMIT_IMAGE: "docker.io/tianyi920/poker-scorekeeper:sha-${{ github.sha }}",
+    });
+    const lines = executableLines(verifyStep);
+    const fixedDigest = lineIndex(lines, /^VERIFIED_DIGEST=/);
+    const commitDigest = lineIndex(lines, /^COMMIT_DIGEST=/);
+    const digestEquality = lineIndex(lines, '[[ "$COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]');
+    const digestImage = lineIndex(lines, 'DIGEST_IMAGE="${IMAGE_REPOSITORY}@${VERIFIED_DIGEST}"');
+    const raw = lineIndex(lines, 'docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json');
+    const identity = lineIndex(
+      lines,
+      'node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$GITHUB_SHA"',
     );
-    expect(scripts).toContain(
-      'docker-publish-contract.mjs identity platform-identities.json "$GITHUB_SHA"',
-    );
-    expect(scripts).toMatch(
-      /sha-\$\{GITHUB_SHA\}[\s\S]*COMMIT_DIGEST[\s\S]*VERIFIED_DIGEST/,
-    );
+    expect(fixedDigest).toBeGreaterThanOrEqual(0);
+    expect(commitDigest).toBeGreaterThan(fixedDigest);
+    expect(digestEquality).toBeGreaterThan(commitDigest);
+    expect(digestImage).toBeGreaterThan(digestEquality);
+    expect(raw).toBeGreaterThan(digestImage);
+    expect(identity).toBeGreaterThan(raw);
+    expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
+      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
+      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/arm64")}}\' "$DIGEST_IMAGE" > arm64-image.json',
+    ]);
+    expect(lines.filter((line) => line.includes("imagetools inspect --raw"))).toEqual([
+      'docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json',
+    ]);
+    const finalFixed = lineIndex(lines, /"\$FIXED_IMAGE" > fixed-manifest-final\.json$/);
+    const finalCommit = lineIndex(lines, /"\$COMMIT_IMAGE" > commit-manifest-final\.json$/);
+    const finalFixedEquality = lineIndex(lines, '[[ "$FINAL_FIXED_DIGEST" == "$VERIFIED_DIGEST" ]]');
+    const finalCommitEquality = lineIndex(lines, '[[ "$FINAL_COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]');
+    expect(finalFixed).toBeGreaterThan(identity);
+    expect(finalCommit).toBeGreaterThan(finalFixed);
+    expect(finalFixedEquality).toBeGreaterThan(finalCommit);
+    expect(finalCommitEquality).toBeGreaterThan(finalFixedEquality);
+
     expect(workflow.jobs?.promote_latest?.needs).toBe("remote_verify");
-    expect(scripts).toContain(
-      'imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"',
+    const promotion = requiredRunStep(
+      workflow,
+      "promote_latest",
+      "Promote only the verified digest to latest",
     );
-    expect(scripts).toMatch(/LATEST_DIGEST[\s\S]*VERIFIED_DIGEST/);
-    const promotion = (workflow.jobs?.promote_latest?.steps ?? [])
-      .map((step) => `${step.uses ?? ""}\n${step.run ?? ""}`)
-      .join("\n");
-    expect(promotion).not.toMatch(
-      /build-push-action|docker (?:build|push)(?:\s|$)/,
+    expect(executableLines(promotion)).toContain(
+      'docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"',
     );
-    expect(source.indexOf("docker-publish-contract.mjs identity")).toBeLessThan(
-      source.lastIndexOf("imagetools create"),
-    );
+    expect(executableLines(promotion).some((line) => /docker (?:build|push)(?:\s|$)/.test(line)))
+      .toBe(false);
   });
 
-  it("recovers latest only from a fixed version whose two labels and sha tag bind to one digest", async () => {
-    // Break caught: manual recovery rebuilds or retags an unverified fixed image, or trusts one platform label.
-    const { source, workflow } = await readWorkflow("promote-latest.yml");
+  it("checks the expected Docker Hub account in every authenticating job", async () => {
+    // Break caught: a new or moved login step can bypass the non-secret account-identity guard.
+    for (const [workflowName, expectedJobs] of [
+      ["publish-docker.yml", ["publish", "promote_latest"]],
+      ["promote-latest.yml", ["promote"]],
+    ] as const) {
+      const { workflow } = await readWorkflow(workflowName);
+      const actualJobs: string[] = [];
+      for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+        const steps = job.steps ?? [];
+        for (let loginIndex = 0; loginIndex < steps.length; loginIndex += 1) {
+          const login = steps[loginIndex];
+          if (!login.uses?.startsWith("docker/login-action@")) continue;
+          actualJobs.push(jobName);
+          expect(login.if).toBeUndefined();
+          expect(login["continue-on-error"]).toBeUndefined();
+          const guard = steps[loginIndex - 1];
+          expect(guard?.name).toBe("Refuse an unexpected Docker Hub account");
+          expect(guard?.if).toBeUndefined();
+          expect(guard?.["continue-on-error"]).toBeUndefined();
+          expect(guard?.env).toEqual({
+            DOCKERHUB_USERNAME: "${{ secrets.DOCKERHUB_USERNAME }}",
+          });
+          const guardLines = executableLines(guard);
+          expect(guardLines).toContain('[[ "$DOCKERHUB_USERNAME" == \'tianyi920\' ]] || {');
+          expect(guardLines.some((line) => /(?:echo|printf).*DOCKERHUB_USERNAME/.test(line))).toBe(false);
+        }
+      }
+      expect(actualJobs.sort()).toEqual([...expectedJobs].sort());
+    }
+  });
+
+  it("binds recovery identity and tag rechecks to the fixed digest", async () => {
+    // Break caught: recovery can validate one tag resolution but promote a digest whose platform identity came from another.
+    const { workflow } = await readWorkflow("promote-latest.yml");
     const dispatch = workflow.on?.workflow_dispatch as {
       inputs?: Record<string, Record<string, unknown>>;
     };
-    const scripts = runScripts(workflow);
 
     expect(Object.keys(workflow.on ?? {})).toEqual(["workflow_dispatch"]);
     expect(dispatch.inputs?.version).toEqual(
       expect.objectContaining({ required: true, type: "string" }),
     );
     expect(workflow.permissions).toEqual({ contents: "read" });
-    expect(scripts).toMatch(
-      /\^\(0\|\[1-9\]\[0-9\]\*\)\\\.\(0\|\[1-9\]\[0-9\]\*\)\\\.\(0\|\[1-9\]\[0-9\]\*\)\$/,
+    const validate = requiredRunStep(workflow, "validate", "Revalidate fixed image provenance");
+    const lines = executableLines(validate);
+    expect(lines.some((line) => /\^\(0\|\[1-9\]\[0-9\]\*\)\\\./.test(line))).toBe(true);
+    const fixedDigest = lineIndex(lines, /^FIXED_DIGEST=/);
+    const digestImage = lineIndex(lines, 'DIGEST_IMAGE="${IMAGE_REPOSITORY}@${FIXED_DIGEST}"');
+    const raw = lineIndex(lines, 'docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json');
+    const identity = lineIndex(
+      lines,
+      'node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$EXPECTED_COMMIT"',
     );
-    expect(scripts).toContain(
-      "docker-publish-contract.mjs manifest raw-index.json",
+    const shaDigest = lineIndex(lines, /^SHA_DIGEST=/);
+    const digestEquality = lineIndex(lines, '[[ "$SHA_DIGEST" == "$FIXED_DIGEST" ]]');
+    expect(fixedDigest).toBeGreaterThanOrEqual(0);
+    expect(digestImage).toBeGreaterThan(fixedDigest);
+    expect(raw).toBeGreaterThan(digestImage);
+    expect(identity).toBeGreaterThan(raw);
+    expect(shaDigest).toBeGreaterThan(identity);
+    expect(digestEquality).toBeGreaterThan(shaDigest);
+    expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
+      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
+      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/arm64")}}\' "$DIGEST_IMAGE" > arm64-image.json',
+    ]);
+    const finalFixed = lineIndex(lines, /"\$FIXED_IMAGE" > fixed-manifest-final\.json$/);
+    const finalSha = lineIndex(lines, /"\$SHA_IMAGE" > sha-manifest-final\.json$/);
+    const finalFixedEquality = lineIndex(lines, '[[ "$FINAL_FIXED_DIGEST" == "$FIXED_DIGEST" ]]');
+    const finalShaEquality = lineIndex(lines, '[[ "$FINAL_SHA_DIGEST" == "$FIXED_DIGEST" ]]');
+    expect(finalFixed).toBeGreaterThan(digestEquality);
+    expect(finalSha).toBeGreaterThan(finalFixed);
+    expect(finalFixedEquality).toBeGreaterThan(finalSha);
+    expect(finalShaEquality).toBeGreaterThan(finalFixedEquality);
+
+    const promotion = requiredRunStep(workflow, "promote", "Promote only the revalidated digest");
+    expect(executableLines(promotion)).toContain(
+      'docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"',
     );
-    expect(scripts).toContain("AMD64_REVISION");
-    expect(scripts).toContain("ARM64_REVISION");
-    expect(scripts).toMatch(/AMD64_REVISION[\s\S]*ARM64_REVISION/);
-    expect(scripts).toContain(
-      'docker-publish-contract.mjs identity platform-identities.json "$EXPECTED_COMMIT"',
-    );
-    expect(scripts).toContain("sha-${EXPECTED_COMMIT}");
-    expect(scripts).toMatch(/SHA_DIGEST[\s\S]*FIXED_DIGEST/);
-    expect(scripts).toContain(
-      'imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"',
-    );
-    expect(scripts).toMatch(/LATEST_DIGEST[\s\S]*VERIFIED_DIGEST/);
-    expect(source).not.toMatch(
-      /build-push-action|docker (?:build|push)(?:\s|$)|continue-on-error/,
-    );
-    expect(source.match(/imagetools create/g)).toHaveLength(1);
+    expect(actionReferences(workflow).some((uses) => uses.startsWith("docker/build-push-action@")))
+      .toBe(false);
   });
 
   it("pins every external Action to one immutable commit", async () => {

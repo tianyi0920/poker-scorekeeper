@@ -47,10 +47,13 @@ jobs:
             exit 1
           fi
           FIXED_IMAGE="${IMAGE_REPOSITORY}:${REQUESTED_VERSION}"
-          docker buildx imagetools inspect --raw "$FIXED_IMAGE" > raw-index.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest.json
+          FIXED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest.json)"
+          DIGEST_IMAGE="${IMAGE_REPOSITORY}@${FIXED_DIGEST}"
+          docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json
           node scripts/release/docker-publish-contract.mjs manifest raw-index.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$FIXED_IMAGE" > amd64-image.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$FIXED_IMAGE" > arm64-image.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$DIGEST_IMAGE" > amd64-image.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$DIGEST_IMAGE" > arm64-image.json
           jq -n \
             --slurpfile amd64 amd64-image.json \
             --slurpfile arm64 arm64-image.json \
@@ -63,11 +66,16 @@ jobs:
           [[ "$AMD64_REVISION" == "$ARM64_REVISION" ]]
           EXPECTED_COMMIT="$AMD64_REVISION"
           node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$EXPECTED_COMMIT"
-          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest.json
-          docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE_REPOSITORY}:sha-${EXPECTED_COMMIT}" > sha-manifest.json
-          FIXED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest.json)"
+          SHA_IMAGE="${IMAGE_REPOSITORY}:sha-${EXPECTED_COMMIT}"
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$SHA_IMAGE" > sha-manifest.json
           SHA_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' sha-manifest.json)"
           [[ "$SHA_DIGEST" == "$FIXED_DIGEST" ]]
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest-final.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$SHA_IMAGE" > sha-manifest-final.json
+          FINAL_FIXED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest-final.json)"
+          FINAL_SHA_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' sha-manifest-final.json)"
+          [[ "$FINAL_FIXED_DIGEST" == "$FIXED_DIGEST" ]]
+          [[ "$FINAL_SHA_DIGEST" == "$FIXED_DIGEST" ]]
           printf 'verified_digest=%s\n' "$FIXED_DIGEST" >> "$GITHUB_OUTPUT"
 
   promote:
