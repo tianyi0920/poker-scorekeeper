@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse as parseDotenv } from "dotenv";
 import { parse } from "yaml";
@@ -25,6 +25,31 @@ interface ComposeService {
 
 async function readRepositoryFile(path: string): Promise<string> {
   return readFile(resolve(repositoryRoot, path), "utf8");
+}
+
+function validateActiveGuideMigrationCommands(guides: string[]): void {
+  const commands = guides.flatMap((guide) =>
+    guide
+      .split(/\r?\n/)
+      .filter(
+        (line) =>
+          line.startsWith("docker compose ") &&
+          line.includes("prisma migrate deploy"),
+      ),
+  );
+  if (commands.length < 2) {
+    throw new Error("active deployment guides are missing migration commands");
+  }
+  for (const command of commands) {
+    if (
+      !command.endsWith(
+        " app /app/apps/api/node_modules/.bin/prisma migrate deploy",
+      ) ||
+      command.includes("pnpm")
+    ) {
+      throw new Error("active deployment guide uses a runtime package manager");
+    }
+  }
 }
 
 const inContainerReleaseHelpers = [
@@ -1086,6 +1111,29 @@ describe("production deployment artifacts", () => {
     expect(artifacts).not.toMatch(
       /mysql:\/\/[^:\s]+:(?!replace_me|<password>|CHANGE_ME)[^@\s]+@(?:tianyi\.wiki|192\.168\.10\.248)/,
     );
+  });
+
+  it("uses the installed Prisma binary in every active deployment guide", async () => {
+    const deploymentGuideNames = (
+      await readdir(resolve(repositoryRoot, "docs/deployment"))
+    ).filter((name) => name.endsWith(".md"));
+    const guides = await Promise.all(
+      deploymentGuideNames.map((name) =>
+        readRepositoryFile(`docs/deployment/${name}`),
+      ),
+    );
+
+    expect(() => validateActiveGuideMigrationCommands(guides)).not.toThrow();
+    expect(() =>
+      validateActiveGuideMigrationCommands(
+        guides.map((guide) =>
+          guide.replace(
+            "/app/apps/api/node_modules/.bin/prisma migrate deploy",
+            "pnpm --filter @poker/api prisma migrate deploy",
+          ),
+        ),
+      ),
+    ).toThrow(/runtime package manager/);
   });
 
   it("keeps release verification fail-closed across local, browser, image, restart, backup, and restore gates", async () => {
