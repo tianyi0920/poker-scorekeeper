@@ -52,6 +52,30 @@ function validateActiveGuideMigrationCommands(guides: string[]): void {
   }
 }
 
+function validateGeneratedOutputExclusions(content: string): void {
+  const rules = content
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line !== "" && !line.startsWith("#"));
+  for (const directory of ["test-results", "playwright-report"]) {
+    const exclusion = `${directory}/`;
+    const exclusionIndex = rules.lastIndexOf(exclusion);
+    if (exclusionIndex < 0) {
+      throw new Error(`missing generated-output exclusion: ${exclusion}`);
+    }
+    if (
+      rules
+        .slice(exclusionIndex + 1)
+        .some(
+          (rule) =>
+            rule === `!${directory}` || rule.startsWith(`!${directory}/`),
+        )
+    ) {
+      throw new Error(`generated output is re-included: ${directory}`);
+    }
+  }
+}
+
 const inContainerReleaseHelpers = [
   "scripts/backup/backup.sh",
   "scripts/backup/restore.sh",
@@ -729,6 +753,15 @@ describe("production deployment artifacts", () => {
       expect(ignore.split(/\r?\n/)).toContain(pattern);
     }
     expect(ignore.split(/\r?\n/)).toContain("!.env.example");
+    expect(() => validateGeneratedOutputExclusions(ignore)).not.toThrow();
+    expect(() =>
+      validateGeneratedOutputExclusions(ignore.replace("test-results/", "")),
+    ).toThrow(/missing generated-output exclusion/);
+    expect(() =>
+      validateGeneratedOutputExclusions(
+        `${ignore}\n!playwright-report/index.html\n`,
+      ),
+    ).toThrow(/re-included/);
   });
 
   it("provides a fixed-version registry compose bundle without a database service", async () => {
