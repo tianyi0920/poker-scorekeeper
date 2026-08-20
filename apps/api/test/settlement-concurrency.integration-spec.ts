@@ -18,6 +18,7 @@ import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { SettlementDraftService } from '../src/settlements/settlement-draft.service.js';
 import { SettlementFinalizationService } from '../src/settlements/settlement-finalization.service.js';
+import * as userPolicy from '../src/users/user-policy.js';
 
 const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
 const databaseName = databaseUrl.pathname.slice(1);
@@ -49,66 +50,6 @@ function authUser(user: User): AuthUser {
 
 function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
-}
-
-async function waitForFinalizationUserLockQuery(): Promise<void> {
-  const connection = await mariadb.createConnection({
-    host: databaseUrl.hostname,
-    port: Number(databaseUrl.port || 3306),
-    user: decodeURIComponent(databaseUrl.username),
-    password: decodeURIComponent(databaseUrl.password),
-    database: databaseName,
-    connectTimeout: 5_000
-  });
-  let processStates: Array<{
-    command: string;
-    state: string;
-    phase: string;
-    count: bigint | number;
-  }> = [];
-  let transactionCount = 0;
-  try {
-    const deadline = Date.now() + 10_000;
-    while (Date.now() < deadline) {
-      const rows = await connection.query<Array<{ count: bigint | number }>>(
-        'SELECT COUNT(*) AS count FROM information_schema.innodb_lock_waits'
-      );
-      if (Number(rows[0]?.count ?? 0) > 0) return;
-      const userQueries = await connection.query<Array<{ count: bigint | number }>>(
-        `SELECT COUNT(*) AS count FROM information_schema.processlist
-         WHERE db = ? AND command = 'Execute' AND info LIKE '%FROM users%' AND state IS NOT NULL`,
-        [databaseName]
-      );
-      if (Number(userQueries[0]?.count ?? 0) > 0) return;
-      await delay(50);
-    }
-    const rawProcessStates = await connection.query<typeof processStates>(
-      `SELECT command, COALESCE(state, '') AS state,
-              CASE
-                WHEN info LIKE '%system_settings%' THEN 'settings'
-                WHEN info LIKE '%settlement_drafts%' THEN 'draft'
-                WHEN info LIKE '%game_players%' THEN 'players'
-                WHEN info LIKE '%buyin_events%' THEN 'buyins'
-                WHEN info LIKE '%FROM users%' THEN 'users'
-                WHEN info LIKE '%FROM games%' THEN 'games'
-                WHEN info IS NULL THEN 'idle'
-                ELSE 'other'
-              END AS phase,
-              COUNT(*) AS count
-       FROM information_schema.processlist WHERE db = ? GROUP BY command, state, phase`,
-      [databaseName]
-    );
-    processStates = rawProcessStates.map((row) => ({ ...row, count: Number(row.count) }));
-    const transactions = await connection.query<Array<{ count: bigint | number }>>(
-      'SELECT COUNT(*) AS count FROM information_schema.innodb_trx'
-    );
-    transactionCount = Number(transactions[0]?.count ?? 0);
-  } finally {
-    await connection.end();
-  }
-  throw new Error(
-    `Finalization did not reach the expected user-row lock query; transactionCount=${transactionCount}; processStates=${JSON.stringify(processStates)}`
-  );
 }
 
 async function updateRakeOutsidePrismaPool(userId: string, rakeEnabled: boolean): Promise<void> {
@@ -535,38 +476,40 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
     const blockedUserId = ordered[0]!;
     const target = blockedUserId === playerA.id ? playerB : playerA;
     const releaseUserLock = await lockUserOutsidePrismaPool(blockedUserId);
+    let signalUserLockQuery!: () => void;
+    const userLockQueryReached = new Promise<void>((resolve) => { signalUserLockQuery = resolve; });
+    const originalLockUsersInOrder = userPolicy.lockUsersInOrder;
+    vi.spyOn(userPolicy, 'lockUsersInOrder').mockImplementation(async (transaction, ids) => {
+      const actualIds = [...new Set(ids)].sort();
+      if (actualIds.length === ordered.length && actualIds.every((id, index) => id === ordered[index])) {
+        signalUserLockQuery();
+      }
+      return originalLockUsersInOrder(transaction, ids);
+    });
 
     const result = finalization.finalize(fixture.game.id, authUser(adminA), command).then(
       (value) => ({ status: 'fulfilled' as const, value }),
       (reason: unknown) => ({ status: 'rejected' as const, reason })
     );
     let updateError: unknown;
-    let observationError: unknown;
     try {
       try {
-        await waitForFinalizationUserLockQuery();
+        await Promise.race([
+          userLockQueryReached,
+          delay(10_000).then(() => {
+            throw new Error('This finalization did not reach its exact participant user-lock query');
+          })
+        ]);
+        await updateRakeOutsidePrismaPool(target.id, false);
       } catch (error) {
-        observationError = error;
-      }
-      if (observationError === undefined) {
-        try {
-          await updateRakeOutsidePrismaPool(target.id, false);
-        } catch (error) {
-          updateError = error;
-        }
+        updateError = error;
       }
     } finally {
-      await releaseUserLock();
-      await result;
-    }
-
-    if (observationError !== undefined) {
-      const outcome = await result;
-      const code = outcome.status === 'rejected' && typeof outcome.reason === 'object' && outcome.reason !== null
-        && 'code' in outcome.reason ? String(outcome.reason.code) : outcome.status;
-      throw new Error(`Finalization lock observation failed; finalization outcome: ${code}`, {
-        cause: observationError
-      });
+      try {
+        await releaseUserLock();
+      } finally {
+        await result;
+      }
     }
 
     expect(updateError).toBeUndefined();
