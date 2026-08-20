@@ -1,0 +1,108 @@
+name: Recover Docker latest
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Existing fixed Docker image version (for example, 1.0.0)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPOSITORY: docker.io/tianyi920/poker-scorekeeper
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      verified_digest: ${{ steps.validate.outputs.verified_digest }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Revalidate fixed image provenance
+        id: validate
+        shell: bash
+        env:
+          REQUESTED_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          if [[ ! "$REQUESTED_VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            printf 'INVALID_RELEASE_VERSION\n' >&2
+            exit 1
+          fi
+          FIXED_IMAGE="${IMAGE_REPOSITORY}:${REQUESTED_VERSION}"
+          docker buildx imagetools inspect --raw "$FIXED_IMAGE" > raw-index.json
+          node scripts/release/docker-publish-contract.mjs manifest raw-index.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$FIXED_IMAGE" > amd64-image.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$FIXED_IMAGE" > arm64-image.json
+          jq -n \
+            --slurpfile amd64 amd64-image.json \
+            --slurpfile arm64 arm64-image.json \
+            '[
+              {os: $amd64[0].os, architecture: $amd64[0].architecture, labels: $amd64[0].config.Labels},
+              {os: $arm64[0].os, architecture: $arm64[0].architecture, labels: $arm64[0].config.Labels}
+            ]' > platform-identities.json
+          AMD64_REVISION="$(jq -er '.config.Labels["org.opencontainers.image.revision"] | select(test("^[0-9a-f]{40}$"))' amd64-image.json)"
+          ARM64_REVISION="$(jq -er '.config.Labels["org.opencontainers.image.revision"] | select(test("^[0-9a-f]{40}$"))' arm64-image.json)"
+          [[ "$AMD64_REVISION" == "$ARM64_REVISION" ]]
+          EXPECTED_COMMIT="$AMD64_REVISION"
+          node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$EXPECTED_COMMIT"
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE_REPOSITORY}:sha-${EXPECTED_COMMIT}" > sha-manifest.json
+          FIXED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest.json)"
+          SHA_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' sha-manifest.json)"
+          [[ "$SHA_DIGEST" == "$FIXED_DIGEST" ]]
+          printf 'verified_digest=%s\n' "$FIXED_DIGEST" >> "$GITHUB_OUTPUT"
+
+  promote:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Refuse an unexpected Docker Hub account
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          [[ "$DOCKERHUB_USERNAME" == 'tianyi920' ]] || {
+            printf 'Docker Hub account mismatch\n' >&2
+            exit 1
+          }
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Promote only the revalidated digest
+        shell: bash
+        env:
+          VERIFIED_DIGEST: ${{ needs.validate.outputs.verified_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$VERIFIED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"
+          docker buildx imagetools inspect --format '{{json .Manifest}}' docker.io/tianyi920/poker-scorekeeper:latest > latest-manifest.json
+          LATEST_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' latest-manifest.json)"
+          [[ "$LATEST_DIGEST" == "$VERIFIED_DIGEST" ]]

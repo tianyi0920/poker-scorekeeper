@@ -1,0 +1,106 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches:
+      - "**"
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CI: "true"
+      GITHUB_ACTIONS: "true"
+      DATABASE_URL: mysql://poker_ci:poker_ci@127.0.0.1:3306/poker_scorekeeper_ci_test
+      BASH_PATH: /usr/bin/bash
+      PUBLIC_ORIGIN: http://127.0.0.1:3000
+      SESSION_SECRET: ci_only_session_secret_0123456789abcdef0123456789abcdef
+      CSRF_SECRET: ci_only_csrf_secret_0123456789abcdef0123456789abcdef
+      BOOTSTRAP_ADMIN_USERNAME: ciadmin
+      BOOTSTRAP_ADMIN_NICKNAME: CI Administrator
+      BOOTSTRAP_ADMIN_PASSWORD: CI-only-password-12345
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: poker_scorekeeper_ci_test
+          MYSQL_USER: poker_ci
+          MYSQL_PASSWORD: poker_ci
+          MYSQL_ROOT_PASSWORD: ci_only_mysql_root_password
+        ports:
+          - "3306:3306"
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -u poker_ci -ppoker_ci --silent"
+          --health-interval=3s
+          --health-timeout=3s
+          --health-retries=30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@d15e628ca66d93ee5f352c71671a7bc6a97af5c9 # v6.0.8
+        with:
+          version: 10.15.1
+          run_install: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Install frozen dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Check guarded CI database connectivity
+        run: node scripts/database/run-with-ci-test-env.mjs --check-only
+
+      - name: Apply migrations to the isolated CI database
+        run: node scripts/database/run-with-ci-test-env.mjs pnpm --filter @poker/api prisma migrate deploy
+
+      - name: Lint and typecheck
+        run: |
+          pnpm lint
+          pnpm typecheck
+
+      - name: Run full package tests
+        run: node scripts/database/run-with-ci-test-env.mjs pnpm test
+
+      - name: Run API integration tests
+        run: node scripts/database/run-with-ci-test-env.mjs pnpm --filter @poker/api test:integration
+
+      - name: Install browser engines
+        run: pnpm exec playwright install --with-deps chromium webkit
+
+      - name: Run the 23-test browser suite
+        run: node scripts/database/run-with-ci-test-env.mjs pnpm exec playwright test
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Validate registry Compose and repository hygiene
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p test-results
+          cleanup() {
+            rm -f test-results/extremespace-compose.env .env.production
+          }
+          trap cleanup EXIT
+          cp .env.extremespace.example test-results/extremespace-compose.env
+          cp .env.extremespace.example .env.production
+          git check-ignore --quiet test-results/extremespace-compose.env
+          git check-ignore --quiet .env.production
+          docker compose --env-file test-results/extremespace-compose.env -f docker-compose.registry.yml config --quiet
+          git diff --check
+          git diff --exit-code

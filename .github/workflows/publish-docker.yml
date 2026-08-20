@@ -1,0 +1,215 @@
+name: Publish Docker image
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+env:
+  IMAGE_REPOSITORY: docker.io/tianyi920/poker-scorekeeper
+
+jobs:
+  verify:
+    uses: ./.github/workflows/verify.yml
+
+  metadata:
+    needs: verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      version: ${{ steps.release.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Validate immutable release metadata and fixed-tag absence
+        id: release
+        shell: bash
+        run: |
+          set -euo pipefail
+          metadata_json="$(node scripts/release/docker-publish-contract.mjs metadata "$GITHUB_REF_NAME" "$GITHUB_SHA")"
+          version="$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.version)' "$metadata_json")"
+          node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$version"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  candidate:
+    needs: metadata
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build and smoke the unique amd64 candidate
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          candidate_suffix="$(node -e 'const value = BigInt(process.env.GITHUB_RUN_ID); process.stdout.write(value.toString(16).padStart(8, "0").slice(-8))')"
+          project_suffix="$(printf '%s' "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_SHA}" | sha256sum | cut -c1-12)"
+          POKER_TEST_IMAGE="poker-scorekeeper:candidate-${EXPECTED_COMMIT}-${candidate_suffix}"
+          COMPOSE_PROJECT_NAME="poker-candidate-${project_suffix}"
+          export POKER_TEST_IMAGE COMPOSE_PROJECT_NAME
+          docker buildx build \
+            --load \
+            --platform linux/amd64 \
+            --build-arg "DEPLOYMENT_ID=$EXPECTED_COMMIT" \
+            --tag "$POKER_TEST_IMAGE" \
+            .
+          bash scripts/ci/verify-candidate-image.sh
+
+  publish:
+    needs: [metadata, candidate]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    outputs:
+      version: ${{ needs.metadata.outputs.version }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Refuse an unexpected Docker Hub account
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          [[ "$DOCKERHUB_USERNAME" == 'tianyi920' ]] || {
+            printf 'Docker Hub account mismatch\n' >&2
+            exit 1
+          }
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Push fixed and full-commit tags
+        uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: DEPLOYMENT_ID=${{ github.sha }}
+          tags: |
+            docker.io/tianyi920/poker-scorekeeper:${{ needs.metadata.outputs.version }}
+            docker.io/tianyi920/poker-scorekeeper:sha-${{ github.sha }}
+          provenance: mode=max
+
+  remote_verify:
+    needs: publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      verified_digest: ${{ steps.verify.outputs.verified_digest }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: "24"
+          package-manager-cache: false
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Verify the remote index and both platform identities
+        id: verify
+        shell: bash
+        env:
+          FIXED_IMAGE: docker.io/tianyi920/poker-scorekeeper:${{ needs.publish.outputs.version }}
+        run: |
+          set -euo pipefail
+          docker buildx imagetools inspect --raw "$FIXED_IMAGE" > raw-index.json
+          node scripts/release/docker-publish-contract.mjs manifest raw-index.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$FIXED_IMAGE" > amd64-image.json
+          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$FIXED_IMAGE" > arm64-image.json
+          jq -n \
+            --slurpfile amd64 amd64-image.json \
+            --slurpfile arm64 arm64-image.json \
+            '[
+              {os: $amd64[0].os, architecture: $amd64[0].architecture, labels: $amd64[0].config.Labels},
+              {os: $arm64[0].os, architecture: $arm64[0].architecture, labels: $arm64[0].config.Labels}
+            ]' > platform-identities.json
+          node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$GITHUB_SHA"
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest.json
+          docker buildx imagetools inspect --format '{{json .Manifest}}' "${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}" > commit-manifest.json
+          VERIFIED_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' fixed-manifest.json)"
+          COMMIT_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' commit-manifest.json)"
+          [[ "$COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]
+          printf 'verified_digest=%s\n' "$VERIFIED_DIGEST" >> "$GITHUB_OUTPUT"
+
+  promote_latest:
+    needs: remote_verify
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Refuse an unexpected Docker Hub account
+        shell: bash
+        env:
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+        run: |
+          set -euo pipefail
+          [[ "$DOCKERHUB_USERNAME" == 'tianyi920' ]] || {
+            printf 'Docker Hub account mismatch\n' >&2
+            exit 1
+          }
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@b45d80f862d83dbcd57f89517bcf500b2ab88fb2 # v4.0.0
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Promote only the verified digest to latest
+        shell: bash
+        env:
+          VERIFIED_DIGEST: ${{ needs.remote_verify.outputs.verified_digest }}
+        run: |
+          set -euo pipefail
+          [[ "$VERIFIED_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"
+          docker buildx imagetools inspect --format '{{json .Manifest}}' docker.io/tianyi920/poker-scorekeeper:latest > latest-manifest.json
+          LATEST_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' latest-manifest.json)"
+          [[ "$LATEST_DIGEST" == "$VERIFIED_DIGEST" ]]
