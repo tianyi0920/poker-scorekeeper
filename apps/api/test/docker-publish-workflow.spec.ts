@@ -93,12 +93,17 @@ function expectDigestOnlyLatestPromotion(step: WorkflowStep) {
     'docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"';
   const inspectCommand =
     "docker buildx imagetools inspect --format '{{json .Manifest}}' docker.io/tianyi920/poker-scorekeeper:latest > latest-manifest.json";
+  const digestExtraction =
+    `LATEST_DIGEST="$(jq -er '.digest | select(test("^sha256:[0-9a-f]{64}$"))' latest-manifest.json)"`;
   const create = lineIndex(lines, createCommand);
   const inspect = lineIndex(lines, inspectCommand);
-  const latestDigest = lineIndex(lines, /^LATEST_DIGEST=/);
+  const latestDigest = lineIndex(lines, digestExtraction);
   const equality = lineIndex(lines, '[[ "$LATEST_DIGEST" == "$VERIFIED_DIGEST" ]]');
 
   expect(lines.filter((line) => line.includes("imagetools create"))).toEqual([createCommand]);
+  expect(lines.filter((line) => line.startsWith("LATEST_DIGEST="))).toEqual([
+    digestExtraction,
+  ]);
   expect(create).toBeGreaterThanOrEqual(0);
   expect(inspect).toBeGreaterThan(create);
   expect(latestDigest).toBeGreaterThan(inspect);
