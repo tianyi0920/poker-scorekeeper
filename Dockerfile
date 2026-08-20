@@ -56,7 +56,6 @@ COPY --from=production-dependencies /app/apps/api/node_modules ./apps/api/node_m
 COPY --from=production-dependencies /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=production-dependencies /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=production-dependencies /app/packages/settlement/node_modules ./packages/settlement/node_modules
-RUN test -x /app/apps/api/node_modules/.bin/prisma
 COPY --from=production-dependencies /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 COPY --from=production-dependencies /app/apps/api/package.json ./apps/api/package.json
 COPY --from=production-dependencies /app/apps/web/package.json ./apps/web/package.json
@@ -80,6 +79,7 @@ COPY --chmod=0555 scripts/backup/restore.sh ./scripts/backup/restore.sh
 COPY --chmod=0444 scripts/backup/restore-input-guard.mjs ./scripts/backup/restore-input-guard.mjs
 
 USER node
+RUN test -x /app/apps/api/node_modules/.bin/prisma
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "scripts/docker/healthcheck.mjs"]

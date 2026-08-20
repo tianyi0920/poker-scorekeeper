@@ -99,7 +99,18 @@ exit 23
     it(`forwards ${signal} to an in-flight migration child and never starts the API`, async () => {
       // Break caught: a stop signal leaves Prisma orphaned or permits the API to start.
       const bin = join(root, 'bin');
+      const bashWithKillObserver = join(root, 'bash-with-kill-observer.sh');
+      const observedKills = join(root, 'observed-kills');
       await mkdir(bin);
+      await executable(bashWithKillObserver, `#!/bin/sh
+kill() {
+  printf '%s\\n' "$*" >> "$KILL_OBSERVER_FILE"
+  builtin kill "$@"
+}
+staged_entrypoint="$1"
+shift
+. "$staged_entrypoint"
+`);
       await stageEntrypoint(`#!/bin/sh
 printf '%s\n' "$$" > "$MIGRATION_PID_FILE"
 printf '%s\n' ready > "$MIGRATION_READY_FILE"
@@ -117,6 +128,7 @@ exit 0
       const driver = join(root, 'driver.sh');
       await executable(driver, `#!/bin/sh
 set -eu
+set -m
 "$BASH_PATH" "$ENTRYPOINT" &
 entrypoint_pid=$!
 attempt=0
@@ -132,13 +144,12 @@ while [ ! -f "$MIGRATION_SIGNAL_FILE" ] && [ "$attempt" -lt 20 ]; do
   attempt=$((attempt + 1))
 done
 : > "$MIGRATION_RELEASE_FILE"
-if [ ! -f "$MIGRATION_SIGNAL_FILE" ]; then
-  wait "$entrypoint_pid" 2>/dev/null || true
-  exit 21
-fi
 wait "$entrypoint_pid" 2>/dev/null || status=$?
 [ "\${status:-0}" -eq ${exitCode} ]
 [ ! -f "$API_STARTED_FILE" ]
+if [ "$REQUIRE_MIGRATION_SIGNAL_FILE" = true ] && [ ! -f "$MIGRATION_SIGNAL_FILE" ]; then
+  exit 21
+fi
 `);
 
       const signalFile = join(root, 'migration.signal');
@@ -147,7 +158,9 @@ wait "$entrypoint_pid" 2>/dev/null || status=$?
         env: {
           ...process.env,
           PATH: `${shellPath(bin)}:/usr/bin:/bin`,
-          BASH_PATH: shellPath(bash),
+          BASH_PATH: shellPath(bashWithKillObserver),
+          KILL_OBSERVER_FILE: shellPath(observedKills),
+          REQUIRE_MIGRATION_SIGNAL_FILE: signal === 'INT' ? 'false' : 'true',
           NODE_DELAY: shellPath(process.execPath),
           ENTRYPOINT: shellPath(stagedEntrypoint),
           MIGRATION_PID_FILE: shellPath(join(root, 'migration.pid')),
@@ -161,7 +174,15 @@ wait "$entrypoint_pid" 2>/dev/null || status=$?
       });
 
       expect(result.status, `${result.stderr}\n${result.stdout}`).toBe(0);
-      expect((await readFile(signalFile, 'utf8')).trim()).toBe(signal);
+      expect(await readFile(observedKills, 'utf8')).toMatch(
+        new RegExp(`^-s ${signal} \\d+$`, 'm')
+      );
+      if (signal === 'INT') {
+        // Windows/MSYS background shell children inherit ignored INT; the observed builtin call proves forwarding.
+        await expect(readFile(signalFile)).rejects.toMatchObject({ code: 'ENOENT' });
+      } else {
+        expect((await readFile(signalFile, 'utf8')).trim()).toBe(signal);
+      }
     });
   }
 

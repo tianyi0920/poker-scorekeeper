@@ -68,6 +68,10 @@ describe('production deployment artifacts', () => {
     expect(runtime).toContain('test -x /app/apps/api/node_modules/.bin/prisma');
     expect(runtime).not.toContain('COPY scripts ./scripts');
     expect(runtime).not.toMatch(/\.test\.ts|run-with-test-env|seed-release-drill|assert-restored/);
+    // Break caught: root verifies only mode bits while the final node user cannot execute Prisma.
+    expect(runtime).toMatch(
+      /USER node\s+RUN test -x \/app\/apps\/api\/node_modules\/\.bin\/prisma\s+EXPOSE/
+    );
     expect(entrypoint).toContain('/app/apps/api/node_modules/.bin/prisma migrate deploy');
     expect(entrypoint).not.toMatch(/\bpnpm\b|\bcorepack\b/);
     expect(compose.services.app.command).toContain(
