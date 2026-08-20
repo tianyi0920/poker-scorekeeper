@@ -328,15 +328,17 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
     vi.restoreAllMocks();
     if (prisma !== undefined) {
       await cleanOwnedGames();
-      await prisma.systemSetting.update({
-        where: { id: 'singleton' },
-        data: {
-          rakeThreshold: originalSettings.rakeThreshold,
-          rakeBps: originalSettings.rakeBps,
-          version: originalSettings.version,
-          updatedById: originalSettings.updatedById
-        }
-      });
+      if (originalSettings !== undefined) {
+        await prisma.systemSetting.update({
+          where: { id: 'singleton' },
+          data: {
+            rakeThreshold: originalSettings.rakeThreshold,
+            rakeBps: originalSettings.rakeBps,
+            version: originalSettings.version,
+            updatedById: originalSettings.updatedById
+          }
+        });
+      }
       const graph = await ownedGraph();
       if (graph.userIds.length > 0) {
         await prisma.auditLog.deleteMany({ where: { actorUserId: { in: graph.userIds } } });
