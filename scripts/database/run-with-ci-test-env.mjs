@@ -11,6 +11,8 @@ function createMariaDbConnection(databaseUrl) {
   return mariadb.createConnection({
     host: target.hostname,
     port: Number(target.port),
+    user: decodeURIComponent(target.username),
+    password: decodeURIComponent(target.password),
     database: target.pathname.slice(1),
     connectTimeout: 10_000
   });

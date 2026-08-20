@@ -1,6 +1,6 @@
 import { URL } from 'node:url';
 
-export const CI_TEST_DATABASE_URL = 'mysql://127.0.0.1:3306/poker_scorekeeper_ci_test';
+export const CI_TEST_DATABASE_URL = 'mysql://poker_ci:poker_ci@127.0.0.1:3306/poker_scorekeeper_ci_test';
 export const CI_TEST_DATABASE_TARGET_REFUSED = 'CI_TEST_DATABASE_TARGET_REFUSED';
 
 function refused() {
@@ -35,8 +35,8 @@ export function validateCiTestEnvironment(environment) {
     || target.hostname !== '127.0.0.1'
     || target.host !== '127.0.0.1:3306'
     || target.pathname !== '/poker_scorekeeper_ci_test'
-    || target.username !== ''
-    || target.password !== ''
+    || target.username !== 'poker_ci'
+    || target.password !== 'poker_ci'
     || target.search !== ''
     || target.hash !== ''
     || target.href !== CI_TEST_DATABASE_URL
