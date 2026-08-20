@@ -113,8 +113,12 @@ function validateReleaseHelperAvailability(input: {
       throw new Error(`test-only helper lacks an exact mount: ${helper}`);
     }
     const parent = `/app/${helper.slice(0, helper.lastIndexOf("/"))}/`;
-    if (![...runtimeCopies.values()].some((target) => target.startsWith(parent))) {
-      throw new Error(`runtime does not create helper target parent: ${parent}`);
+    if (
+      ![...runtimeCopies.values()].some((target) => target.startsWith(parent))
+    ) {
+      throw new Error(
+        `runtime does not create helper target parent: ${parent}`,
+      );
     }
   }
 
@@ -132,7 +136,9 @@ function validateReleaseHelperAvailability(input: {
   for (const productionCompose of input.productionComposes) {
     if (
       /\.\/scripts(?:\/|:)/.test(productionCompose) ||
-      testOnlyReleaseHelpers.some((helper) => productionCompose.includes(helper))
+      testOnlyReleaseHelpers.some((helper) =>
+        productionCompose.includes(helper),
+      )
     ) {
       throw new Error("test-only helper leaked into production Compose");
     }
@@ -258,8 +264,8 @@ function validateExtremeSpaceRunbook(content: string): void {
     "### 3.1 立即创建并验证首次备份",
     ': "${POKER_DIR:?Repeat section 1 in this shell first}"',
     'BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"',
-    "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
-    "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
     'STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"',
     'test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"',
     'sudo test -f "$POKER_DIR/data/backups/mysql-$STAMP.sql.gz"',
@@ -312,14 +318,14 @@ function validateExtremeSpaceRunbook(content: string): void {
     ],
     [
       'BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"',
-      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
     ],
     [
-      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
-      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
     ],
     [
-      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
       'STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"',
     ],
     [
@@ -341,6 +347,10 @@ function validateExtremeSpaceRunbook(content: string): void {
     [
       'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
       'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
+    ],
+    [
+      'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
+      "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
     ],
   ];
   for (const [before, after] of orderedCommandPairs) {
@@ -366,7 +376,9 @@ function validateExtremeSpaceRunbook(content: string): void {
     }
   }
   for (const match of content.matchAll(/mysql:\/\/[^:\s]+:([^@\s]+)@/gi)) {
-    if (!/^(?:CHANGE_ME|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(match[1]!)) {
+    if (
+      !/^(?:CHANGE_ME|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(match[1]!)
+    ) {
       throw new Error(
         "runbook contains a non-placeholder database URL credential",
       );
@@ -418,12 +430,19 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
 
   const firstBackupIndex = content.indexOf("### 3.1 立即创建并验证首次备份");
+  const firstPullIndex = content.indexOf(
+    "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+  );
+  const firstUpIndex = content.indexOf(
+    "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
+  );
   if (
-    content.indexOf("/api/health/deployment") > firstBackupIndex ||
+    firstPullIndex > firstBackupIndex ||
+    firstBackupIndex > firstUpIndex ||
     firstBackupIndex > content.indexOf("## 4. HTTPS 和 WebSocket 反向代理")
   ) {
     throw new Error(
-      "first backup verification is not immediately after health checks",
+      "first backup verification is not before the first migration-capable startup",
     );
   }
   const upgradeSection = content.slice(
@@ -908,11 +927,27 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs\ndocker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
-          "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh\ndocker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs\ndocker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app\ndocker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
         ),
       ),
     ).toThrow(/command order/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          "run --rm -T --no-deps --entrypoint node app",
+          "run --rm -T --no-deps app",
+        ),
+      ),
+    ).toThrow(/runbook requirement/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml pull\ndocker compose --env-file .env.production -f docker-compose.registry.yml up -d",
+        ),
+      ),
+    ).toThrow(/first migration-capable startup|command order/);
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(

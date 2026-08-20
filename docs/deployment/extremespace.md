@@ -45,33 +45,27 @@ POKER_IMAGE_VERSION=1.0.0
 
 `.env.production` 中包含数据库、会话、CSRF、管理员和备份账户凭据：不要把它传给 GitHub、Docker Hub、日志、命令参数或 NAS 截图。
 
-## 3. 首次拉取、启动与检查
+## 3. 首次拉取、备份、启动与检查
 
-先检查展开后的配置；确认端口只绑定到 NAS 本机的 `127.0.0.1:3000`：
+先检查展开后的配置，确认端口只绑定到 NAS 本机的 `127.0.0.1:3000`，再拉取固定版本镜像。此时不要执行 `up`、`start`、`restart` 或普通 `run`：这些操作会进入默认入口并可能先运行数据库迁移。
 
 ```sh
 docker compose --env-file .env.production -f docker-compose.registry.yml config --quiet
 docker compose --env-file .env.production -f docker-compose.registry.yml pull
-docker compose --env-file .env.production -f docker-compose.registry.yml up -d
-docker compose --env-file .env.production -f docker-compose.registry.yml ps
-docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app
-curl --fail http://127.0.0.1:3000/api/health/live
-curl --fail http://127.0.0.1:3000/api/health/ready
-curl --fail http://127.0.0.1:3000/api/health/deployment
 ```
-
-镜像入口会先确认生产数据库目标，再运行迁移；迁移失败时服务不会启动。`live` 只表示进程存活；`ready` 还会检查数据库；`deployment` 用于记录当前镜像的部署标识。任一步失败时先查看上面的 `logs` 输出，不要通过改成可变标签或删除迁移来绕过问题。
 
 ### 3.1 立即创建并验证首次备份
 
-首次健康检查通过后，立刻完整执行下面的备份验证块。它使用备份脚本实际发布的四件套：`mysql-<stamp>.sql.gz`、`avatars-<stamp>.tar.gz`、`manifest-<stamp>.txt` 与最后发布的 `checksums-<stamp>.txt`。不要把先前的 `latest-stamp` 当作本次成功的证据：若本次没有生成新的 stamp，命令会失败。
+在第一次启动应用、执行入口脚本或迁移之前，完整执行下面的备份验证块。两个一次性容器都复用 registry Compose 中 `app` 服务的生产环境变量、外部 MariaDB 连接与持久目录挂载，但用显式 `--entrypoint` 绕过默认入口；因此生产库目标守卫和备份会运行，普通入口与迁移不会提前运行。`--no-deps` 也不会创建测试数据库。
+
+备份脚本会把当前持久目录中的现有头像一起纳入备份，无论该目录当前为空还是已有头像。它实际发布四件套：`mysql-<stamp>.sql.gz`、`avatars-<stamp>.tar.gz`、`manifest-<stamp>.txt` 与最后发布的 `checksums-<stamp>.txt`。不要把先前的 `latest-stamp` 当作本次成功的证据：若本次没有生成新的 stamp，命令会失败。
 
 ```sh
 set -eu
 : "${POKER_DIR:?Repeat section 1 in this shell first}"
 BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"
-docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs
-docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh
+docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs
+docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app
 STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"
 test -n "$STAMP"
 test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"
@@ -82,7 +76,18 @@ sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"
 sudo sh -c 'cd "$1" && sha256sum --check "$2"' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"
 ```
 
-任何命令失败都表示备份尚未验证完成；保留日志并停止，而不是继续部署或升级。
+任何命令失败都表示备份尚未验证完成；保留日志并停止，而不是继续部署或升级。只有新 stamp、四个对应文件及校验和全部通过后，才可首次启动：
+
+```sh
+docker compose --env-file .env.production -f docker-compose.registry.yml up -d
+docker compose --env-file .env.production -f docker-compose.registry.yml ps
+docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app
+curl --fail http://127.0.0.1:3000/api/health/live
+curl --fail http://127.0.0.1:3000/api/health/ready
+curl --fail http://127.0.0.1:3000/api/health/deployment
+```
+
+这次 `up` 才会进入镜像的普通入口：入口先再次确认生产数据库目标，再运行迁移；迁移失败时服务不会启动。`live` 只表示进程存活；`ready` 还会检查数据库；`deployment` 用于记录当前镜像的部署标识。任一步失败时先查看上面的 `logs` 输出，不要通过改成可变标签或删除迁移来绕过问题。
 
 ## 4. HTTPS 和 WebSocket 反向代理
 
