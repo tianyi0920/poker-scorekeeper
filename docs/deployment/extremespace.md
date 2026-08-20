@@ -16,11 +16,26 @@
 
 ```sh
 export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper
+export EXISTING_AVATAR_DIR=/path/to/current-avatar-store-or-REUSE-or-NONE
 mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
+case "$EXISTING_AVATAR_DIR" in
+  REUSE)
+    sudo test -d "$POKER_DIR/data/avatars"
+    ;;
+  NONE)
+    ;;
+  *)
+    sudo test -d "$EXISTING_AVATAR_DIR"
+    sudo cp -a "$EXISTING_AVATAR_DIR"/. "$POKER_DIR/data/avatars"/
+    sudo diff -qr "$EXISTING_AVATAR_DIR" "$POKER_DIR/data/avatars"
+    ;;
+esac
 cd "$POKER_DIR"
 sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 ```
+
+若这是已有部署的升级或迁移，必须先保留原头像目录：原目录已经是 `"$POKER_DIR/data/avatars"` 时选择 `REUSE`，否则把 `EXISTING_AVATAR_DIR` 改为原头像目录的绝对路径并完成上面的复制和差异检查。只有全新数据库确定从未有上传头像时才选择 `NONE`；这个选择不是人工放行，首次备份前的只读数据库核对仍会在发现任何 `UPLOAD` 引用但缺少对应文件时失败。
 
 运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行；三个 bind 目录都必须可由该用户写入。上述命令将目录交给容器用户，因此普通 NAS 操作员以后读取备份文件需要 `sudo`；Docker 命令仍由已获 Docker 权限的普通操作员执行。上面的所有者和 `750` 权限适用于普通 Linux 文件系统；若极空间共享目录的 ACL 覆盖传统权限，请在管理界面为 UID/GID `1000:1000` 在 `"$POKER_DIR"/data/avatars`、`"$POKER_DIR"/data/backups`、`"$POKER_DIR"/data/restore` 授予读、写和进入权限，并在管理界面复核三项权限已生效。不要把三个目录设为所有人可写。
 
@@ -56,15 +71,16 @@ docker compose --env-file .env.production -f docker-compose.registry.yml pull
 
 ### 3.1 立即创建并验证首次备份
 
-在第一次启动应用、执行入口脚本或迁移之前，完整执行下面的备份验证块。两个一次性容器都复用 registry Compose 中 `app` 服务的生产环境变量、外部 MariaDB 连接与持久目录挂载，但用显式 `--entrypoint` 绕过默认入口；因此生产库目标守卫和备份会运行，普通入口与迁移不会提前运行。`--no-deps` 也不会创建测试数据库。
+在第一次启动应用、执行入口脚本或迁移之前，完整执行下面的备份验证块。三个一次性容器都复用 registry Compose 中 `app` 服务的生产环境变量、外部 MariaDB 连接与持久目录挂载，但用显式 `--entrypoint` 绕过默认入口；因此生产库目标守卫、头像连续性核对和备份会运行，普通入口与迁移不会提前运行。`--no-deps` 也不会创建测试数据库。
 
-备份脚本会把当前持久目录中的现有头像一起纳入备份，无论该目录当前为空还是已有头像。它实际发布四件套：`mysql-<stamp>.sql.gz`、`avatars-<stamp>.tar.gz`、`manifest-<stamp>.txt` 与最后发布的 `checksums-<stamp>.txt`。不要把先前的 `latest-stamp` 当作本次成功的证据：若本次没有生成新的 stamp，命令会失败。
+头像核对脚本先验证连接仍是固定生产库，再以只读查询收集当前用户和历史牌局快照中的全部 `UPLOAD` 引用；每个引用都必须是挂载的 `/data/avatars` 下安全的直接子文件，不能缺失、越界或是符号链接。空头像目录只有在数据库没有任何上传引用时才会通过。备份脚本随后把已核对的头像目录一起纳入备份，并发布四件套：`mysql-<stamp>.sql.gz`、`avatars-<stamp>.tar.gz`、`manifest-<stamp>.txt` 与最后发布的 `checksums-<stamp>.txt`。不要把先前的 `latest-stamp` 当作本次成功的证据：若本次没有生成新的 stamp，命令会失败。
 
 ```sh
 set -eu
 : "${POKER_DIR:?Repeat section 1 in this shell first}"
 BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"
 docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs
+docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs
 docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app
 STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"
 test -n "$STAMP"

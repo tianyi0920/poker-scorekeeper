@@ -298,7 +298,10 @@ function validateExtremeSpaceRunbook(content: string): void {
   const requiredSnippets = [
     "将 `/path/selected-in-extremespace/poker-scorekeeper` 替换为你在极空间实际选择的目录",
     "export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper",
+    "export EXISTING_AVATAR_DIR=/path/to/current-avatar-store-or-REUSE-or-NONE",
     'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    'sudo cp -a "$EXISTING_AVATAR_DIR"/. "$POKER_DIR/data/avatars"/',
+    'sudo diff -qr "$EXISTING_AVATAR_DIR" "$POKER_DIR/data/avatars"',
     'cd "$POKER_DIR"',
     'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
     'sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
@@ -314,6 +317,7 @@ function validateExtremeSpaceRunbook(content: string): void {
     ': "${POKER_DIR:?Repeat section 1 in this shell first}"',
     'BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"',
     "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs",
     "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
     'STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"',
     'test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"',
@@ -351,14 +355,27 @@ function validateExtremeSpaceRunbook(content: string): void {
     (match) => match[1]!,
   );
   const shellCommands = shellBlocks.flatMap((block) => block.split(/\r?\n/));
-  const indexOfCommand = (command: string) => shellCommands.indexOf(command);
+  const indexOfCommand = (command: string) =>
+    shellCommands.findIndex((line) => line.trim() === command);
   const orderedCommandPairs: ReadonlyArray<readonly [string, string]> = [
     [
       "export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper",
+      "export EXISTING_AVATAR_DIR=/path/to/current-avatar-store-or-REUSE-or-NONE",
+    ],
+    [
+      "export EXISTING_AVATAR_DIR=/path/to/current-avatar-store-or-REUSE-or-NONE",
       'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
     ],
     [
       'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+      'sudo cp -a "$EXISTING_AVATAR_DIR"/. "$POKER_DIR/data/avatars"/',
+    ],
+    [
+      'sudo cp -a "$EXISTING_AVATAR_DIR"/. "$POKER_DIR/data/avatars"/',
+      'sudo diff -qr "$EXISTING_AVATAR_DIR" "$POKER_DIR/data/avatars"',
+    ],
+    [
+      'sudo diff -qr "$EXISTING_AVATAR_DIR" "$POKER_DIR/data/avatars"',
       'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
     ],
     [
@@ -371,6 +388,10 @@ function validateExtremeSpaceRunbook(content: string): void {
     ],
     [
       "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs",
+    ],
+    [
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs",
       "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
     ],
     [
@@ -407,6 +428,32 @@ function validateExtremeSpaceRunbook(content: string): void {
       throw new Error(
         `Extreme Space command order is invalid: ${before} must precede ${after}`,
       );
+    }
+  }
+
+  const firstConfigurationCommand =
+    "docker compose --env-file .env.production -f docker-compose.registry.yml config --quiet";
+  const backupChecksumCommand =
+    'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"';
+  const preBackupStart = indexOfCommand(firstConfigurationCommand);
+  const preBackupEnd = indexOfCommand(backupChecksumCommand);
+  const allowedPreBackupComposeCommands = new Set([
+    firstConfigurationCommand,
+    "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
+  ]);
+  if (preBackupStart < 0 || preBackupEnd <= preBackupStart) {
+    throw new Error("pre-backup executable block is incomplete");
+  }
+  for (const command of shellCommands.slice(preBackupStart, preBackupEnd + 1)) {
+    const normalized = command.trim();
+    if (
+      normalized.startsWith("docker compose ") &&
+      !allowedPreBackupComposeCommands.has(normalized)
+    ) {
+      throw new Error("migration-capable command before backup");
     }
   }
 
@@ -571,6 +618,9 @@ describe("production deployment artifacts", () => {
     );
     expect(dockerfile).toContain(
       "LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID",
+    );
+    expect(dockerfile).toContain(
+      "COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs ./scripts/database/assert-production-avatar-files.mjs",
     );
     expect(dockerfile).toContain("/app/deployment-id ./deployment-id");
     expect(dockerfile).toMatch(/^USER node$/m);
@@ -856,6 +906,18 @@ describe("production deployment artifacts", () => {
     expect(runbook).toContain("forward-only");
     expect(runbook).toContain("does not roll back the schema");
     expect(runbook).toContain("不需要完整源码树");
+    expect(runbook).toContain(
+      "EXISTING_AVATAR_DIR=/path/to/current-avatar-store-or-REUSE-or-NONE",
+    );
+    expect(runbook).toContain(
+      "scripts/database/assert-production-avatar-files.mjs",
+    );
+    expect(runbook).toContain(
+      'sudo cp -a "$EXISTING_AVATAR_DIR"/. "$POKER_DIR/data/avatars"/',
+    );
+    expect(runbook).toContain(
+      'sudo diff -qr "$EXISTING_AVATAR_DIR" "$POKER_DIR/data/avatars"',
+    );
     expect(runbook).not.toMatch(
       /mysql:\/\/[^:\s]+:(?!CHANGE_ME|<password>)[^@\s]+@/,
     );
@@ -985,8 +1047,8 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs\ndocker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
-          "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app\ndocker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/production-backup-target.mjs",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs\ndocker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint /app/scripts/backup/backup.sh app\ndocker compose --env-file .env.production -f docker-compose.registry.yml run --rm -T --no-deps --entrypoint node app scripts/database/assert-production-avatar-files.mjs",
         ),
       ),
     ).toThrow(/command order/);
@@ -1006,6 +1068,20 @@ describe("production deployment artifacts", () => {
         ),
       ),
     ).toThrow(/first migration-capable startup|command order/);
+    for (const unsafeStartup of [
+      "docker compose --env-file .env.production -f docker-compose.registry.yml start app",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml restart app",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm app",
+    ]) {
+      expect(() =>
+        validateExtremeSpaceRunbook(
+          runbook.replace(
+            "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+            `docker compose --env-file .env.production -f docker-compose.registry.yml pull\n${unsafeStartup}`,
+          ),
+        ),
+      ).toThrow(/migration-capable command before backup/);
+    }
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(

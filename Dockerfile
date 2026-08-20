@@ -73,6 +73,7 @@ COPY --chmod=0444 scripts/docker/healthcheck.mjs ./scripts/docker/healthcheck.mj
 COPY --chmod=0444 scripts/database/production-preflight.mjs ./scripts/database/production-preflight.mjs
 COPY --chmod=0444 scripts/database/create-database.mjs ./scripts/database/create-database.mjs
 COPY --chmod=0444 scripts/database/production-backup-target.mjs ./scripts/database/production-backup-target.mjs
+COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs ./scripts/database/assert-production-avatar-files.mjs
 COPY --chmod=0444 scripts/database/production-migration-evidence.mjs ./scripts/database/production-migration-evidence.mjs
 COPY --chmod=0555 scripts/backup/backup.sh ./scripts/backup/backup.sh
 COPY --chmod=0555 scripts/backup/restore.sh ./scripts/backup/restore.sh
