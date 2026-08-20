@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const FULL_COMMIT = /^[0-9a-f]{40}$/;
+const FULL_COMMIT_TAG = /^sha-[0-9a-f]{40}$/;
 const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const DOCKER_HUB_REPOSITORY = 'tianyi920/poker-scorekeeper';
 const STABLE_ERROR_CODES = new Set([
@@ -29,6 +30,10 @@ function isStableContractError(error) {
 
 function validVersion(version) {
   return typeof version === 'string' && VERSION.test(version);
+}
+
+function validImmutableTag(tag) {
+  return validVersion(tag) || (typeof tag === 'string' && FULL_COMMIT_TAG.test(tag));
 }
 
 function parseManifest(rawManifest) {
@@ -68,15 +73,15 @@ export function deriveReleaseMetadata(refName, fullCommit) {
   };
 }
 
-export async function assertDockerHubTagAbsent(repository, version, fetchImpl) {
-  if (repository !== DOCKER_HUB_REPOSITORY || !validVersion(version) || typeof fetchImpl !== 'function') {
+export async function assertDockerHubTagAbsent(repository, tag, fetchImpl) {
+  if (repository !== DOCKER_HUB_REPOSITORY || !validImmutableTag(tag) || typeof fetchImpl !== 'function') {
     fail('REMOTE_TAG_STATUS_UNKNOWN');
   }
 
   let response;
   try {
     response = await fetchImpl(
-      `https://hub.docker.com/v2/repositories/${DOCKER_HUB_REPOSITORY}/tags/${version}`,
+      `https://hub.docker.com/v2/repositories/${DOCKER_HUB_REPOSITORY}/tags/${tag}`,
       { redirect: 'manual' }
     );
   } catch {

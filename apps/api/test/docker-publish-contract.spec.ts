@@ -44,17 +44,36 @@ describe('Docker publication contract', () => {
     );
   });
 
-  it('queries only the fixed Docker Hub tag and treats 404 as absent', async () => {
-    // Break caught: the fixed-tag preflight probes a different resource or rejects a confirmed absence.
+  it('queries both immutable Docker Hub tag forms and treats 404 as absent', async () => {
+    // Break caught: the preflight checks only the semver tag and can overwrite a full-commit tag on rerun.
     const fetchImpl = vi.fn(async () => ({ status: 404, redirected: false, type: 'basic' }));
 
     await expect(contract.assertDockerHubTagAbsent('tianyi920/poker-scorekeeper', '1.0.0', fetchImpl))
       .resolves.toBeUndefined();
-    expect(fetchImpl).toHaveBeenCalledWith(
-      'https://hub.docker.com/v2/repositories/tianyi920/poker-scorekeeper/tags/1.0.0',
-      { redirect: 'manual' }
-    );
+    await expect(contract.assertDockerHubTagAbsent(
+      'tianyi920/poker-scorekeeper', `sha-${commit}`, fetchImpl
+    )).resolves.toBeUndefined();
+    expect(fetchImpl.mock.calls).toEqual([
+      [
+        'https://hub.docker.com/v2/repositories/tianyi920/poker-scorekeeper/tags/1.0.0',
+        { redirect: 'manual' }
+      ],
+      [
+        `https://hub.docker.com/v2/repositories/tianyi920/poker-scorekeeper/tags/sha-${commit}`,
+        { redirect: 'manual' }
+      ]
+    ]);
   });
+
+  it.each(['latest', 'sha-short', `sha-${commit.toUpperCase()}`, 'v1.0.0'])(
+    'rejects a non-canonical immutable tag %s', async (tag) => {
+      const fetchImpl = vi.fn();
+      await expect(contract.assertDockerHubTagAbsent(
+        'tianyi920/poker-scorekeeper', tag, fetchImpl
+      )).rejects.toThrow('REMOTE_TAG_STATUS_UNKNOWN');
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+  );
 
   it('fails closed when the fixed Docker Hub tag already exists', async () => {
     // Break caught: a 200 response permits an immutable fixed tag to be overwritten.

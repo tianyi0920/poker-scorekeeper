@@ -326,15 +326,30 @@ describe("GitHub Actions Docker publication workflows", () => {
     );
     expect(metadataLines.some((line) => line.includes("docker-publish-contract.mjs metadata"))).toBe(true);
     expect(metadataLines).toContain(
+      `sha_tag="$(node -e 'const value = JSON.parse(process.argv[1]); process.stdout.write(value.shaTag)' "$metadata_json")"`,
+    );
+    expect(metadataLines).toContain(
       'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$version"',
+    );
+    expect(metadataLines).toContain(
+      'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$sha_tag"',
     );
 
     const publishSteps = stepsFor(workflow, "publish");
-    const recheck = requiredRunStep(workflow, "publish", "Recheck fixed-tag absence before publication");
-    expect(recheck.env).toEqual({ VERSION: "${{ needs.metadata.outputs.version }}" });
-    expect(executableLines(recheck)).toContain(
-      'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$VERSION"',
+    const recheck = requiredRunStep(
+      workflow,
+      "publish",
+      "Recheck immutable-tag absence before publication",
     );
+    expect(recheck.env).toEqual({
+      VERSION: "${{ needs.metadata.outputs.version }}",
+      COMMIT_TAG: "sha-${{ github.sha }}",
+    });
+    expect(executableLines(recheck)).toEqual([
+      "set -euo pipefail",
+      'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$VERSION"',
+      'node scripts/release/docker-publish-contract.mjs tag-absent tianyi920/poker-scorekeeper "$COMMIT_TAG"',
+    ]);
     const recheckIndex = publishSteps.indexOf(recheck);
     const accountIndex = publishSteps.indexOf(
       requiredRunStep(workflow, "publish", "Refuse an unexpected Docker Hub account"),
