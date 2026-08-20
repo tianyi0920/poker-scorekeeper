@@ -110,6 +110,31 @@ function expectDigestOnlyLatestPromotion(step: WorkflowStep) {
   expect(equality).toBeGreaterThan(latestDigest);
 }
 
+function requireTrackedSecretGate(workflow: Workflow) {
+  const steps = stepsFor(workflow, "verify");
+  const gate = requiredRunStep(
+    workflow,
+    "verify",
+    "Scan tracked files for secrets",
+  );
+  if (executableLines(gate).join("\n") !== "node scripts/security/scan-tracked-secrets.mjs") {
+    throw new Error("tracked secret scanner is not the active command");
+  }
+  if (
+    steps.indexOf(gate) >=
+    steps.indexOf(
+      requiredRunStep(
+        workflow,
+        "verify",
+        "Run the complete isolated container release drill",
+      ),
+    )
+  ) {
+    throw new Error("tracked secret scanner does not precede the container drill");
+  }
+  return gate;
+}
+
 describe("GitHub Actions Docker publication workflows", () => {
   it("keeps every job and step fail-closed under global read-only permissions", async () => {
     // Break caught: one job escalates permissions or a release/security gate is allowed to fail silently.
@@ -253,7 +278,32 @@ describe("GitHub Actions Docker publication workflows", () => {
       "docker compose --env-file test-results/extremespace-compose.env -f docker-compose.registry.yml config --quiet",
       "git diff --check",
     ]));
-    expect(JSON.stringify(workflow)).not.toMatch(/secrets\./);
+    expect(JSON.stringify(workflow)).not.toMatch(/\$\{\{\s*secrets\./);
+  });
+
+  it("runs the tracked-file secret gate unconditionally before Docker and publication", async () => {
+    const { source, workflow } = await readWorkflow("verify.yml");
+    expect(() => requireTrackedSecretGate(workflow)).not.toThrow();
+
+    const disabled = parse(
+      source.replace(
+        "      - name: Scan tracked files for secrets",
+        "      - name: Scan tracked files for secrets\n        if: false",
+      ),
+    ) as Workflow;
+    expect(() => requireTrackedSecretGate(disabled)).toThrow(/conditional/);
+
+    const commented = parse(
+      source.replace(
+        "          node scripts/security/scan-tracked-secrets.mjs",
+        "          # node scripts/security/scan-tracked-secrets.mjs",
+      ),
+    ) as Workflow;
+    expect(() => requireTrackedSecretGate(commented)).toThrow(/active command/);
+
+    const publication = (await readWorkflow("publish-docker.yml")).workflow;
+    expect(publication.jobs?.verify?.uses).toBe("./.github/workflows/verify.yml");
+    expect(publication.jobs?.metadata?.needs).toBe("verify");
   });
 
   it("serializes each release ref and rechecks fixed-tag absence in the publishing job", async () => {
