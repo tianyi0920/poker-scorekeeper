@@ -279,6 +279,42 @@ describe('production deployment artifacts', () => {
     });
   });
 
+  it('documents source-free Extreme Space deployment with fixed image versions', async () => {
+    // Break caught: a NAS operator needs the private source repository or is told to deploy a mutable image.
+    const runbook = await readRepositoryFile('docs/deployment/extremespace.md');
+
+    for (const required of [
+      'github.com/tianyi0920/poker-scorekeeper',
+      'docker.io/tianyi920/poker-scorekeeper:1.0.0',
+      'docker-compose.registry.yml',
+      '.env.extremespace.example',
+      'cp .env.extremespace.example .env.production',
+      'chmod 600 .env.production',
+      'docker compose --env-file .env.production -f docker-compose.registry.yml pull',
+      'docker compose --env-file .env.production -f docker-compose.registry.yml up -d',
+      '/api/health/live',
+      '/api/health/ready',
+      '/api/health/deployment'
+    ]) {
+      expect(runbook).toContain(required);
+    }
+
+    expect(runbook).toContain('POKER_IMAGE_VERSION=1.0.0');
+    expect(runbook).toMatch(/POKER_IMAGE_VERSION=.*previous fixed version/i);
+    expect(runbook).toContain('forward-only');
+    expect(runbook).toContain('does not roll back the schema');
+    expect(runbook).toContain('不需要完整源码树');
+    expect(runbook).not.toMatch(/mysql:\/\/[^:\s]+:(?!CHANGE_ME|<password>)[^@\s]+@/);
+    const productionCommands = runbook.match(/^docker compose .*$/gm) ?? [];
+    const imageVersionExamples = runbook.match(/^POKER_IMAGE_VERSION=.*$/gm) ?? [];
+    expect(productionCommands.join('\n')).not.toMatch(/\blatest\b/i);
+    expect(imageVersionExamples.join('\n')).not.toMatch(/\blatest\b/i);
+
+    const synologyRunbook = await readRepositoryFile('docs/deployment/synology.md');
+    expect(synologyRunbook).toContain('[Docker Hub 固定版本部署操作卡](./extremespace.md)');
+    expect(synologyRunbook).toContain('源码构建、完整验证、备份和恢复流程');
+  });
+
   it('rejects a sensitive placeholder that only starts with the approved prefix', async () => {
     const environment = await readRepositoryFile('.env.extremespace.example');
     const mutated = environment.replace(

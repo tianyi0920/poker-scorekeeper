@@ -6,6 +6,8 @@
 
 当前仓库的生产部署尚未执行。未取得已轮换凭据、bootstrap 管理员、`SESSION_SECRET`、`CSRF_SECRET`、`PUBLIC_ORIGIN` 和明确的群晖操作方式前，停在 [生产上线检查表](./production-checklist.md) 的第 0 节。
 
+极空间 NAS 推荐使用无需源码构建的 [Docker Hub 固定版本部署操作卡](./extremespace.md)。本手册保留群晖的源码构建、完整验证、备份和恢复流程，作为维护与故障排查入口。
+
 ## 1. NAS 和数据库准备
 
 1. 确认 NAS 架构：`uname -m`。普通 `docker compose build` 会为当前 NAS 架构构建，无需发布多架构镜像。
