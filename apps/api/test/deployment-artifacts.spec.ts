@@ -114,6 +114,89 @@ function validateExtremeSpaceEnvironmentTemplate(content: string): Record<string
   return values;
 }
 
+function validateExtremeSpaceRunbook(content: string): void {
+  const requiredSnippets = [
+    '将 `/path/selected-in-extremespace/poker-scorekeeper` 替换为你在极空间实际选择的目录',
+    'export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper',
+    'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    'cd "$POKER_DIR"',
+    'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    'chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    '运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行',
+    'docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app',
+    'curl --fail http://127.0.0.1:3000/api/health/live',
+    'curl --fail http://127.0.0.1:3000/api/health/ready',
+    'curl --fail http://127.0.0.1:3000/api/health/deployment',
+    'HTTPS',
+    'WebSocket',
+    '### 3.1 立即创建并验证首次备份',
+    'BACKUP_STAMP_BEFORE="$(cat data/backups/latest-stamp 2>/dev/null || true)"',
+    'docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs',
+    'docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh',
+    'STAMP="$(cat data/backups/latest-stamp)"',
+    'test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"',
+    'test -f "data/backups/mysql-$STAMP.sql.gz"',
+    'test -f "data/backups/avatars-$STAMP.tar.gz"',
+    'test -f "data/backups/manifest-$STAMP.txt"',
+    'test -f "data/backups/checksums-$STAMP.txt"',
+    'sha256sum --check "checksums-$STAMP.txt"',
+    '备份或四件套/校验任一步失败即停止升级',
+    'POKER_IMAGE_VERSION=1.0.0 # previous fixed version',
+    'forward-only',
+    'does not roll back the schema'
+  ];
+  for (const required of requiredSnippets) {
+    if (!content.includes(required)) throw new Error(`missing Extreme Space runbook requirement: ${required}`);
+  }
+
+  for (const match of content.matchAll(
+    /^\s*(?:export\s+)?(?:[A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|KEY)|DATABASE_URL)\s*=\s*([^\r\n#]+)\s*$/gm
+  )) {
+    const value = match[1].trim().replace(/^['"]|['"]$/g, '');
+    if (!/^(?:CHANGE_ME(?:_[A-Z0-9_]+)?|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(value)) {
+      throw new Error('runbook contains a non-placeholder sensitive assignment');
+    }
+  }
+  for (const match of content.matchAll(/mysql:\/\/[^:\s]+:([^@\s]+)@/gi)) {
+    if (!/^(?:CHANGE_ME|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(match[1])) {
+      throw new Error('runbook contains a non-placeholder database URL credential');
+    }
+  }
+
+  if (/\bdocker(?:\s+compose)?\b[^\r\n]*\blatest\b/i.test(content)) {
+    throw new Error('runbook contains a mutable latest Docker command');
+  }
+  if (/^\s*POKER_IMAGE_VERSION\s*=\s*latest\b/gim.test(content)) {
+    throw new Error('runbook contains a mutable latest image version');
+  }
+
+  const firstBackupIndex = content.indexOf('### 3.1 立即创建并验证首次备份');
+  if (
+    content.indexOf('/api/health/deployment') > firstBackupIndex ||
+    firstBackupIndex > content.indexOf('## 4. HTTPS 和 WebSocket 反向代理')
+  ) {
+    throw new Error('first backup verification is not immediately after health checks');
+  }
+  const upgradeSection = content.slice(
+    content.indexOf('## 5. 升级操作卡'),
+    content.indexOf('## 6. 回滚操作卡')
+  );
+  if (!upgradeSection.includes('第 3.1 节的备份验证块') || !upgradeSection.includes('POKER_IMAGE_VERSION=1.0.1')) {
+    throw new Error('upgrade instructions do not require a fresh verified backup and fixed version');
+  }
+  const rollbackSection = content.slice(content.indexOf('## 6. 回滚操作卡'));
+  for (const rollbackCommand of [
+    'POKER_IMAGE_VERSION=1.0.0 # previous fixed version',
+    'docker compose --env-file .env.production -f docker-compose.registry.yml pull',
+    'docker compose --env-file .env.production -f docker-compose.registry.yml up -d'
+  ]) {
+    if (!rollbackSection.includes(rollbackCommand)) {
+      throw new Error('rollback instructions do not use a previous fixed version');
+    }
+  }
+
+}
+
 describe('production deployment artifacts', () => {
   it('builds one non-root Node 24 runtime containing API, web, migrations, and production dependencies', async () => {
     // Break caught: the image builds only one half of the monorepo or needs dev dependencies at runtime.
@@ -283,6 +366,8 @@ describe('production deployment artifacts', () => {
     // Break caught: a NAS operator needs the private source repository or is told to deploy a mutable image.
     const runbook = await readRepositoryFile('docs/deployment/extremespace.md');
 
+    expect(() => validateExtremeSpaceRunbook(runbook)).not.toThrow();
+
     for (const required of [
       'github.com/tianyi0920/poker-scorekeeper',
       'docker.io/tianyi920/poker-scorekeeper:1.0.0',
@@ -313,6 +398,41 @@ describe('production deployment artifacts', () => {
     const synologyRunbook = await readRepositoryFile('docs/deployment/synology.md');
     expect(synologyRunbook).toContain('[Docker Hub 固定版本部署操作卡](./extremespace.md)');
     expect(synologyRunbook).toContain('源码构建、完整验证、备份和恢复流程');
+  });
+
+  it('rejects unsafe or incomplete Extreme Space deployment instructions', async () => {
+    const runbook = await readRepositoryFile('docs/deployment/extremespace.md');
+
+    expect(() => validateExtremeSpaceRunbook(
+      runbook.replace('chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore', '')
+    )).toThrow(/runbook requirement/);
+    expect(() => validateExtremeSpaceRunbook(
+      runbook.replace('test -f "data/backups/checksums-$STAMP.txt"', '')
+    )).toThrow(/runbook requirement/);
+    expect(() => validateExtremeSpaceRunbook(
+      runbook.replace(/### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTPS 和 WebSocket 反向代理/, '## 4. HTTPS 和 WebSocket 反向代理')
+    )).toThrow(/runbook requirement/);
+    expect(() => validateExtremeSpaceRunbook(`${runbook}\nSESSION_SECRET=real-secret-value`)).toThrow(
+      /sensitive assignment/
+    );
+    expect(() => validateExtremeSpaceRunbook(
+      `${runbook}\n  docker pull docker.io/tianyi920/poker-scorekeeper:latest`
+    )).toThrow(/mutable latest Docker command/);
+    expect(() => validateExtremeSpaceRunbook(
+      `${runbook}\n\tdocker compose -f docker-compose.registry.yml up -d # latest`
+    )).toThrow(/mutable latest Docker command/);
+    expect(() => validateExtremeSpaceRunbook(
+      `${runbook}\n  sudo docker pull docker.io/tianyi920/poker-scorekeeper:latest`
+    )).toThrow(/mutable latest Docker command/);
+    expect(() => validateExtremeSpaceRunbook(
+      runbook.replace('POKER_IMAGE_VERSION=1.0.1', 'POKER_IMAGE_VERSION=latest')
+    )).toThrow(/mutable latest image version/);
+    expect(() => validateExtremeSpaceRunbook(
+      runbook.replace(
+        /(## 6\. 回滚操作卡[\s\S]*?)docker compose --env-file \.env\.production -f docker-compose\.registry\.yml up -d/,
+        '$1'
+      )
+    )).toThrow(/rollback instructions/);
   });
 
   it('rejects a sensitive placeholder that only starts with the approved prefix', async () => {

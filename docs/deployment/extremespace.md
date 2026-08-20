@@ -12,11 +12,17 @@
 
 在极空间的终端中选择一个由你管理的数据目录，并用同一路径保存 Compose、环境文件和持久数据：
 
+先将 `/path/selected-in-extremespace/poker-scorekeeper` 替换为你在极空间实际选择的目录，再执行下面的命令：
+
 ```sh
 export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper
 mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 cd "$POKER_DIR"
+sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
+chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 ```
+
+运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行；三个 bind 目录都必须可由该用户写入。上面的所有者和 `750` 权限适用于普通 Linux 文件系统；若极空间共享目录的 ACL 覆盖传统权限，请在管理界面授予同一 UID/GID 对三个目录的读、写和进入权限，再重新检查权限。不要把三个目录设为所有人可写。
 
 将 `docker-compose.registry.yml` 和 `.env.extremespace.example` 放在当前目录。确认 Compose 文件只引用 `docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION}`，没有 `build:`，也没有数据库服务或 `3306` 端口。
 
@@ -56,6 +62,30 @@ curl --fail http://127.0.0.1:3000/api/health/deployment
 
 镜像入口会先确认生产数据库目标，再运行迁移；迁移失败时服务不会启动。`live` 只表示进程存活；`ready` 还会检查数据库；`deployment` 用于记录当前镜像的部署标识。任一步失败时先查看上面的 `logs` 输出，不要通过改成可变标签或删除迁移来绕过问题。
 
+### 3.1 立即创建并验证首次备份
+
+首次健康检查通过后，立刻完整执行下面的备份验证块。它使用备份脚本实际发布的四件套：`mysql-<stamp>.sql.gz`、`avatars-<stamp>.tar.gz`、`manifest-<stamp>.txt` 与最后发布的 `checksums-<stamp>.txt`。不要把先前的 `latest-stamp` 当作本次成功的证据：若本次没有生成新的 stamp，命令会失败。
+
+```sh
+set -eu
+BACKUP_STAMP_BEFORE="$(cat data/backups/latest-stamp 2>/dev/null || true)"
+docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs
+docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh
+STAMP="$(cat data/backups/latest-stamp)"
+test -n "$STAMP"
+test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"
+test -f "data/backups/mysql-$STAMP.sql.gz"
+test -f "data/backups/avatars-$STAMP.tar.gz"
+test -f "data/backups/manifest-$STAMP.txt"
+test -f "data/backups/checksums-$STAMP.txt"
+(
+  cd data/backups
+  sha256sum --check "checksums-$STAMP.txt"
+)
+```
+
+任何命令失败都表示备份尚未验证完成；保留日志并停止，而不是继续部署或升级。
+
 ## 4. HTTPS 和 WebSocket 反向代理
 
 在极空间同机的反向代理中，为你的 `PUBLIC_ORIGIN` 配置：公网 HTTPS 入口、有效 TLS 证书，以及到 `http://127.0.0.1:3000` 的上游。启用 WebSocket 转发，保留 `Upgrade` 与 `Connection` 请求头，并转发真实客户端 IP。
@@ -64,13 +94,7 @@ curl --fail http://127.0.0.1:3000/api/health/deployment
 
 ## 5. 升级操作卡
 
-升级前必须先完成并检查一次备份，保留本次备份的时间和当前固定版本号：
-
-```sh
-docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs
-docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh
-cat data/backups/latest-stamp
-```
+升级前必须重新完整执行第 3.1 节的备份验证块，并保留新 stamp 和当前固定版本号；只运行备份脚本、读取旧 `latest-stamp` 或只看到一个文件都不算通过。备份或四件套/校验任一步失败即停止升级，不能先拉取或启动新版本再补做备份。
 
 编辑 `.env.production`，把 `POKER_IMAGE_VERSION` 改为要升级的已发布固定版本，例如：
 
