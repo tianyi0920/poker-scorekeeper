@@ -215,6 +215,7 @@ describe("GitHub Actions Docker publication workflows", () => {
       "Install browser engines",
       "Run the 23-test browser suite",
       "Build all packages",
+      "Run the complete isolated container release drill",
       "Validate registry Compose and repository hygiene",
     ];
     let position = -1;
@@ -232,6 +233,15 @@ describe("GitHub Actions Docker publication workflows", () => {
       .toContain("pnpm exec playwright install --with-deps chromium webkit");
     expect(executableLines(requiredRunStep(workflow, "verify", "Build all packages")))
       .toContain("pnpm build");
+    const containerDrill = requiredRunStep(
+      workflow,
+      "verify",
+      "Run the complete isolated container release drill",
+    );
+    expect(executableLines(containerDrill)).toEqual([
+      "pwsh -NoProfile -File scripts/verify-release.ps1 -ContainerOnly",
+    ]);
+    expect(containerDrill.run).not.toMatch(/run-with-test-env|\.env\.local/);
     const composeLines = executableLines(
       requiredRunStep(workflow, "verify", "Validate registry Compose and repository hygiene"),
     );

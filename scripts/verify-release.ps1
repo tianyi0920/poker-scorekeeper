@@ -1,3 +1,6 @@
+[CmdletBinding()]
+param([switch] $ContainerOnly)
+
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 . (Join-Path $PSScriptRoot 'release/release-helpers.ps1')
@@ -27,33 +30,36 @@ function Assert-PortAvailable {
 }
 
 $node = (Get-Command node -ErrorAction Stop).Source
-$pnpmCli = $env:npm_execpath
-if ([string]::IsNullOrWhiteSpace($pnpmCli) -or -not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
-  throw 'Release verification must be launched through the pinned pnpm package manager'
-}
-$pnpmVersion = (& $node $pnpmCli --version).Trim()
-if ($LASTEXITCODE -ne 0 -or $pnpmVersion -ne '10.15.1') {
-  throw "pnpm 10.15.1 is required"
-}
 
 # Docker is a mandatory release capability and must fail before the long local gates.
 $docker = (Get-Command docker -ErrorAction Stop).Source
 Assert-DockerCapabilities -Docker $docker
 
-Write-Output 'gate: pnpm install --frozen-lockfile'
-Invoke-External $node @($pnpmCli, 'install', '--frozen-lockfile')
-Invoke-External $node @('scripts/database/run-with-test-env.mjs', '--check-only')
+if (-not $ContainerOnly) {
+  $pnpmCli = $env:npm_execpath
+  if ([string]::IsNullOrWhiteSpace($pnpmCli) -or -not (Test-Path -LiteralPath $pnpmCli -PathType Leaf)) {
+    throw 'Release verification must be launched through the pinned pnpm package manager'
+  }
+  $pnpmVersion = (& $node $pnpmCli --version).Trim()
+  if ($LASTEXITCODE -ne 0 -or $pnpmVersion -ne '10.15.1') {
+    throw "pnpm 10.15.1 is required"
+  }
 
-Write-Output 'gate: pnpm typecheck'
-Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'typecheck')
-Write-Output 'gate: pnpm test'
-Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'test')
-Write-Output 'gate: API test:integration'
-Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, '--filter', '@poker/api', 'test:integration')
-Write-Output 'gate: pnpm exec playwright test'
-Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'exec', 'playwright', 'test')
-Write-Output 'gate: pnpm build'
-Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'build')
+  Write-Output 'gate: pnpm install --frozen-lockfile'
+  Invoke-External $node @($pnpmCli, 'install', '--frozen-lockfile')
+  Invoke-External $node @('scripts/database/run-with-test-env.mjs', '--check-only')
+
+  Write-Output 'gate: pnpm typecheck'
+  Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'typecheck')
+  Write-Output 'gate: pnpm test'
+  Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'test')
+  Write-Output 'gate: API test:integration'
+  Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, '--filter', '@poker/api', 'test:integration')
+  Write-Output 'gate: pnpm exec playwright test'
+  Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'exec', 'playwright', 'test')
+  Write-Output 'gate: pnpm build'
+  Invoke-External $node @('scripts/database/run-with-test-env.mjs', $node, $pnpmCli, 'build')
+}
 
 $runId = ([Guid]::NewGuid().ToString('N').Substring(0, 8)).ToLowerInvariant()
 $git = (Get-Command git -ErrorAction Stop).Source

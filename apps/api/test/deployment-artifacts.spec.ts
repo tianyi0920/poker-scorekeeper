@@ -926,6 +926,18 @@ describe("production deployment artifacts", () => {
     expect(release).toMatch(
       /run-with-test-env\.mjs[^\r\n]+playwright[^\r\n]+test/,
     );
+    expect(release).toMatch(
+      /^\[CmdletBinding\(\)\]\r?\nparam\(\[switch\] \$ContainerOnly\)/,
+    );
+    const localGateStart = release.indexOf("if (-not $ContainerOnly) {");
+    const containerDrillStart = release.indexOf("$runId =");
+    expect(localGateStart).toBeGreaterThanOrEqual(0);
+    expect(containerDrillStart).toBeGreaterThan(localGateStart);
+    const localGateBlock = release.slice(localGateStart, containerDrillStart);
+    const containerOnlyRuntime =
+      release.slice(0, localGateStart) + release.slice(containerDrillStart);
+    expect(localGateBlock.match(/run-with-test-env\.mjs/g)).toHaveLength(6);
+    expect(containerOnlyRuntime).not.toMatch(/run-with-test-env|\.env\.local/);
     expect(release).toContain("assert-restored-api.mjs");
     expect(releaseRuntime).toContain("/api/health/live");
     expect(releaseRuntime).toContain("/api/health/ready");

@@ -88,6 +88,10 @@ jobs:
       - name: Build all packages
         run: pnpm build
 
+      - name: Run the complete isolated container release drill
+        shell: pwsh
+        run: pwsh -NoProfile -File scripts/verify-release.ps1 -ContainerOnly
+
       - name: Validate registry Compose and repository hygiene
         shell: bash
         run: |
