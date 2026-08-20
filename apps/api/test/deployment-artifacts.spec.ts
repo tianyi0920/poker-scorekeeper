@@ -34,47 +34,81 @@ const approvedSensitiveValues = {
   MYSQL_PASSWORD: 'CHANGE_ME'
 } as const;
 
+const approvedEnvironmentKeys = [
+  'POKER_IMAGE_VERSION',
+  'PORT',
+  'PUBLIC_ORIGIN',
+  'WS_ALLOWED_ORIGINS',
+  'DATABASE_URL',
+  'SESSION_SECRET',
+  'CSRF_SECRET',
+  'BOOTSTRAP_ADMIN_USERNAME',
+  'BOOTSTRAP_ADMIN_NICKNAME',
+  'BOOTSTRAP_ADMIN_PASSWORD',
+  'READINESS_TIMEOUT_MS',
+  'MYSQL_HOST',
+  'MYSQL_PORT',
+  'MYSQL_USER',
+  'MYSQL_PASSWORD',
+  'MYSQL_DATABASE',
+  'BACKUP_DIR',
+  'AVATAR_ROOT'
+] as const;
+
+const approvedEnvironmentComments = new Set([
+  '# Fixed public image version pulled by docker-compose.registry.yml.',
+  '# Optional comma-separated exact origins for additional trusted reverse-proxy entry points.',
+  '# Backup jobs reuse container environment so passwords never appear in command arguments.'
+]);
+
 function validateExtremeSpaceEnvironmentTemplate(content: string): Record<string, string> {
   const values = parseDotenv(content);
-  const sensitiveKeyPattern = /(?:PASSWORD|SECRET|TOKEN)/i;
-  const expectedSensitiveKeys = Object.keys(approvedSensitiveValues).sort();
-  const actualSensitiveKeys = Object.keys(values)
-    .filter((key) => key === 'DATABASE_URL' || sensitiveKeyPattern.test(key))
-    .sort();
+  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const assignmentKeys: string[] = [];
+  const approvedKeySet = new Set<string>(approvedEnvironmentKeys);
 
-  if (actualSensitiveKeys.join('\n') !== expectedSensitiveKeys.join('\n')) {
-    throw new Error('unexpected sensitive assignment key');
+  for (const line of lines) {
+    if (line === '') continue;
+    if (line.startsWith('#')) {
+      if (!approvedEnvironmentComments.has(line)) throw new Error('unapproved comment');
+      continue;
+    }
+
+    const assignment = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
+    if (!assignment) throw new Error('unrecognized template line');
+    const [, key, rawValue] = assignment;
+    if (!approvedKeySet.has(key)) throw new Error('unapproved assignment key');
+    assignmentKeys.push(key);
+
+    const expected = approvedSensitiveValues[key as keyof typeof approvedSensitiveValues];
+    if (expected !== undefined && rawValue !== expected) {
+      throw new Error('unexpected sensitive assignment value');
+    }
+  }
+
+  const expectedKeys = [...approvedEnvironmentKeys].sort();
+  const actualKeys = [...assignmentKeys].sort();
+  if (
+    assignmentKeys.length !== approvedEnvironmentKeys.length ||
+    new Set(assignmentKeys).size !== assignmentKeys.length ||
+    actualKeys.join('\n') !== expectedKeys.join('\n')
+  ) {
+    throw new Error('missing or duplicate assignment key');
+  }
+
+  const parsedKeys = Object.keys(values).sort();
+  if (parsedKeys.join('\n') !== expectedKeys.join('\n')) {
+    throw new Error('dotenv keys do not match the closed-world template');
   }
 
   for (const [key, expected] of Object.entries(approvedSensitiveValues)) {
     if (values[key] !== expected) throw new Error(`unexpected placeholder for ${key}`);
   }
 
-  const lines = content.split(/\r?\n/);
   const approvedDatabaseLine = `DATABASE_URL=${approvedSensitiveValues.DATABASE_URL}`;
   const mysqlLines = lines.filter((line) => /mysql:\/\//i.test(line));
   if (mysqlLines.length !== 1 || mysqlLines[0].trim() !== approvedDatabaseLine) {
     throw new Error('unexpected credential-bearing mysql URL');
-  }
-
-  for (const line of lines) {
-    const trimmed = line.trim();
-    const assignment = trimmed.match(/^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$/);
-    if (assignment) {
-      const [, key, rawValue] = assignment;
-      if (key === 'DATABASE_URL' || sensitiveKeyPattern.test(key)) {
-        const expected = approvedSensitiveValues[key as keyof typeof approvedSensitiveValues];
-        if (expected === undefined || rawValue.trim() !== expected) {
-          throw new Error('unexpected sensitive assignment value');
-        }
-      }
-    }
-    if (trimmed.startsWith('#') && (
-      sensitiveKeyPattern.test(trimmed) && /[:=]/.test(trimmed) ||
-      /mysql:\/\//i.test(trimmed)
-    )) {
-      throw new Error('credential-bearing comment');
-    }
   }
 
   return values;
@@ -275,6 +309,24 @@ describe('production deployment artifacts', () => {
     )).toThrow();
     expect(() => validateExtremeSpaceEnvironmentTemplate(
       `${environment}\nSESSION_SECRET=leaked-secret`
+    )).toThrow();
+    expect(() => validateExtremeSpaceEnvironmentTemplate(
+      `${environment}\nAPI_KEY=CHANGE_ME`
+    )).toThrow();
+    expect(() => validateExtremeSpaceEnvironmentTemplate(
+      `${environment}\nPRIVATE_KEY=CHANGE_ME`
+    )).toThrow();
+    expect(() => validateExtremeSpaceEnvironmentTemplate(
+      `${environment}\nCREDENTIAL=CHANGE_ME`
+    )).toThrow();
+    expect(() => validateExtremeSpaceEnvironmentTemplate(
+      `${environment}\n# SESSION_SECRET leaked-secret`
+    )).toThrow();
+    expect(() => validateExtremeSpaceEnvironmentTemplate(
+      `${environment}\nEXTRA_SETTING=1`
+    )).toThrow();
+    expect(() => validateExtremeSpaceEnvironmentTemplate(
+      `${environment}\n# unrecognized benign deployment note`
     )).toThrow();
   });
 
