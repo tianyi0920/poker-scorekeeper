@@ -19,10 +19,10 @@ export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper
 mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 cd "$POKER_DIR"
 sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
-chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
+sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 ```
 
-运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行；三个 bind 目录都必须可由该用户写入。上面的所有者和 `750` 权限适用于普通 Linux 文件系统；若极空间共享目录的 ACL 覆盖传统权限，请在管理界面授予同一 UID/GID 对三个目录的读、写和进入权限，再重新检查权限。不要把三个目录设为所有人可写。
+运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行；三个 bind 目录都必须可由该用户写入。上述命令将目录交给容器用户，因此普通 NAS 操作员以后读取备份文件需要 `sudo`；Docker 命令仍由已获 Docker 权限的普通操作员执行。上面的所有者和 `750` 权限适用于普通 Linux 文件系统；若极空间共享目录的 ACL 覆盖传统权限，请在管理界面授予同一 UID/GID 对三个目录的读、写和进入权限，并在管理界面复核三项权限已生效。不要把三个目录设为所有人可写。
 
 将 `docker-compose.registry.yml` 和 `.env.extremespace.example` 放在当前目录。确认 Compose 文件只引用 `docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION}`，没有 `build:`，也没有数据库服务或 `3306` 端口。
 
@@ -68,20 +68,18 @@ curl --fail http://127.0.0.1:3000/api/health/deployment
 
 ```sh
 set -eu
-BACKUP_STAMP_BEFORE="$(cat data/backups/latest-stamp 2>/dev/null || true)"
+: "${POKER_DIR:?Repeat section 1 in this shell first}"
+BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"
 docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs
 docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh
-STAMP="$(cat data/backups/latest-stamp)"
+STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"
 test -n "$STAMP"
 test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"
-test -f "data/backups/mysql-$STAMP.sql.gz"
-test -f "data/backups/avatars-$STAMP.tar.gz"
-test -f "data/backups/manifest-$STAMP.txt"
-test -f "data/backups/checksums-$STAMP.txt"
-(
-  cd data/backups
-  sha256sum --check "checksums-$STAMP.txt"
-)
+sudo test -f "$POKER_DIR/data/backups/mysql-$STAMP.sql.gz"
+sudo test -f "$POKER_DIR/data/backups/avatars-$STAMP.tar.gz"
+sudo test -f "$POKER_DIR/data/backups/manifest-$STAMP.txt"
+sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"
+sudo sh -c 'cd "$1" && sha256sum --check "$2"' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"
 ```
 
 任何命令失败都表示备份尚未验证完成；保留日志并停止，而不是继续部署或升级。

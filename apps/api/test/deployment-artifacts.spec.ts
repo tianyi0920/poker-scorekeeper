@@ -1,9 +1,9 @@
-import { readFile } from 'node:fs/promises';
-import { resolve } from 'node:path';
-import { parse as parseDotenv } from 'dotenv';
-import { parse } from 'yaml';
+import { readFile } from "node:fs/promises";
+import { resolve } from "node:path";
+import { parse as parseDotenv } from "dotenv";
+import { parse } from "yaml";
 
-const repositoryRoot = resolve(import.meta.dirname, '../../..');
+const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
 interface ComposeService {
   build?: { args?: Record<string, string> };
@@ -23,66 +23,71 @@ interface ComposeService {
 }
 
 async function readRepositoryFile(path: string): Promise<string> {
-  return readFile(resolve(repositoryRoot, path), 'utf8');
+  return readFile(resolve(repositoryRoot, path), "utf8");
 }
 
 const approvedSensitiveValues = {
-  DATABASE_URL: 'mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper',
-  SESSION_SECRET: 'CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
-  CSRF_SECRET: 'CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
-  BOOTSTRAP_ADMIN_PASSWORD: 'CHANGE_ME_UNIQUE_STRONG_PASSWORD',
-  MYSQL_PASSWORD: 'CHANGE_ME'
+  DATABASE_URL:
+    "mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
+  SESSION_SECRET: "CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+  CSRF_SECRET: "CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+  BOOTSTRAP_ADMIN_PASSWORD: "CHANGE_ME_UNIQUE_STRONG_PASSWORD",
+  MYSQL_PASSWORD: "CHANGE_ME",
 } as const;
 
 const approvedEnvironmentKeys = [
-  'POKER_IMAGE_VERSION',
-  'PORT',
-  'PUBLIC_ORIGIN',
-  'WS_ALLOWED_ORIGINS',
-  'DATABASE_URL',
-  'SESSION_SECRET',
-  'CSRF_SECRET',
-  'BOOTSTRAP_ADMIN_USERNAME',
-  'BOOTSTRAP_ADMIN_NICKNAME',
-  'BOOTSTRAP_ADMIN_PASSWORD',
-  'READINESS_TIMEOUT_MS',
-  'MYSQL_HOST',
-  'MYSQL_PORT',
-  'MYSQL_USER',
-  'MYSQL_PASSWORD',
-  'MYSQL_DATABASE',
-  'BACKUP_DIR',
-  'AVATAR_ROOT'
+  "POKER_IMAGE_VERSION",
+  "PORT",
+  "PUBLIC_ORIGIN",
+  "WS_ALLOWED_ORIGINS",
+  "DATABASE_URL",
+  "SESSION_SECRET",
+  "CSRF_SECRET",
+  "BOOTSTRAP_ADMIN_USERNAME",
+  "BOOTSTRAP_ADMIN_NICKNAME",
+  "BOOTSTRAP_ADMIN_PASSWORD",
+  "READINESS_TIMEOUT_MS",
+  "MYSQL_HOST",
+  "MYSQL_PORT",
+  "MYSQL_USER",
+  "MYSQL_PASSWORD",
+  "MYSQL_DATABASE",
+  "BACKUP_DIR",
+  "AVATAR_ROOT",
 ] as const;
 
 const approvedEnvironmentComments = new Set([
-  '# Fixed public image version pulled by docker-compose.registry.yml.',
-  '# Optional comma-separated exact origins for additional trusted reverse-proxy entry points.',
-  '# Backup jobs reuse container environment so passwords never appear in command arguments.'
+  "# Fixed public image version pulled by docker-compose.registry.yml.",
+  "# Optional comma-separated exact origins for additional trusted reverse-proxy entry points.",
+  "# Backup jobs reuse container environment so passwords never appear in command arguments.",
 ]);
 
-function validateExtremeSpaceEnvironmentTemplate(content: string): Record<string, string> {
+function validateExtremeSpaceEnvironmentTemplate(
+  content: string,
+): Record<string, string> {
   const values = parseDotenv(content);
-  const lines = content.replace(/\r\n?/g, '\n').split('\n');
+  const lines = content.replace(/\r\n?/g, "\n").split("\n");
   const assignmentKeys: string[] = [];
   const approvedKeySet = new Set<string>(approvedEnvironmentKeys);
 
   for (const line of lines) {
-    if (line === '') continue;
-    if (line.startsWith('#')) {
-      if (!approvedEnvironmentComments.has(line)) throw new Error('unapproved comment');
+    if (line === "") continue;
+    if (line.startsWith("#")) {
+      if (!approvedEnvironmentComments.has(line))
+        throw new Error("unapproved comment");
       continue;
     }
 
     const assignment = line.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/);
-    if (!assignment) throw new Error('unrecognized template line');
+    if (!assignment) throw new Error("unrecognized template line");
     const [, key, rawValue] = assignment;
-    if (!approvedKeySet.has(key)) throw new Error('unapproved assignment key');
+    if (!approvedKeySet.has(key)) throw new Error("unapproved assignment key");
     assignmentKeys.push(key);
 
-    const expected = approvedSensitiveValues[key as keyof typeof approvedSensitiveValues];
+    const expected =
+      approvedSensitiveValues[key as keyof typeof approvedSensitiveValues];
     if (expected !== undefined && rawValue !== expected) {
-      throw new Error('unexpected sensitive assignment value');
+      throw new Error("unexpected sensitive assignment value");
     }
   }
 
@@ -91,24 +96,28 @@ function validateExtremeSpaceEnvironmentTemplate(content: string): Record<string
   if (
     assignmentKeys.length !== approvedEnvironmentKeys.length ||
     new Set(assignmentKeys).size !== assignmentKeys.length ||
-    actualKeys.join('\n') !== expectedKeys.join('\n')
+    actualKeys.join("\n") !== expectedKeys.join("\n")
   ) {
-    throw new Error('missing or duplicate assignment key');
+    throw new Error("missing or duplicate assignment key");
   }
 
   const parsedKeys = Object.keys(values).sort();
-  if (parsedKeys.join('\n') !== expectedKeys.join('\n')) {
-    throw new Error('dotenv keys do not match the closed-world template');
+  if (parsedKeys.join("\n") !== expectedKeys.join("\n")) {
+    throw new Error("dotenv keys do not match the closed-world template");
   }
 
   for (const [key, expected] of Object.entries(approvedSensitiveValues)) {
-    if (values[key] !== expected) throw new Error(`unexpected placeholder for ${key}`);
+    if (values[key] !== expected)
+      throw new Error(`unexpected placeholder for ${key}`);
   }
 
   const approvedDatabaseLine = `DATABASE_URL=${approvedSensitiveValues.DATABASE_URL}`;
   const mysqlLines = lines.filter((line) => /mysql:\/\//i.test(line));
-  if (mysqlLines.length !== 1 || mysqlLines[0].trim() !== approvedDatabaseLine) {
-    throw new Error('unexpected credential-bearing mysql URL');
+  if (
+    mysqlLines.length !== 1 ||
+    mysqlLines[0].trim() !== approvedDatabaseLine
+  ) {
+    throw new Error("unexpected credential-bearing mysql URL");
   }
 
   return values;
@@ -116,93 +125,240 @@ function validateExtremeSpaceEnvironmentTemplate(content: string): Record<string
 
 function validateExtremeSpaceRunbook(content: string): void {
   const requiredSnippets = [
-    '将 `/path/selected-in-extremespace/poker-scorekeeper` 替换为你在极空间实际选择的目录',
-    'export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper',
+    "将 `/path/selected-in-extremespace/poker-scorekeeper` 替换为你在极空间实际选择的目录",
+    "export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper",
     'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
     'cd "$POKER_DIR"',
     'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
-    'chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
-    '运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行',
-    'docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app',
-    'curl --fail http://127.0.0.1:3000/api/health/live',
-    'curl --fail http://127.0.0.1:3000/api/health/ready',
-    'curl --fail http://127.0.0.1:3000/api/health/deployment',
-    'HTTPS',
-    'WebSocket',
-    '### 3.1 立即创建并验证首次备份',
-    'BACKUP_STAMP_BEFORE="$(cat data/backups/latest-stamp 2>/dev/null || true)"',
-    'docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs',
-    'docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh',
-    'STAMP="$(cat data/backups/latest-stamp)"',
+    'sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    "运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行",
+    "在管理界面复核三项权限已生效",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app",
+    "curl --fail http://127.0.0.1:3000/api/health/live",
+    "curl --fail http://127.0.0.1:3000/api/health/ready",
+    "curl --fail http://127.0.0.1:3000/api/health/deployment",
+    "HTTPS",
+    "WebSocket",
+    "### 3.1 立即创建并验证首次备份",
+    ': "${POKER_DIR:?Repeat section 1 in this shell first}"',
+    'BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"',
+    "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+    'STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"',
     'test -z "$BACKUP_STAMP_BEFORE" || test "$STAMP" != "$BACKUP_STAMP_BEFORE"',
-    'test -f "data/backups/mysql-$STAMP.sql.gz"',
-    'test -f "data/backups/avatars-$STAMP.tar.gz"',
-    'test -f "data/backups/manifest-$STAMP.txt"',
-    'test -f "data/backups/checksums-$STAMP.txt"',
-    'sha256sum --check "checksums-$STAMP.txt"',
-    '备份或四件套/校验任一步失败即停止升级',
-    'POKER_IMAGE_VERSION=1.0.0 # previous fixed version',
-    'forward-only',
-    'does not roll back the schema'
+    'sudo test -f "$POKER_DIR/data/backups/mysql-$STAMP.sql.gz"',
+    'sudo test -f "$POKER_DIR/data/backups/avatars-$STAMP.tar.gz"',
+    'sudo test -f "$POKER_DIR/data/backups/manifest-$STAMP.txt"',
+    'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
+    'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
+    "备份或四件套/校验任一步失败即停止升级",
+    "POKER_IMAGE_VERSION=1.0.0 # previous fixed version",
+    "forward-only",
+    "does not roll back the schema",
   ];
   for (const required of requiredSnippets) {
-    if (!content.includes(required)) throw new Error(`missing Extreme Space runbook requirement: ${required}`);
+    if (!content.includes(required))
+      throw new Error(`missing Extreme Space runbook requirement: ${required}`);
+  }
+
+  const shellBlocks = [...content.matchAll(/```sh\r?\n([\s\S]*?)```/g)].map(
+    (match) => match[1],
+  );
+  const shellCommands = shellBlocks.flatMap((block) => block.split(/\r?\n/));
+  const indexOfCommand = (command: string) => shellCommands.indexOf(command);
+  for (const [before, after] of [
+    [
+      "export POKER_DIR=/path/selected-in-extremespace/poker-scorekeeper",
+      'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    ],
+    [
+      'mkdir -p "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+      'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    ],
+    [
+      'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+      'sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+    ],
+    [
+      'BACKUP_STAMP_BEFORE="$(sudo cat "$POKER_DIR/data/backups/latest-stamp" 2>/dev/null || true)"',
+      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
+    ],
+    [
+      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+    ],
+    [
+      "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+      'STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"',
+    ],
+    [
+      'STAMP="$(sudo cat "$POKER_DIR/data/backups/latest-stamp")"',
+      'sudo test -f "$POKER_DIR/data/backups/mysql-$STAMP.sql.gz"',
+    ],
+    [
+      'sudo test -f "$POKER_DIR/data/backups/mysql-$STAMP.sql.gz"',
+      'sudo test -f "$POKER_DIR/data/backups/avatars-$STAMP.tar.gz"',
+    ],
+    [
+      'sudo test -f "$POKER_DIR/data/backups/avatars-$STAMP.tar.gz"',
+      'sudo test -f "$POKER_DIR/data/backups/manifest-$STAMP.txt"',
+    ],
+    [
+      'sudo test -f "$POKER_DIR/data/backups/manifest-$STAMP.txt"',
+      'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
+    ],
+    [
+      'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
+      'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
+    ],
+  ]) {
+    if (indexOfCommand(before) >= indexOfCommand(after)) {
+      throw new Error(
+        `Extreme Space command order is invalid: ${before} must precede ${after}`,
+      );
+    }
   }
 
   for (const match of content.matchAll(
-    /^\s*(?:export\s+)?(?:[A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|KEY)|DATABASE_URL)\s*=\s*([^\r\n#]+)\s*$/gm
+    /\b(?:[A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|KEY)|DATABASE_URL)\s*=\s*([^\s`#]+)/g,
   )) {
-    const value = match[1].trim().replace(/^['"]|['"]$/g, '');
-    if (!/^(?:CHANGE_ME(?:_[A-Z0-9_]+)?|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(value)) {
-      throw new Error('runbook contains a non-placeholder sensitive assignment');
+    const value = match[1].trim().replace(/^['"]|['"]$/g, "");
+    if (
+      !/^(?:CHANGE_ME(?:_[A-Z0-9_]+)?|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(
+        value,
+      )
+    ) {
+      throw new Error(
+        "runbook contains a non-placeholder sensitive assignment",
+      );
     }
   }
   for (const match of content.matchAll(/mysql:\/\/[^:\s]+:([^@\s]+)@/gi)) {
     if (!/^(?:CHANGE_ME|replace(?:_[A-Z0-9_]+)?|<password>)$/i.test(match[1])) {
-      throw new Error('runbook contains a non-placeholder database URL credential');
+      throw new Error(
+        "runbook contains a non-placeholder database URL credential",
+      );
     }
   }
 
-  if (/\bdocker(?:\s+compose)?\b[^\r\n]*\blatest\b/i.test(content)) {
-    throw new Error('runbook contains a mutable latest Docker command');
+  for (const command of shellCommands) {
+    if (/^\s*#/.test(command)) continue;
+    if (/\bdocker(?:\s+compose)?\b[^\r\n]*\blatest\b/i.test(command)) {
+      throw new Error("runbook contains a mutable latest Docker command");
+    }
+    if (
+      /\bdocker\s+pull\s+docker\.io\/tianyi920\/poker-scorekeeper\s*$/i.test(
+        command,
+      )
+    ) {
+      throw new Error("runbook contains an untagged public image pull");
+    }
   }
-  if (/^\s*POKER_IMAGE_VERSION\s*=\s*latest\b/gim.test(content)) {
-    throw new Error('runbook contains a mutable latest image version');
+  if (
+    /^\s*(?:export\s+)?POKER_IMAGE_VERSION\s*=\s*['"]?latest['"]?\s*(?:#.*)?$/gim.test(
+      content,
+    )
+  ) {
+    throw new Error("runbook contains a mutable latest image version");
   }
 
-  const firstBackupIndex = content.indexOf('### 3.1 立即创建并验证首次备份');
+  const proxySection = content.slice(
+    content.indexOf("## 4. HTTPS 和 WebSocket 反向代理"),
+    content.indexOf("## 5. 升级操作卡"),
+  );
+  for (const requirement of [
+    "公网 HTTPS 入口",
+    "http://127.0.0.1:3000",
+    "Upgrade",
+    "Connection",
+    "不要公开容器 `3000` 端口",
+    "MariaDB `3306` 的公网转发",
+  ]) {
+    if (!proxySection.includes(requirement))
+      throw new Error("reverse proxy instructions are incomplete");
+  }
+
   if (
-    content.indexOf('/api/health/deployment') > firstBackupIndex ||
-    firstBackupIndex > content.indexOf('## 4. HTTPS 和 WebSocket 反向代理')
+    content.indexOf("### 3.1 立即创建并验证首次备份") >
+    content.indexOf("## 5. 升级操作卡")
   ) {
-    throw new Error('first backup verification is not immediately after health checks');
+    throw new Error("fresh backup verification does not precede upgrade");
+  }
+
+  const firstBackupIndex = content.indexOf("### 3.1 立即创建并验证首次备份");
+  if (
+    content.indexOf("/api/health/deployment") > firstBackupIndex ||
+    firstBackupIndex > content.indexOf("## 4. HTTPS 和 WebSocket 反向代理")
+  ) {
+    throw new Error(
+      "first backup verification is not immediately after health checks",
+    );
   }
   const upgradeSection = content.slice(
-    content.indexOf('## 5. 升级操作卡'),
-    content.indexOf('## 6. 回滚操作卡')
+    content.indexOf("## 5. 升级操作卡"),
+    content.indexOf("## 6. 回滚操作卡"),
   );
-  if (!upgradeSection.includes('第 3.1 节的备份验证块') || !upgradeSection.includes('POKER_IMAGE_VERSION=1.0.1')) {
-    throw new Error('upgrade instructions do not require a fresh verified backup and fixed version');
+  if (
+    !upgradeSection.includes("第 3.1 节的备份验证块") ||
+    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.1")
+  ) {
+    throw new Error(
+      "upgrade instructions do not require a fresh verified backup and fixed version",
+    );
   }
-  const rollbackSection = content.slice(content.indexOf('## 6. 回滚操作卡'));
+  if (
+    firstBackupIndex > content.indexOf("POKER_IMAGE_VERSION=1.0.1") ||
+    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.1") >
+      upgradeSection.indexOf(
+        "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+      ) ||
+    upgradeSection.indexOf(
+      "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+    ) >
+      upgradeSection.indexOf(
+        "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
+      )
+  ) {
+    throw new Error("upgrade command order is invalid");
+  }
+  const rollbackSection = content.slice(content.indexOf("## 6. 回滚操作卡"));
   for (const rollbackCommand of [
-    'POKER_IMAGE_VERSION=1.0.0 # previous fixed version',
-    'docker compose --env-file .env.production -f docker-compose.registry.yml pull',
-    'docker compose --env-file .env.production -f docker-compose.registry.yml up -d'
+    "POKER_IMAGE_VERSION=1.0.0 # previous fixed version",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+    "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
   ]) {
     if (!rollbackSection.includes(rollbackCommand)) {
-      throw new Error('rollback instructions do not use a previous fixed version');
+      throw new Error(
+        "rollback instructions do not use a previous fixed version",
+      );
     }
   }
-
+  if (
+    rollbackSection.indexOf(
+      "POKER_IMAGE_VERSION=1.0.0 # previous fixed version",
+    ) >
+      rollbackSection.indexOf(
+        "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+      ) ||
+    rollbackSection.indexOf(
+      "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+    ) >
+      rollbackSection.indexOf(
+        "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
+      )
+  ) {
+    throw new Error("rollback command order is invalid");
+  }
 }
 
-describe('production deployment artifacts', () => {
-  it('builds one non-root Node 24 runtime containing API, web, migrations, and production dependencies', async () => {
+describe("production deployment artifacts", () => {
+  it("builds one non-root Node 24 runtime containing API, web, migrations, and production dependencies", async () => {
     // Break caught: the image builds only one half of the monorepo or needs dev dependencies at runtime.
-    const dockerfile = await readRepositoryFile('Dockerfile');
+    const dockerfile = await readRepositoryFile("Dockerfile");
 
-    expect(dockerfile.match(/^FROM node:24-bookworm-slim AS \w+/gm)?.length).toBeGreaterThanOrEqual(2);
+    expect(
+      dockerfile.match(/^FROM node:24-bookworm-slim AS \w+/gm)?.length,
+    ).toBeGreaterThanOrEqual(2);
     expect(dockerfile).toMatch(/pnpm install --frozen-lockfile/);
     expect(dockerfile).toMatch(/pnpm (?:-r )?build/);
     expect(dockerfile).toMatch(/pnpm install --prod --frozen-lockfile/);
@@ -210,379 +366,584 @@ describe('production deployment artifacts', () => {
     expect(dockerfile).toMatch(/apps\/api\/prisma/);
     expect(dockerfile).toMatch(/apps\/api\/dist/);
     expect(dockerfile.match(/^ARG DEPLOYMENT_ID$/gm)).toHaveLength(2);
-    expect(dockerfile).toContain('node scripts/build/create-deployment-id.mjs "$DEPLOYMENT_ID"');
-    expect(dockerfile).toContain('LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID');
-    expect(dockerfile).toContain('/app/deployment-id ./deployment-id');
+    expect(dockerfile).toContain(
+      'node scripts/build/create-deployment-id.mjs "$DEPLOYMENT_ID"',
+    );
+    expect(dockerfile).toContain(
+      "LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID",
+    );
+    expect(dockerfile).toContain("/app/deployment-id ./deployment-id");
     expect(dockerfile).toMatch(/^USER node$/m);
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"');
     expect(dockerfile).not.toMatch(/FROM .*:latest/);
   });
 
-  it('starts by deploying migrations and then replacing the shell with the API process', async () => {
+  it("starts by deploying migrations and then replacing the shell with the API process", async () => {
     // Break caught: migrations are skipped or PID 1 does not receive termination signals.
-    const entrypoint = await readRepositoryFile('scripts/docker/entrypoint.sh');
+    const entrypoint = await readRepositoryFile("scripts/docker/entrypoint.sh");
 
-    expect(entrypoint).toContain('set -euo pipefail');
-    expect(entrypoint).not.toContain('PRODUCTION_TARGET_REQUIRED');
-    expect(entrypoint).toMatch(/^\s*node scripts\/database\/production-preflight\.mjs >\/dev\/null$/m);
-    expect(entrypoint.indexOf('production-preflight.mjs'))
-      .toBeLessThan(entrypoint.indexOf('prisma migrate deploy'));
+    expect(entrypoint).toContain("set -euo pipefail");
+    expect(entrypoint).not.toContain("PRODUCTION_TARGET_REQUIRED");
+    expect(entrypoint).toMatch(
+      /^\s*node scripts\/database\/production-preflight\.mjs >\/dev\/null$/m,
+    );
+    expect(entrypoint.indexOf("production-preflight.mjs")).toBeLessThan(
+      entrypoint.indexOf("prisma migrate deploy"),
+    );
     expect(entrypoint).toMatch(/prisma migrate deploy/);
     expect(entrypoint).toMatch(/exec node apps\/api\/dist\/main\.js/);
   });
 
-  it('keeps the runtime independent from Corepack while preserving direct Prisma migrations', async () => {
+  it("keeps the runtime independent from Corepack while preserving direct Prisma migrations", async () => {
     // Break caught: the production runtime requires pnpm/Corepack instead of the installed Prisma executable.
-    const dockerfile = await readRepositoryFile('Dockerfile');
-    const entrypoint = await readRepositoryFile('scripts/docker/entrypoint.sh');
-    const compose = parse(await readRepositoryFile('docker-compose.test.yml')) as {
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const entrypoint = await readRepositoryFile("scripts/docker/entrypoint.sh");
+    const compose = parse(
+      await readRepositoryFile("docker-compose.test.yml"),
+    ) as {
       services: { app: ComposeService };
     };
-    const runtime = dockerfile.slice(dockerfile.indexOf('FROM node:24-bookworm-slim AS runtime'));
+    const runtime = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
 
     expect(runtime).not.toMatch(/corepack|PNPM_HOME|pnpm\s/);
-    expect(runtime).toContain('test -x /app/apps/api/node_modules/.bin/prisma');
-    expect(runtime).not.toContain('COPY scripts ./scripts');
-    expect(runtime).not.toMatch(/\.test\.ts|run-with-test-env|seed-release-drill|assert-restored/);
+    expect(runtime).toContain("test -x /app/apps/api/node_modules/.bin/prisma");
+    expect(runtime).not.toContain("COPY scripts ./scripts");
+    expect(runtime).not.toMatch(
+      /\.test\.ts|run-with-test-env|seed-release-drill|assert-restored/,
+    );
     // Break caught: root verifies only mode bits while the final node user cannot execute Prisma.
     expect(runtime).toMatch(
-      /USER node\s+RUN test -x \/app\/apps\/api\/node_modules\/\.bin\/prisma\s+EXPOSE/
+      /USER node\s+RUN test -x \/app\/apps\/api\/node_modules\/\.bin\/prisma\s+EXPOSE/,
     );
-    expect(entrypoint).toContain('/app/apps/api/node_modules/.bin/prisma migrate deploy');
+    expect(entrypoint).toContain(
+      "/app/apps/api/node_modules/.bin/prisma migrate deploy",
+    );
     expect(entrypoint).not.toMatch(/\bpnpm\b|\bcorepack\b/);
     expect(compose.services.app.command).toContain(
-      '/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js'
+      "/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js",
     );
   });
 
-  it('publishes only the app on loopback and persists controlled application data', async () => {
+  it("publishes only the app on loopback and persists controlled application data", async () => {
     // Break caught: MySQL or the app is accidentally exposed to the LAN/WAN without the Synology proxy.
-    const compose = parse(await readRepositoryFile('docker-compose.yml')) as {
+    const compose = parse(await readRepositoryFile("docker-compose.yml")) as {
       services: { app: ComposeService };
     };
-    expect(Object.keys(compose.services)).toEqual(['app']);
-    expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
-    expect(compose.services.app.env_file).toEqual(['.env.production']);
+    expect(Object.keys(compose.services)).toEqual(["app"]);
+    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:3000"]);
+    expect(compose.services.app.env_file).toEqual([".env.production"]);
     expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe(
-      '${DEPLOYMENT_ID:?DEPLOYMENT_ID is required}'
+      "${DEPLOYMENT_ID:?DEPLOYMENT_ID is required}",
     );
-    expect(compose.services.app.environment).not.toHaveProperty('PRODUCTION_TARGET_REQUIRED');
-    expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
-      './data/avatars:/data/avatars',
-      './data/backups:/data/backups',
-      './data/restore:/data/restore'
-    ]));
+    expect(compose.services.app.environment).not.toHaveProperty(
+      "PRODUCTION_TARGET_REQUIRED",
+    );
+    expect(compose.services.app.volumes).toEqual(
+      expect.arrayContaining([
+        "./data/avatars:/data/avatars",
+        "./data/backups:/data/backups",
+        "./data/restore:/data/restore",
+      ]),
+    );
     expect(compose.services.app.healthcheck).toMatchObject({
-      test: ['CMD', 'node', 'scripts/docker/healthcheck.mjs']
+      test: ["CMD", "node", "scripts/docker/healthcheck.mjs"],
     });
-    expect(compose.services.app.security_opt).toContain('no-new-privileges:true');
-    expect(compose.services.app.cap_drop).toContain('ALL');
+    expect(compose.services.app.security_opt).toContain(
+      "no-new-privileges:true",
+    );
+    expect(compose.services.app.cap_drop).toContain("ALL");
   });
 
-  it('keeps the optional smoke database isolated and unmistakably test-only', async () => {
+  it("keeps the optional smoke database isolated and unmistakably test-only", async () => {
     // Break caught: local container verification can reach the user-owned remote or production schema.
-    const compose = parse(await readRepositoryFile('docker-compose.test.yml')) as {
+    const compose = parse(
+      await readRepositoryFile("docker-compose.test.yml"),
+    ) as {
       services: { app: ComposeService; mysql: ComposeService };
     };
-    expect(Object.keys(compose.services).sort()).toEqual(['app', 'mysql']);
+    expect(Object.keys(compose.services).sort()).toEqual(["app", "mysql"]);
     expect(compose.services.mysql.ports).toBeUndefined();
-    expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
+    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:3000"]);
     const databaseUrl = compose.services.app.environment?.DATABASE_URL;
     expect(databaseUrl).toBeDefined();
-    expect(databaseUrl).toContain('@mysql:3306/poker_scorekeeper_test');
-    expect(databaseUrl).not.toMatch(/tianyi\.wiki|192\.168\.10\.248|poker_scorekeeper(?:\?|$)/);
-    expect(compose.services.mysql.environment?.MYSQL_DATABASE).toBe('poker_scorekeeper_test');
+    expect(databaseUrl).toContain("@mysql:3306/poker_scorekeeper_test");
+    expect(databaseUrl).not.toMatch(
+      /tianyi\.wiki|192\.168\.10\.248|poker_scorekeeper(?:\?|$)/,
+    );
+    expect(compose.services.mysql.environment?.MYSQL_DATABASE).toBe(
+      "poker_scorekeeper_test",
+    );
     expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe(
-      '${DEPLOYMENT_ID:-test-build-20260819}'
+      "${DEPLOYMENT_ID:-test-build-20260819}",
     );
     expect(compose.services.app.entrypoint).toEqual([]);
     expect(compose.services.app.command).toEqual([
-      '/usr/bin/tini', '-g', '--', 'sh', '-c',
-      '/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js'
+      "/usr/bin/tini",
+      "-g",
+      "--",
+      "sh",
+      "-c",
+      "/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js",
     ]);
   });
 
-  it('prevents source secrets and mutable local data from entering the build context', async () => {
-    const ignore = await readRepositoryFile('.dockerignore');
-    for (const pattern of ['.env', '.env.*', 'node_modules', '.worktrees', 'data', 'backups']) {
+  it("prevents source secrets and mutable local data from entering the build context", async () => {
+    const ignore = await readRepositoryFile(".dockerignore");
+    for (const pattern of [
+      ".env",
+      ".env.*",
+      "node_modules",
+      ".worktrees",
+      "data",
+      "backups",
+    ]) {
       expect(ignore.split(/\r?\n/)).toContain(pattern);
     }
-    expect(ignore.split(/\r?\n/)).toContain('!.env.example');
+    expect(ignore.split(/\r?\n/)).toContain("!.env.example");
   });
 
-  it('provides a fixed-version registry compose bundle without a database service', async () => {
-    const compose = parse(await readRepositoryFile('docker-compose.registry.yml')) as {
+  it("provides a fixed-version registry compose bundle without a database service", async () => {
+    const compose = parse(
+      await readRepositoryFile("docker-compose.registry.yml"),
+    ) as {
       services: { app: ComposeService };
     };
 
-    expect(Object.keys(compose.services)).toEqual(['app']);
+    expect(Object.keys(compose.services)).toEqual(["app"]);
     expect(compose.services.app.build).toBeUndefined();
     expect(compose.services.app.image).toBe(
-      'docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION:?POKER_IMAGE_VERSION is required}'
+      "docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION:?POKER_IMAGE_VERSION is required}",
     );
-    expect(compose.services.app.ports).toEqual(['127.0.0.1:3000:3000']);
-    expect(compose.services.app.env_file).toEqual(['.env.production']);
-    expect(compose.services.app.volumes).toEqual(expect.arrayContaining([
-      './data/avatars:/data/avatars',
-      './data/backups:/data/backups',
-      './data/restore:/data/restore'
-    ]));
+    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:3000"]);
+    expect(compose.services.app.env_file).toEqual([".env.production"]);
+    expect(compose.services.app.volumes).toEqual(
+      expect.arrayContaining([
+        "./data/avatars:/data/avatars",
+        "./data/backups:/data/backups",
+        "./data/restore:/data/restore",
+      ]),
+    );
     expect(compose.services.app.read_only).toBe(true);
-    expect(compose.services.app.cap_drop).toContain('ALL');
-    expect(compose.services.app.restart).toBe('unless-stopped');
-    expect(compose.services.app.tmpfs).toContain('/tmp:size=64m,mode=1777');
-    expect(compose.services.app.security_opt).toContain('no-new-privileges:true');
+    expect(compose.services.app.cap_drop).toContain("ALL");
+    expect(compose.services.app.restart).toBe("unless-stopped");
+    expect(compose.services.app.tmpfs).toContain("/tmp:size=64m,mode=1777");
+    expect(compose.services.app.security_opt).toContain(
+      "no-new-privileges:true",
+    );
     expect(compose.services.app.healthcheck).toMatchObject({
-      test: ['CMD', 'node', 'scripts/docker/healthcheck.mjs']
+      test: ["CMD", "node", "scripts/docker/healthcheck.mjs"],
     });
   });
 
-  it('provides a secret-free Extreme Space environment template', async () => {
-    const environment = await readRepositoryFile('.env.extremespace.example');
+  it("provides a secret-free Extreme Space environment template", async () => {
+    const environment = await readRepositoryFile(".env.extremespace.example");
     const values = validateExtremeSpaceEnvironmentTemplate(environment);
 
-    expect(environment).toContain('POKER_IMAGE_VERSION=1.0.0');
-    expect(environment).toContain('PUBLIC_ORIGIN=https://poker.example.com');
+    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.0");
+    expect(environment).toContain("PUBLIC_ORIGIN=https://poker.example.com");
     expect(environment).toContain(
-      'DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper'
+      "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
     );
-    expect(environment).toContain('MYSQL_HOST=192.168.10.248');
-    expect(environment).toContain('MYSQL_PORT=3306');
-    expect(environment).toContain('MYSQL_DATABASE=poker_scorekeeper');
-    expect(environment).toContain('SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES');
-    expect(environment).toContain('CSRF_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES');
-    expect(environment).toContain('BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_UNIQUE_STRONG_PASSWORD');
-    expect(environment).toContain('MYSQL_PASSWORD=CHANGE_ME');
+    expect(environment).toContain("MYSQL_HOST=192.168.10.248");
+    expect(environment).toContain("MYSQL_PORT=3306");
+    expect(environment).toContain("MYSQL_DATABASE=poker_scorekeeper");
+    expect(environment).toContain(
+      "SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+    );
+    expect(environment).toContain(
+      "CSRF_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+    );
+    expect(environment).toContain(
+      "BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_UNIQUE_STRONG_PASSWORD",
+    );
+    expect(environment).toContain("MYSQL_PASSWORD=CHANGE_ME");
     expect(values).toMatchObject({
-      DATABASE_URL: 'mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper',
-      SESSION_SECRET: 'CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
-      CSRF_SECRET: 'CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
-      BOOTSTRAP_ADMIN_PASSWORD: 'CHANGE_ME_UNIQUE_STRONG_PASSWORD',
-      MYSQL_PASSWORD: 'CHANGE_ME'
+      DATABASE_URL:
+        "mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
+      SESSION_SECRET: "CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+      CSRF_SECRET: "CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+      BOOTSTRAP_ADMIN_PASSWORD: "CHANGE_ME_UNIQUE_STRONG_PASSWORD",
+      MYSQL_PASSWORD: "CHANGE_ME",
     });
   });
 
-  it('documents source-free Extreme Space deployment with fixed image versions', async () => {
+  it("documents source-free Extreme Space deployment with fixed image versions", async () => {
     // Break caught: a NAS operator needs the private source repository or is told to deploy a mutable image.
-    const runbook = await readRepositoryFile('docs/deployment/extremespace.md');
+    const runbook = await readRepositoryFile("docs/deployment/extremespace.md");
 
     expect(() => validateExtremeSpaceRunbook(runbook)).not.toThrow();
 
     for (const required of [
-      'github.com/tianyi0920/poker-scorekeeper',
-      'docker.io/tianyi920/poker-scorekeeper:1.0.0',
-      'docker-compose.registry.yml',
-      '.env.extremespace.example',
-      'cp .env.extremespace.example .env.production',
-      'chmod 600 .env.production',
-      'docker compose --env-file .env.production -f docker-compose.registry.yml pull',
-      'docker compose --env-file .env.production -f docker-compose.registry.yml up -d',
-      '/api/health/live',
-      '/api/health/ready',
-      '/api/health/deployment'
+      "github.com/tianyi0920/poker-scorekeeper",
+      "docker.io/tianyi920/poker-scorekeeper:1.0.0",
+      "docker-compose.registry.yml",
+      ".env.extremespace.example",
+      "cp .env.extremespace.example .env.production",
+      "chmod 600 .env.production",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
+      "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
+      "/api/health/live",
+      "/api/health/ready",
+      "/api/health/deployment",
     ]) {
       expect(runbook).toContain(required);
     }
 
-    expect(runbook).toContain('POKER_IMAGE_VERSION=1.0.0');
+    expect(runbook).toContain("POKER_IMAGE_VERSION=1.0.0");
     expect(runbook).toMatch(/POKER_IMAGE_VERSION=.*previous fixed version/i);
-    expect(runbook).toContain('forward-only');
-    expect(runbook).toContain('does not roll back the schema');
-    expect(runbook).toContain('不需要完整源码树');
-    expect(runbook).not.toMatch(/mysql:\/\/[^:\s]+:(?!CHANGE_ME|<password>)[^@\s]+@/);
-    const productionCommands = runbook.match(/^docker compose .*$/gm) ?? [];
-    const imageVersionExamples = runbook.match(/^POKER_IMAGE_VERSION=.*$/gm) ?? [];
-    expect(productionCommands.join('\n')).not.toMatch(/\blatest\b/i);
-    expect(imageVersionExamples.join('\n')).not.toMatch(/\blatest\b/i);
-
-    const synologyRunbook = await readRepositoryFile('docs/deployment/synology.md');
-    expect(synologyRunbook).toContain('[Docker Hub 固定版本部署操作卡](./extremespace.md)');
-    expect(synologyRunbook).toContain('源码构建、完整验证、备份和恢复流程');
-  });
-
-  it('rejects unsafe or incomplete Extreme Space deployment instructions', async () => {
-    const runbook = await readRepositoryFile('docs/deployment/extremespace.md');
-
-    expect(() => validateExtremeSpaceRunbook(
-      runbook.replace('chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore', '')
-    )).toThrow(/runbook requirement/);
-    expect(() => validateExtremeSpaceRunbook(
-      runbook.replace('test -f "data/backups/checksums-$STAMP.txt"', '')
-    )).toThrow(/runbook requirement/);
-    expect(() => validateExtremeSpaceRunbook(
-      runbook.replace(/### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTPS 和 WebSocket 反向代理/, '## 4. HTTPS 和 WebSocket 反向代理')
-    )).toThrow(/runbook requirement/);
-    expect(() => validateExtremeSpaceRunbook(`${runbook}\nSESSION_SECRET=real-secret-value`)).toThrow(
-      /sensitive assignment/
+    expect(runbook).toContain("forward-only");
+    expect(runbook).toContain("does not roll back the schema");
+    expect(runbook).toContain("不需要完整源码树");
+    expect(runbook).not.toMatch(
+      /mysql:\/\/[^:\s]+:(?!CHANGE_ME|<password>)[^@\s]+@/,
     );
-    expect(() => validateExtremeSpaceRunbook(
-      `${runbook}\n  docker pull docker.io/tianyi920/poker-scorekeeper:latest`
-    )).toThrow(/mutable latest Docker command/);
-    expect(() => validateExtremeSpaceRunbook(
-      `${runbook}\n\tdocker compose -f docker-compose.registry.yml up -d # latest`
-    )).toThrow(/mutable latest Docker command/);
-    expect(() => validateExtremeSpaceRunbook(
-      `${runbook}\n  sudo docker pull docker.io/tianyi920/poker-scorekeeper:latest`
-    )).toThrow(/mutable latest Docker command/);
-    expect(() => validateExtremeSpaceRunbook(
-      runbook.replace('POKER_IMAGE_VERSION=1.0.1', 'POKER_IMAGE_VERSION=latest')
-    )).toThrow(/mutable latest image version/);
-    expect(() => validateExtremeSpaceRunbook(
-      runbook.replace(
-        /(## 6\. 回滚操作卡[\s\S]*?)docker compose --env-file \.env\.production -f docker-compose\.registry\.yml up -d/,
-        '$1'
-      )
-    )).toThrow(/rollback instructions/);
+    const productionCommands = runbook.match(/^docker compose .*$/gm) ?? [];
+    const imageVersionExamples =
+      runbook.match(/^POKER_IMAGE_VERSION=.*$/gm) ?? [];
+    expect(productionCommands.join("\n")).not.toMatch(/\blatest\b/i);
+    expect(imageVersionExamples.join("\n")).not.toMatch(/\blatest\b/i);
+
+    const synologyRunbook = await readRepositoryFile(
+      "docs/deployment/synology.md",
+    );
+    expect(synologyRunbook).toContain(
+      "[Docker Hub 固定版本部署操作卡](./extremespace.md)",
+    );
+    expect(synologyRunbook).toContain("源码构建、完整验证、备份和恢复流程");
   });
 
-  it('rejects a sensitive placeholder that only starts with the approved prefix', async () => {
-    const environment = await readRepositoryFile('.env.extremespace.example');
+  it("rejects unsafe or incomplete Extreme Space deployment instructions", async () => {
+    const runbook = await readRepositoryFile("docs/deployment/extremespace.md");
+
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          'chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+          "",
+        ),
+      ),
+    ).toThrow(/runbook requirement/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
+          "",
+        ),
+      ),
+    ).toThrow(/runbook requirement/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          /### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTPS 和 WebSocket 反向代理/,
+          "## 4. HTTPS 和 WebSocket 反向代理",
+        ),
+      ),
+    ).toThrow(/runbook requirement/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\nSESSION_SECRET=real-secret-value`,
+      ),
+    ).toThrow(/sensitive assignment/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n# SESSION_SECRET=real-secret-value`,
+      ),
+    ).toThrow(/sensitive assignment/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n示例 SESSION_SECRET=real-secret-value`,
+      ),
+    ).toThrow(/sensitive assignment/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n# SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES`,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n\`\`\`sh\n  docker pull docker.io/tianyi920/poker-scorekeeper:latest\n\`\`\``,
+      ),
+    ).toThrow(/mutable latest Docker command/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n\`\`\`sh\n\tdocker compose -f docker-compose.registry.yml up -d # latest\n\`\`\``,
+      ),
+    ).toThrow(/mutable latest Docker command/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n\`\`\`sh\n  sudo docker pull docker.io/tianyi920/poker-scorekeeper:latest\n\`\`\``,
+      ),
+    ).toThrow(/mutable latest Docker command/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n\`\`\`sh\n docker pull docker.io/tianyi920/poker-scorekeeper\n\`\`\``,
+      ),
+    ).toThrow(/untagged public image pull/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          "POKER_IMAGE_VERSION=1.0.1",
+          'POKER_IMAGE_VERSION="latest"',
+        ),
+      ),
+    ).toThrow(/mutable latest image version/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          "POKER_IMAGE_VERSION=1.0.1",
+          "export POKER_IMAGE_VERSION='latest'",
+        ),
+      ),
+    ).toThrow(/mutable latest image version/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        `${runbook}\n不要运行 \`docker pull docker.io/tianyi920/poker-scorekeeper:latest\`。\n\`\`\`sh\n# do not run docker pull docker.io/tianyi920/poker-scorekeeper:latest\n\`\`\``,
+      ),
+    ).not.toThrow();
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          'sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore\nsudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+          'sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore\nsudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore',
+        ),
+      ),
+    ).toThrow(/command order/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace("在管理界面复核三项权限已生效", ""),
+      ),
+    ).toThrow(/runbook requirement/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs\ndocker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml exec -T app /app/scripts/backup/backup.sh\ndocker compose --env-file .env.production -f docker-compose.registry.yml exec -T app node scripts/database/production-backup-target.mjs",
+        ),
+      ),
+    ).toThrow(/command order/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          "POKER_IMAGE_VERSION=1.0.1",
+          "docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.1",
+        ),
+      ),
+    ).toThrow(/upgrade command order/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace("以及到 `http://127.0.0.1:3000` 的上游", ""),
+      ),
+    ).toThrow(/reverse proxy instructions/);
+    expect(() =>
+      validateExtremeSpaceRunbook(
+        runbook.replace(
+          /(## 6\. 回滚操作卡[\s\S]*?)docker compose --env-file \.env\.production -f docker-compose\.registry\.yml up -d/,
+          "$1",
+        ),
+      ),
+    ).toThrow(/rollback instructions/);
+  });
+
+  it("rejects a sensitive placeholder that only starts with the approved prefix", async () => {
+    const environment = await readRepositoryFile(".env.extremespace.example");
     const mutated = environment.replace(
-      'SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
-      'SESSION_SECRET=CHANGE_ME_real_secret'
+      "SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+      "SESSION_SECRET=CHANGE_ME_real_secret",
     );
 
     expect(() => validateExtremeSpaceEnvironmentTemplate(mutated)).toThrow();
   });
 
-  it('rejects extra sensitive assignments and credential-bearing comments or URLs', async () => {
-    const environment = await readRepositoryFile('.env.extremespace.example');
+  it("rejects extra sensitive assignments and credential-bearing comments or URLs", async () => {
+    const environment = await readRepositoryFile(".env.extremespace.example");
 
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\nEXTRA_API_TOKEN=CHANGE_ME`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\n# SESSION_SECRET=leaked-secret`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\n# mysql://poker_user:leaked-secret@192.168.10.248:3306/poker_scorekeeper`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      environment.replace(
-        'DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper',
-        'DATABASE_URL=mysql://poker_user:leaked-secret@192.168.10.248:3306/poker_scorekeeper'
-      )
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\nSESSION_SECRET=leaked-secret`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\nAPI_KEY=CHANGE_ME`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\nPRIVATE_KEY=CHANGE_ME`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\nCREDENTIAL=CHANGE_ME`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\n# SESSION_SECRET leaked-secret`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\nEXTRA_SETTING=1`
-    )).toThrow();
-    expect(() => validateExtremeSpaceEnvironmentTemplate(
-      `${environment}\n# unrecognized benign deployment note`
-    )).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\nEXTRA_API_TOKEN=CHANGE_ME`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\n# SESSION_SECRET=leaked-secret`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\n# mysql://poker_user:leaked-secret@192.168.10.248:3306/poker_scorekeeper`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        environment.replace(
+          "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
+          "DATABASE_URL=mysql://poker_user:leaked-secret@192.168.10.248:3306/poker_scorekeeper",
+        ),
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\nSESSION_SECRET=leaked-secret`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\nAPI_KEY=CHANGE_ME`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\nPRIVATE_KEY=CHANGE_ME`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\nCREDENTIAL=CHANGE_ME`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\n# SESSION_SECRET leaked-secret`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\nEXTRA_SETTING=1`,
+      ),
+    ).toThrow();
+    expect(() =>
+      validateExtremeSpaceEnvironmentTemplate(
+        `${environment}\n# unrecognized benign deployment note`,
+      ),
+    ).toThrow();
   });
 
-  it('keeps Linux deployment scripts and Node modules checked out with LF endings on Windows', async () => {
+  it("keeps Linux deployment scripts and Node modules checked out with LF endings on Windows", async () => {
     // Break caught: core.autocrlf converts Docker runtime scripts to CRLF, which breaks Linux shell parsing.
-    const attributes = await readRepositoryFile('.gitattributes');
-    for (const rule of ['*.sh text eol=lf', '*.mjs text eol=lf', '*.mts text eol=lf']) {
+    const attributes = await readRepositoryFile(".gitattributes");
+    for (const rule of [
+      "*.sh text eol=lf",
+      "*.mjs text eol=lf",
+      "*.mts text eol=lf",
+    ]) {
       expect(attributes.split(/\r?\n/)).toContain(rule);
     }
 
     const runtimeFiles = [
-      'scripts/docker/entrypoint.sh',
-      'scripts/backup/backup.sh',
-      'scripts/backup/restore.sh',
-      'scripts/docker/healthcheck.mjs',
-      'scripts/backup/restore-input-guard.mjs',
-      'scripts/backup/restore-input-guard.d.mts'
+      "scripts/docker/entrypoint.sh",
+      "scripts/backup/backup.sh",
+      "scripts/backup/restore.sh",
+      "scripts/docker/healthcheck.mjs",
+      "scripts/backup/restore-input-guard.mjs",
+      "scripts/backup/restore-input-guard.d.mts",
     ];
     for (const path of runtimeFiles) {
       expect(await readFile(resolve(repositoryRoot, path))).not.toContain(0x0d);
     }
   });
 
-  it('documents Synology production and remote-test database hosts using placeholders only', async () => {
+  it("documents Synology production and remote-test database hosts using placeholders only", async () => {
     // Break caught: a real database credential is copied into an image, compose file, or runbook.
     const paths = [
-      '.env.example',
-      'docker-compose.yml',
-      'docker-compose.test.yml',
-      'docs/deployment/synology.md',
-      'docs/deployment/backup-restore.md'
+      ".env.example",
+      "docker-compose.yml",
+      "docker-compose.test.yml",
+      "docs/deployment/synology.md",
+      "docs/deployment/backup-restore.md",
     ];
-    const artifacts = (await Promise.all(paths.map(readRepositoryFile))).join('\n');
-    expect(artifacts).toContain('192.168.10.248:3306');
-    expect(artifacts).toContain('tianyi.wiki:8306');
+    const artifacts = (await Promise.all(paths.map(readRepositoryFile))).join(
+      "\n",
+    );
+    expect(artifacts).toContain("192.168.10.248:3306");
+    expect(artifacts).toContain("tianyi.wiki:8306");
     expect(artifacts).toMatch(/replace_me|<password>|CHANGE_ME/);
-    expect(artifacts).not.toMatch(/mysql:\/\/[^:\s]+:(?!replace_me|<password>|CHANGE_ME)[^@\s]+@(?:tianyi\.wiki|192\.168\.10\.248)/);
+    expect(artifacts).not.toMatch(
+      /mysql:\/\/[^:\s]+:(?!replace_me|<password>|CHANGE_ME)[^@\s]+@(?:tianyi\.wiki|192\.168\.10\.248)/,
+    );
   });
 
-  it('keeps release verification fail-closed across local, browser, image, restart, backup, and restore gates', async () => {
-    const release = await readRepositoryFile('scripts/verify-release.ps1');
-    const releaseHelpers = await readRepositoryFile('scripts/release/release-helpers.ps1');
+  it("keeps release verification fail-closed across local, browser, image, restart, backup, and restore gates", async () => {
+    const release = await readRepositoryFile("scripts/verify-release.ps1");
+    const releaseHelpers = await readRepositoryFile(
+      "scripts/release/release-helpers.ps1",
+    );
     const releaseRuntime = `${release}\n${releaseHelpers}`;
-    const rootPackage = JSON.parse(await readRepositoryFile('package.json')) as {
-      packageManager: string; scripts: Record<string, string>;
+    const rootPackage = JSON.parse(
+      await readRepositoryFile("package.json"),
+    ) as {
+      packageManager: string;
+      scripts: Record<string, string>;
     };
 
-    expect(rootPackage.packageManager).toBe('pnpm@10.15.1');
-    expect(rootPackage.scripts['verify:release']).toBe(
-      'powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1'
+    expect(rootPackage.packageManager).toBe("pnpm@10.15.1");
+    expect(rootPackage.scripts["verify:release"]).toBe(
+      "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1",
     );
     for (const required of [
-      'pnpm install --frozen-lockfile',
-      'pnpm typecheck',
-      'pnpm test',
-      'test:integration',
-      'playwright test',
-      'pnpm build',
-      'docker build',
-      'docker compose',
-      'restart app',
-      'backup.sh',
-      'restore.sh',
-      'assert-restored-data.mjs'
-    ]) expect(release).toContain(required);
-    expect(release).toContain('10.15.1');
-    expect(release).toContain('poker_scorekeeper_restore_test');
-    expect(release).toMatch(/run-with-test-env\.mjs[^\r\n]+playwright[^\r\n]+test/);
-    expect(release).toContain('assert-restored-api.mjs');
-    expect(releaseRuntime).toContain('/api/health/live');
-    expect(releaseRuntime).toContain('/api/health/ready');
+      "pnpm install --frozen-lockfile",
+      "pnpm typecheck",
+      "pnpm test",
+      "test:integration",
+      "playwright test",
+      "pnpm build",
+      "docker build",
+      "docker compose",
+      "restart app",
+      "backup.sh",
+      "restore.sh",
+      "assert-restored-data.mjs",
+    ])
+      expect(release).toContain(required);
+    expect(release).toContain("10.15.1");
+    expect(release).toContain("poker_scorekeeper_restore_test");
+    expect(release).toMatch(
+      /run-with-test-env\.mjs[^\r\n]+playwright[^\r\n]+test/,
+    );
+    expect(release).toContain("assert-restored-api.mjs");
+    expect(releaseRuntime).toContain("/api/health/live");
+    expect(releaseRuntime).toContain("/api/health/ready");
     expect(release.match(/Wait-ApplicationHealthy/g)).toHaveLength(3);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3000/);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3001/);
     expect(releaseRuntime).toMatch(/--env-file|--env-from-file/);
-    expect(releaseRuntime).toMatch(/UnixCreateMode[\s\S]+UserRead[\s\S]+UserWrite/);
-    expect(releaseRuntime).toContain('SetAccessRuleProtection($true, $false)');
+    expect(releaseRuntime).toMatch(
+      /UnixCreateMode[\s\S]+UserRead[\s\S]+UserWrite/,
+    );
+    expect(releaseRuntime).toContain("SetAccessRuleProtection($true, $false)");
     expect(release).not.toMatch(/["']-e["'][^\r\n]+(?:PASSWORD|DATABASE_URL)/);
-    expect(release).not.toMatch(/(?:Invoke-External\s+\$docker|&\s+\$docker)[^\r\n]*DATABASE_URL/);
-    expect(release).toMatch(/finally[\s\S]+Remove-PrivateEnvironmentFile[^\r\n]+restoreEnvironmentContext/);
-    expect(release).not.toContain('ON *.*');
+    expect(release).not.toMatch(
+      /(?:Invoke-External\s+\$docker|&\s+\$docker)[^\r\n]*DATABASE_URL/,
+    );
+    expect(release).toMatch(
+      /finally[\s\S]+Remove-PrivateEnvironmentFile[^\r\n]+restoreEnvironmentContext/,
+    );
+    expect(release).not.toContain("ON *.*");
     expect(release).not.toMatch(/--skip|SKIP_DOCKER|continue-on-error/i);
 
-    const dockerPreflight = release.indexOf('Assert-DockerCapabilities');
-    const longLocalGate = release.indexOf("gate: pnpm install --frozen-lockfile");
+    const dockerPreflight = release.indexOf("Assert-DockerCapabilities");
+    const longLocalGate = release.indexOf(
+      "gate: pnpm install --frozen-lockfile",
+    );
     expect(dockerPreflight).toBeGreaterThanOrEqual(0);
     expect(dockerPreflight).toBeLessThan(longLocalGate);
-    expect(releaseRuntime).toContain('2.34.0');
+    expect(releaseRuntime).toContain("2.34.0");
 
-    const runbook = await readRepositoryFile('docs/deployment/synology.md');
-    expect(runbook).toContain('Docker Compose 2.34.0');
+    const runbook = await readRepositoryFile("docs/deployment/synology.md");
+    expect(runbook).toContain("Docker Compose 2.34.0");
   });
 
-  it('asserts restored completed history and uploaded avatar only in the exact isolated restore schema', async () => {
-    const assertion = await readRepositoryFile('scripts/database/assert-restored-data.mjs');
+  it("asserts restored completed history and uploaded avatar only in the exact isolated restore schema", async () => {
+    const assertion = await readRepositoryFile(
+      "scripts/database/assert-restored-data.mjs",
+    );
     expect(assertion).toContain("poker_scorekeeper_restore_test");
     expect(assertion).toMatch(/COMPLETED/);
     expect(assertion).toMatch(/settlements/);
     expect(assertion).toMatch(/avatar_kind_snapshot/);
     expect(assertion).toMatch(/RESTORE_AVATAR_ROOT/);
-    expect(assertion).not.toMatch(/DROP\s+(?:DATABASE|TABLE)|TRUNCATE|DELETE\s+FROM/i);
+    expect(assertion).not.toMatch(
+      /DROP\s+(?:DATABASE|TABLE)|TRUNCATE|DELETE\s+FROM/i,
+    );
   });
 });
