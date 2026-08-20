@@ -24,6 +24,7 @@ services:
       args:
         DEPLOYMENT_ID: ${DEPLOYMENT_ID:-test-build-20260819}
     image: ${POKER_TEST_IMAGE:-poker-scorekeeper:test-local}
+    pull_policy: never
     restart: "no"
     entrypoint: []
     command:
