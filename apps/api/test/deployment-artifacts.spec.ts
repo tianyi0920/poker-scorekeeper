@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse as parseDotenv } from "dotenv";
@@ -24,6 +25,118 @@ interface ComposeService {
 
 async function readRepositoryFile(path: string): Promise<string> {
   return readFile(resolve(repositoryRoot, path), "utf8");
+}
+
+const inContainerReleaseHelpers = [
+  "scripts/backup/backup.sh",
+  "scripts/backup/restore.sh",
+  "scripts/database/assert-restored-data.mjs",
+  "scripts/database/seed-release-drill.mjs",
+] as const;
+
+const testOnlyReleaseHelpers = [
+  "scripts/database/assert-restored-data.mjs",
+  "scripts/database/seed-release-drill.mjs",
+] as const;
+
+function validateReleaseHelperAvailability(input: {
+  release: string;
+  dockerfile: string;
+  testCompose: string;
+  productionComposes: string[];
+  trackedFiles: Set<string>;
+}): void {
+  const runtime = input.dockerfile.slice(
+    input.dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+  );
+  if (!runtime.startsWith("FROM node:24-bookworm-slim AS runtime")) {
+    throw new Error("runtime stage is missing");
+  }
+  if (!/^WORKDIR \/app$/m.test(runtime)) {
+    throw new Error("runtime workdir does not anchor relative helper paths");
+  }
+
+  const runtimeCopies = new Map<string, string>();
+  for (const line of runtime.split(/\r?\n/)) {
+    const copy = line.match(
+      /^COPY(?:\s+--\S+)*\s+(scripts\/\S+)\s+(\.\/scripts\/\S+)$/,
+    );
+    if (copy?.[1] && copy[2]) {
+      runtimeCopies.set(copy[1], `/app/${copy[2].slice(2)}`);
+    }
+  }
+
+  const compose = parse(input.testCompose) as {
+    services?: { app?: { volumes?: unknown } };
+  };
+  const volumes = compose.services?.app?.volumes;
+  if (!Array.isArray(volumes)) throw new Error("test app volumes are missing");
+  const scriptMounts = volumes.filter(
+    (volume): volume is string =>
+      typeof volume === "string" &&
+      (volume.startsWith("./scripts/") || volume.includes(":/app/scripts/")),
+  );
+  if (scriptMounts.length !== testOnlyReleaseHelpers.length) {
+    throw new Error("test Compose must expose exactly two helper files");
+  }
+
+  const mountedHelpers = new Map<string, string>();
+  for (const mount of scriptMounts) {
+    const parts = mount.split(":");
+    if (parts.length !== 3 || parts[2] !== "ro") {
+      throw new Error("verification helper mount must be read-only");
+    }
+    const source = parts[0]?.replace(/^\.\//, "");
+    const target = parts[1];
+    if (!source || !target || target !== `/app/${source}`) {
+      throw new Error("verification helper mount target must match its source");
+    }
+    if (!input.trackedFiles.has(source)) {
+      throw new Error("verification helper source must be tracked");
+    }
+    mountedHelpers.set(source, target);
+  }
+
+  for (const helper of inContainerReleaseHelpers) {
+    if (!input.release.includes(helper)) {
+      throw new Error(`release drill does not invoke ${helper}`);
+    }
+    if (!runtimeCopies.has(helper) && !mountedHelpers.has(helper)) {
+      throw new Error(`release helper is unavailable in the app: ${helper}`);
+    }
+  }
+  for (const helper of testOnlyReleaseHelpers) {
+    if (runtime.includes(helper)) {
+      throw new Error(`test-only helper leaked into runtime image: ${helper}`);
+    }
+    if (!mountedHelpers.has(helper)) {
+      throw new Error(`test-only helper lacks an exact mount: ${helper}`);
+    }
+    const parent = `/app/${helper.slice(0, helper.lastIndexOf("/"))}/`;
+    if (![...runtimeCopies.values()].some((target) => target.startsWith(parent))) {
+      throw new Error(`runtime does not create helper target parent: ${parent}`);
+    }
+  }
+
+  if (
+    !/\$compose \+ @\('exec',[^\r\n]+app[^\r\n]+seed-release-drill\.mjs/.test(
+      input.release,
+    ) ||
+    !/\$compose \+ @\('run',[^\r\n]+app[^\r\n]+assert-restored-data\.mjs/.test(
+      input.release,
+    )
+  ) {
+    throw new Error("release helpers do not use the mounted app service");
+  }
+
+  for (const productionCompose of input.productionComposes) {
+    if (
+      /\.\/scripts(?:\/|:)/.test(productionCompose) ||
+      testOnlyReleaseHelpers.some((helper) => productionCompose.includes(helper))
+    ) {
+      throw new Error("test-only helper leaked into production Compose");
+    }
+  }
 }
 
 const approvedSensitiveValues = {
@@ -443,6 +556,57 @@ describe("production deployment artifacts", () => {
     expect(compose.services.app.command).toContain(
       "/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js",
     );
+  });
+
+  it("makes every container release helper available without shipping test helpers", async () => {
+    // Break caught: the hosted drill reaches seed or restore assertions that are absent from the runtime image.
+    const release = await readRepositoryFile("scripts/verify-release.ps1");
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const testCompose = await readRepositoryFile("docker-compose.test.yml");
+    const productionComposes = await Promise.all([
+      readRepositoryFile("docker-compose.yml"),
+      readRepositoryFile("docker-compose.registry.yml"),
+    ]);
+    const trackedFiles = new Set(
+      execFileSync("git", ["ls-files", "--", ...testOnlyReleaseHelpers], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+      })
+        .trim()
+        .split(/\r?\n/)
+        .filter(Boolean),
+    );
+    const artifacts = {
+      release,
+      dockerfile,
+      testCompose,
+      productionComposes,
+      trackedFiles,
+    };
+
+    expect(() => validateReleaseHelperAvailability(artifacts)).not.toThrow();
+
+    const seedMount =
+      "./scripts/database/seed-release-drill.mjs:/app/scripts/database/seed-release-drill.mjs:ro";
+    const mutations = [
+      testCompose.replace(seedMount, ""),
+      testCompose.replace(seedMount, seedMount.replace(":ro", ":rw")),
+      testCompose.replace(
+        seedMount,
+        seedMount.replace(
+          "/app/scripts/database/seed-release-drill.mjs",
+          "/app/scripts/database/wrong-target.mjs",
+        ),
+      ),
+    ];
+    for (const mutatedCompose of mutations) {
+      expect(() =>
+        validateReleaseHelperAvailability({
+          ...artifacts,
+          testCompose: mutatedCompose,
+        }),
+      ).toThrow();
+    }
   });
 
   it("publishes only the app on loopback and persists controlled application data", async () => {

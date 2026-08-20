@@ -10,7 +10,11 @@ services:
     volumes:
       - mysql_test_data:/var/lib/mysql
     healthcheck:
-      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -u poker_test -ppoker_test --silent"]
+      test:
+        [
+          "CMD-SHELL",
+          "mysqladmin ping -h 127.0.0.1 -u poker_test -ppoker_test --silent",
+        ]
       interval: 3s
       timeout: 3s
       retries: 30
@@ -60,6 +64,8 @@ services:
       - avatar_test_data:/data/avatars
       - backup_test_data:/data/backups
       - restore_test_data:/data/restore
+      - ./scripts/database/seed-release-drill.mjs:/app/scripts/database/seed-release-drill.mjs:ro
+      - ./scripts/database/assert-restored-data.mjs:/app/scripts/database/assert-restored-data.mjs:ro
     read_only: true
     tmpfs:
       - /tmp:size=64m,mode=1777
