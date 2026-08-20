@@ -61,8 +61,11 @@ function lineNumberAt(content, index) {
 }
 
 function normalizeAssignmentValue(rawValue) {
-  return rawValue
+  const withoutComment = rawValue
     .trim()
+    .replace(/\s+(?:#|\/\/).*$/, "")
+    .trim();
+  return withoutComment
     .replace(/[,;]$/, "")
     .trim()
     .replace(/^["']|["']$/g, "");
@@ -118,7 +121,7 @@ function scanText(path, content) {
   const strict = isStrictConfigurationPath(path);
   for (const [index, line] of lines.entries()) {
     const assignment = line.match(
-      /^\s*(?:-\s*)?(?:["']?)([A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|PRIVATE_KEY|ACCESS_KEY)|DATABASE_URL)(?:["']?)\s*[:=]\s*(.*?)\s*(?:#.*)?$/,
+      /^\s*(?:(?:\/\/|#)\s*)?(?:-\s*)?(?:(?:export\s+)?(?:const|let|var)\s+|export\s+)?(?:["']?)((?:[A-Z][A-Z0-9_]*(?:PASSWORD|SECRET|TOKEN|PRIVATE_KEY|ACCESS_KEY)|PASSWORD|SECRET|TOKEN|PRIVATE_KEY|ACCESS_KEY)|DATABASE_URL)(?:["']?)\s*[:=]\s*(.*)$/,
     );
     if (!assignment) continue;
     const value = normalizeAssignmentValue(assignment[2]);
@@ -133,7 +136,7 @@ function scanText(path, content) {
         if (password === "" || isApprovedNonSecret(path, password)) continue;
         credentialUrl = true;
       } catch {
-        credentialUrl = strict;
+        credentialUrl = true;
       }
     }
     if (

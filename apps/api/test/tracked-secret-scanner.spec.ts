@@ -107,4 +107,89 @@ describe("tracked-file secret scanner", () => {
     expect(result.status).toBe(1);
     expect(`${result.stdout}${result.stderr}`).toContain("credential-url");
   });
+
+  it.each([
+    [
+      "slash comment",
+      (credential: string) => `// SESSION_SECRET=${credential}`,
+    ],
+    ["hash comment", (credential: string) => `# CSRF_SECRET=${credential}`],
+    [
+      "const declaration",
+      (credential: string) => `const SESSION_SECRET = "${credential}";`,
+    ],
+    [
+      "let declaration",
+      (credential: string) => `let CSRF_SECRET = '${credential}';`,
+    ],
+    [
+      "var declaration",
+      (credential: string) => `var API_TOKEN = "${credential}";`,
+    ],
+    [
+      "export declaration",
+      (credential: string) => `export const ACCESS_KEY = "${credential}";`,
+    ],
+  ])(
+    "rejects a high-confidence %s without echoing its value",
+    async (_case, source) => {
+      // Break caught: code and commented-out credentials bypass an env/YAML-only assignment parser.
+      const root = await createRepository();
+      const credential = `A9!z${"q".repeat(36)}`;
+      await writeFile(join(root, "runtime.mjs"), `${source(credential)}\n`);
+      track(root, "runtime.mjs");
+
+      const result = scan(root);
+      const output = `${result.stdout}${result.stderr}`;
+      expect(result.status).toBe(1);
+      expect(output).toContain("runtime.mjs:1");
+      expect(output).toContain("sensitive-assignment");
+      expect(output).not.toContain(credential);
+    },
+  );
+
+  it.each(["#", "//"])(
+    "rejects a credential URL behind a %s comment prefix",
+    async (commentPrefix) => {
+      const root = await createRepository();
+      const password = `P4!${"w".repeat(36)}`;
+      await writeFile(
+        join(root, "runtime.mjs"),
+        `${commentPrefix} DATABASE_URL=mysql://user:${password}@database.internal:3306/poker\n`,
+      );
+      track(root, "runtime.mjs");
+
+      const result = scan(root);
+      const output = `${result.stdout}${result.stderr}`;
+      expect(result.status).toBe(1);
+      expect(output).toContain("runtime.mjs:1");
+      expect(output).toContain("credential-url");
+      expect(output).not.toContain(password);
+    },
+  );
+
+  it("keeps the isolated fixture allowlist path- and value-specific", async () => {
+    const fixtureValue =
+      "ci_only_session_secret_0123456789abcdef0123456789abcdef";
+    const fixtureRoot = await createRepository();
+    await writeFile(
+      join(fixtureRoot, "scanner.spec.ts"),
+      `export const SESSION_SECRET = "${fixtureValue}";\n`,
+    );
+    track(fixtureRoot, "scanner.spec.ts");
+    const fixtureResult = scan(fixtureRoot);
+    expect(fixtureResult.status, fixtureResult.stderr).toBe(0);
+
+    const runtimeRoot = await createRepository();
+    await writeFile(
+      join(runtimeRoot, "runtime.mjs"),
+      `export const SESSION_SECRET = "${fixtureValue}";\n`,
+    );
+    track(runtimeRoot, "runtime.mjs");
+    const runtimeResult = scan(runtimeRoot);
+    expect(runtimeResult.status).toBe(1);
+    expect(`${runtimeResult.stdout}${runtimeResult.stderr}`).not.toContain(
+      fixtureValue,
+    );
+  });
 });
