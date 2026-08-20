@@ -39,7 +39,6 @@ function tableNamesFrom(rows) {
     }
     names.add(row.tableName);
   }
-  if (names.size === 0) return names;
   if (names.size !== 2 || !names.has("users") || !names.has("game_players")) {
     throw controlledError("PRODUCTION_AVATAR_SCHEMA_INCOMPLETE");
   }
@@ -101,19 +100,16 @@ export async function verifyProductionAvatarFiles(
       connectTimeout: 5_000,
       socketTimeout: 5_000,
     });
-    const tables = tableNamesFrom(
+    tableNamesFrom(
       await connection.query(
         "SELECT TABLE_NAME AS tableName FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'poker_scorekeeper' AND TABLE_NAME IN ('users', 'game_players') ORDER BY TABLE_NAME",
       ),
     );
-    const avatarValues =
-      tables.size === 0
-        ? []
-        : uploadValuesFrom(
-            await connection.query(
-              "SELECT avatar_value AS avatarValue FROM poker_scorekeeper.users WHERE avatar_kind = 'UPLOAD' UNION SELECT avatar_value_snapshot AS avatarValue FROM poker_scorekeeper.game_players WHERE avatar_kind_snapshot = 'UPLOAD' ORDER BY avatarValue",
-            ),
-          );
+    const avatarValues = uploadValuesFrom(
+      await connection.query(
+        "SELECT avatar_value AS avatarValue FROM poker_scorekeeper.users WHERE avatar_kind = 'UPLOAD' UNION SELECT avatar_value_snapshot AS avatarValue FROM poker_scorekeeper.game_players WHERE avatar_kind_snapshot = 'UPLOAD' ORDER BY avatarValue",
+      ),
+    );
 
     for (const avatarValue of avatarValues) {
       let stats;

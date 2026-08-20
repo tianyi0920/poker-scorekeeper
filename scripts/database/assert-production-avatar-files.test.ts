@@ -88,7 +88,7 @@ describe("read-only production avatar continuity verification", () => {
   });
 
   it("allows an empty avatar directory only when the production schema has no upload references", async () => {
-    const fake = fakeConnector({ tables: [] });
+    const fake = fakeConnector({ values: [] });
 
     await expect(
       verifyProductionAvatarFiles(
@@ -104,9 +104,36 @@ describe("read-only production avatar continuity verification", () => {
       ),
     ).resolves.toEqual({ uploadFileCount: 0 });
 
-    expect(fake.queries).toHaveLength(1);
+    expect(fake.queries).toHaveLength(2);
     expect(fake.ended).toBe(true);
   });
+
+  it.each([
+    ["no visible required tables", []],
+    ["only one visible required table", ["users"]],
+  ])(
+    "rejects %s instead of treating it as zero upload references",
+    async (_case, tables) => {
+      // Break caught: an empty or privilege-hidden schema self-fulfills a zero-reference assertion.
+      const fake = fakeConnector({ tables });
+
+      await expect(
+        verifyProductionAvatarFiles(
+          {
+            DATABASE_URL: productionUrl,
+            AVATAR_ROOT: "/data/avatars",
+          },
+          {
+            connect: fake.connect,
+            lstat: async (path) =>
+              stats(path === "/data/avatars" ? "directory" : "file"),
+          },
+        ),
+      ).rejects.toThrow("PRODUCTION_AVATAR_SCHEMA_INCOMPLETE");
+      expect(fake.queries).toHaveLength(1);
+      expect(fake.ended).toBe(true);
+    },
+  );
 
   it.each([
     ["unsafe nested reference", "../outside.webp", "file"],

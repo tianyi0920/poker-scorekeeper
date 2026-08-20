@@ -450,7 +450,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   for (const command of shellCommands.slice(preBackupStart, preBackupEnd + 1)) {
     const normalized = command.trim();
     if (
-      normalized.startsWith("docker compose ") &&
+      /\bdocker\b/i.test(normalized) &&
       !allowedPreBackupComposeCommands.has(normalized)
     ) {
       throw new Error("migration-capable command before backup");
@@ -1072,6 +1072,12 @@ describe("production deployment artifacts", () => {
       "docker compose --env-file .env.production -f docker-compose.registry.yml start app",
       "docker compose --env-file .env.production -f docker-compose.registry.yml restart app",
       "docker compose --env-file .env.production -f docker-compose.registry.yml run --rm app",
+      "sudo docker compose --env-file .env.production -f docker-compose.registry.yml start app",
+      "sudo -n docker compose --env-file .env.production -f docker-compose.registry.yml restart app",
+      "env COMPOSE_PROJECT_NAME=poker docker compose --env-file .env.production -f docker-compose.registry.yml run --rm app",
+      "/usr/bin/docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
+      "docker --context default compose --env-file .env.production -f docker-compose.registry.yml start app",
+      "docker-compose --env-file .env.production -f docker-compose.registry.yml start app",
     ]) {
       expect(() =>
         validateExtremeSpaceRunbook(
