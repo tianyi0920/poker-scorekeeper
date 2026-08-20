@@ -5,7 +5,9 @@ import request, { type Response } from 'supertest';
 import { BuyinEventType, GameStatus, Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
+requireAuthorizedTestDatabase();
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `games-${runId}`;
 const password = `${randomBytes(18).toString('base64url')}Aa1!`;

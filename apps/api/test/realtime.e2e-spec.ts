@@ -30,11 +30,9 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { GameEventsService } from '../src/realtime/game-events.service.js';
 import { PresenceService } from '../src/realtime/presence.service.js';
 import { SocketSessionAdapter } from '../src/realtime/socket-session.adapter.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
-if (!databaseName.endsWith('_test')) {
-  throw new Error(`Realtime E2E tests require an isolated *_test database, got ${databaseName || '(none)'}`);
-}
+requireAuthorizedTestDatabase();
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `realtime-${runId}`;

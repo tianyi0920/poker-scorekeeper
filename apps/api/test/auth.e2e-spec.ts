@@ -13,6 +13,10 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { SessionService } from '../src/auth/session.service.js';
 import { BootstrapAdminService } from '../src/auth/bootstrap-admin.service.js';
 import { PasswordService } from '../src/auth/password.service.js';
+import {
+  TEST_DATABASE_TARGET_REFUSED,
+  requireAuthorizedTestDatabase
+} from './support/authorized-test-database.js';
 
 const SESSION_COOKIE_NAME = 'poker_session';
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
@@ -29,15 +33,7 @@ function normalized(value: string): string {
   return value.trim().toLowerCase();
 }
 
-function assertAuthTestDatabase(databaseUrl = process.env.DATABASE_URL): void {
-  if (databaseUrl === undefined) throw new Error('DATABASE_URL is required for auth E2E');
-  const database = new URL(databaseUrl).pathname.slice(1);
-  if (!database.endsWith('_test')) {
-    throw new Error(`Refusing auth E2E on database: ${database}`);
-  }
-}
-
-assertAuthTestDatabase();
+requireAuthorizedTestDatabase();
 
 let sentinelPrisma: PrismaService;
 let sentinelSuperAdmin: User;
@@ -207,8 +203,10 @@ describe.sequential('session authentication', () => {
   });
 
   it('refuses auth fixture access when the configured database is not a test database', () => {
-    expect(() => assertAuthTestDatabase('mysql://localhost/poker_scorekeeper'))
-      .toThrow('Refusing auth E2E on database: poker_scorekeeper');
+    expect(() => requireAuthorizedTestDatabase({
+      DATABASE_URL: 'mysql://localhost/poker_scorekeeper'
+    }))
+      .toThrow(TEST_DATABASE_TARGET_REFUSED);
   });
 
   it('logs in with an Argon2id password, stores only the token hash, and returns the forced-change state', async () => {

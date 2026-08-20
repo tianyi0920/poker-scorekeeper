@@ -5,11 +5,9 @@ import request, { type Response } from 'supertest';
 import { GameStatus, Role, type Game, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
-if (!databaseName.endsWith('_test')) {
-  throw new Error(`Buy-in E2E tests require an isolated *_test database, got ${databaseName || '(none)'}`);
-}
+requireAuthorizedTestDatabase();
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `buyin-http-${runId}`;

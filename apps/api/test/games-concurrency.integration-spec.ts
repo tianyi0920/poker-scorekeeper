@@ -8,11 +8,9 @@ import { GamesService } from '../src/games/games.service.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { lockUsersInOrder } from '../src/users/user-policy.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
-if (!databaseName.endsWith('_test')) {
-  throw new Error(`Game concurrency tests require an isolated *_test database, got ${databaseName || '(none)'}`);
-}
+requireAuthorizedTestDatabase();
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 12);
 const prefix = `game-race-${runId}`;

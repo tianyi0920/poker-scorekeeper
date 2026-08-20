@@ -2,13 +2,10 @@ import mariadb, { type Connection } from 'mariadb';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
+const databaseUrl = requireAuthorizedTestDatabase();
 const database = databaseUrl.pathname.slice(1);
-
-if (database !== 'poker_scorekeeper_test') {
-  throw new Error(`Refusing settlement migration test on database: ${database}`);
-}
 
 const sqlModes = [
   { label: 'non-strict mode', value: '' },

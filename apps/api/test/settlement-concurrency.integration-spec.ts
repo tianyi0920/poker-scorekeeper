@@ -19,12 +19,10 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { SettlementDraftService } from '../src/settlements/settlement-draft.service.js';
 import { SettlementFinalizationService } from '../src/settlements/settlement-finalization.service.js';
 import * as userPolicy from '../src/users/user-policy.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
+const databaseUrl = requireAuthorizedTestDatabase();
 const databaseName = databaseUrl.pathname.slice(1);
-if (databaseName !== 'poker_scorekeeper_test') {
-  throw new Error('Settlement concurrency integration requires the exact poker_scorekeeper_test database');
-}
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `settlement-concurrency-${runId}`;

@@ -1,13 +1,10 @@
 import { PrismaMariaDb } from '@prisma/adapter-mariadb';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '../src/generated/prisma/client.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseUrl = new URL(process.env.DATABASE_URL ?? '');
+const databaseUrl = requireAuthorizedTestDatabase();
 const database = databaseUrl.pathname.slice(1);
-
-if (!database.endsWith('_test')) {
-  throw new Error(`Refusing schema integration test on database: ${database}`);
-}
 
 const prisma = new PrismaClient({
   adapter: new PrismaMariaDb({

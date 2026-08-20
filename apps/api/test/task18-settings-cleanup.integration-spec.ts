@@ -5,16 +5,9 @@ import {
   type SettingSnapshot,
   type SettingsOwnershipToken
 } from '../../../tests/e2e/support/settings-ownership.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const target = new URL(process.env.DATABASE_URL ?? '');
-if (
-  target.protocol !== 'mysql:'
-  || target.hostname !== 'tianyi.wiki'
-  || target.port !== '8306'
-  || target.pathname !== '/poker_scorekeeper_test'
-) {
-  throw new Error('Task18 settings regression requires the exact authorized test database');
-}
+const target = requireAuthorizedTestDatabase();
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 8);
 const baseId = `t18cas${runId}b`;

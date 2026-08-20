@@ -6,11 +6,9 @@ import { beforeEach } from 'vitest';
 import { GameStatus, Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
-if (databaseName !== 'poker_scorekeeper_test') {
-  throw new Error('History E2E requires the exact poker_scorekeeper_test database');
-}
+requireAuthorizedTestDatabase();
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 8);
 const prefix = `history-${runId}`;

@@ -16,11 +16,9 @@ import { PrismaService } from '../src/prisma/prisma.service.js';
 import { GameEventsService } from '../src/realtime/game-events.service.js';
 import { defaultSettlementDraftPayload } from '../src/settlements/settlement-draft.schema.js';
 import { SettlementDraftService } from '../src/settlements/settlement-draft.service.js';
+import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
 
-const databaseName = new URL(process.env.DATABASE_URL ?? '').pathname.slice(1);
-if (databaseName !== 'poker_scorekeeper_test') {
-  throw new Error('Settlement lease integration requires the exact poker_scorekeeper_test database');
-}
+requireAuthorizedTestDatabase();
 
 const runId = randomUUID().replaceAll('-', '').slice(0, 10);
 const prefix = `settlement-lease-${runId}`;
