@@ -41,7 +41,7 @@ describe('authorized database-backed test target', () => {
     {
       CI: 'true',
       GITHUB_ACTIONS: 'true',
-      DATABASE_URL: 'mysql://poker_ci:wrong@127.0.0.1:3306/poker_scorekeeper_ci_test'
+      DATABASE_URL: 'mysql://wrong:poker_ci@127.0.0.1:3306/poker_scorekeeper_ci_test'
     },
     {
       CI: 'true',
