@@ -22,7 +22,7 @@ sudo chown -R 1000:1000 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$PO
 sudo chmod 750 "$POKER_DIR"/data/avatars "$POKER_DIR"/data/backups "$POKER_DIR"/data/restore
 ```
 
-运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行；三个 bind 目录都必须可由该用户写入。上述命令将目录交给容器用户，因此普通 NAS 操作员以后读取备份文件需要 `sudo`；Docker 命令仍由已获 Docker 权限的普通操作员执行。上面的所有者和 `750` 权限适用于普通 Linux 文件系统；若极空间共享目录的 ACL 覆盖传统权限，请在管理界面授予同一 UID/GID 对三个目录的读、写和进入权限，并在管理界面复核三项权限已生效。不要把三个目录设为所有人可写。
+运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行；三个 bind 目录都必须可由该用户写入。上述命令将目录交给容器用户，因此普通 NAS 操作员以后读取备份文件需要 `sudo`；Docker 命令仍由已获 Docker 权限的普通操作员执行。上面的所有者和 `750` 权限适用于普通 Linux 文件系统；若极空间共享目录的 ACL 覆盖传统权限，请在管理界面为 UID/GID `1000:1000` 在 `"$POKER_DIR"/data/avatars`、`"$POKER_DIR"/data/backups`、`"$POKER_DIR"/data/restore` 授予读、写和进入权限，并在管理界面复核三项权限已生效。不要把三个目录设为所有人可写。
 
 将 `docker-compose.registry.yml` 和 `.env.extremespace.example` 放在当前目录。确认 Compose 文件只引用 `docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION}`，没有 `build:`，也没有数据库服务或 `3306` 端口。
 

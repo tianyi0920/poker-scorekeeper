@@ -161,6 +161,21 @@ function validateExtremeSpaceRunbook(content: string): void {
       throw new Error(`missing Extreme Space runbook requirement: ${required}`);
   }
 
+  const aclFallback =
+    content.match(/若极空间共享目录的 ACL 覆盖传统权限，[^。]*。/)?.[0] ?? "";
+  const aclRequirements = [
+    /ACL 覆盖传统权限/,
+    /UID\/GID `1000:1000`/,
+    /"\$POKER_DIR"\/data\/avatars/,
+    /"\$POKER_DIR"\/data\/backups/,
+    /"\$POKER_DIR"\/data\/restore/,
+    /读、写和进入权限/,
+    /管理界面复核三项权限已生效/,
+  ];
+  if (aclRequirements.some((requirement) => !requirement.test(aclFallback))) {
+    throw new Error("ACL fallback is not specific enough to apply and verify");
+  }
+
   const shellBlocks = [...content.matchAll(/```sh\r?\n([\s\S]*?)```/g)].map(
     (match) => match[1],
   );
@@ -715,6 +730,13 @@ describe("production deployment artifacts", () => {
         runbook.replace("在管理界面复核三项权限已生效", ""),
       ),
     ).toThrow(/runbook requirement/);
+    const aclGrantRemoved = runbook.replace(
+      '请在管理界面为 UID/GID `1000:1000` 在 `"$POKER_DIR"/data/avatars`、`"$POKER_DIR"/data/backups`、`"$POKER_DIR"/data/restore` 授予读、写和进入权限，并',
+      "",
+    );
+    expect(() => validateExtremeSpaceRunbook(aclGrantRemoved)).toThrow(
+      /ACL fallback/,
+    );
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
