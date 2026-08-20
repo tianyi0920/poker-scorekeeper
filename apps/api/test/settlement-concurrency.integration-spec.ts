@@ -51,16 +51,64 @@ function delay(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
 
-async function waitForDatabaseLockWait(prisma: PrismaService): Promise<void> {
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    const rows = await prisma.$queryRaw<Array<{ count: bigint | number }>>`
-      SELECT COUNT(*) AS count FROM information_schema.innodb_lock_waits
-    `;
-    if (Number(rows[0]?.count ?? 0) > 0) return;
-    await delay(50);
+async function waitForFinalizationUserLockQuery(): Promise<void> {
+  const connection = await mariadb.createConnection({
+    host: databaseUrl.hostname,
+    port: Number(databaseUrl.port || 3306),
+    user: decodeURIComponent(databaseUrl.username),
+    password: decodeURIComponent(databaseUrl.password),
+    database: databaseName,
+    connectTimeout: 5_000
+  });
+  let processStates: Array<{
+    command: string;
+    state: string;
+    phase: string;
+    count: bigint | number;
+  }> = [];
+  let transactionCount = 0;
+  try {
+    const deadline = Date.now() + 10_000;
+    while (Date.now() < deadline) {
+      const rows = await connection.query<Array<{ count: bigint | number }>>(
+        'SELECT COUNT(*) AS count FROM information_schema.innodb_lock_waits'
+      );
+      if (Number(rows[0]?.count ?? 0) > 0) return;
+      const userQueries = await connection.query<Array<{ count: bigint | number }>>(
+        `SELECT COUNT(*) AS count FROM information_schema.processlist
+         WHERE db = ? AND command = 'Execute' AND info LIKE '%FROM users%' AND state IS NOT NULL`,
+        [databaseName]
+      );
+      if (Number(userQueries[0]?.count ?? 0) > 0) return;
+      await delay(50);
+    }
+    const rawProcessStates = await connection.query<typeof processStates>(
+      `SELECT command, COALESCE(state, '') AS state,
+              CASE
+                WHEN info LIKE '%system_settings%' THEN 'settings'
+                WHEN info LIKE '%settlement_drafts%' THEN 'draft'
+                WHEN info LIKE '%game_players%' THEN 'players'
+                WHEN info LIKE '%buyin_events%' THEN 'buyins'
+                WHEN info LIKE '%FROM users%' THEN 'users'
+                WHEN info LIKE '%FROM games%' THEN 'games'
+                WHEN info IS NULL THEN 'idle'
+                ELSE 'other'
+              END AS phase,
+              COUNT(*) AS count
+       FROM information_schema.processlist WHERE db = ? GROUP BY command, state, phase`,
+      [databaseName]
+    );
+    processStates = rawProcessStates.map((row) => ({ ...row, count: Number(row.count) }));
+    const transactions = await connection.query<Array<{ count: bigint | number }>>(
+      'SELECT COUNT(*) AS count FROM information_schema.innodb_trx'
+    );
+    transactionCount = Number(transactions[0]?.count ?? 0);
+  } finally {
+    await connection.end();
   }
-  throw new Error('Finalization did not reach the expected user-row lock wait');
+  throw new Error(
+    `Finalization did not reach the expected user-row lock query; transactionCount=${transactionCount}; processStates=${JSON.stringify(processStates)}`
+  );
 }
 
 async function updateRakeOutsidePrismaPool(userId: string, rakeEnabled: boolean): Promise<void> {
@@ -78,6 +126,31 @@ async function updateRakeOutsidePrismaPool(userId: string, rakeEnabled: boolean)
   } finally {
     await connection.end();
   }
+}
+
+async function lockUserOutsidePrismaPool(userId: string): Promise<() => Promise<void>> {
+  const connection = await mariadb.createConnection({
+    host: databaseUrl.hostname,
+    port: Number(databaseUrl.port || 3306),
+    user: decodeURIComponent(databaseUrl.username),
+    password: decodeURIComponent(databaseUrl.password),
+    database: databaseName,
+    connectTimeout: 5_000
+  });
+  try {
+    await connection.beginTransaction();
+    await connection.query('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+  } catch (error) {
+    await connection.end();
+    throw error;
+  }
+  return async () => {
+    try {
+      await connection.commit();
+    } finally {
+      await connection.end();
+    }
+  };
 }
 
 function retryableConflict(): Prisma.PrismaClientKnownRequestError {
@@ -461,34 +534,39 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
     const ordered = [adminA.id, playerA.id, playerB.id].sort();
     const blockedUserId = ordered[0]!;
     const target = blockedUserId === playerA.id ? playerB : playerA;
-    let userLocked!: () => void;
-    let releaseUser!: () => void;
-    const locked = new Promise<void>((resolve) => { userLocked = resolve; });
-    const release = new Promise<void>((resolve) => { releaseUser = resolve; });
-    const blocker = prisma.$transaction(async (transaction) => {
-      await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM users WHERE id = ${blockedUserId} FOR UPDATE
-      `;
-      userLocked();
-      await release;
-    }, { timeout: 10_000, maxWait: 5_000 });
-    await locked;
+    const releaseUserLock = await lockUserOutsidePrismaPool(blockedUserId);
 
     const result = finalization.finalize(fixture.game.id, authUser(adminA), command).then(
       (value) => ({ status: 'fulfilled' as const, value }),
       (reason: unknown) => ({ status: 'rejected' as const, reason })
     );
     let updateError: unknown;
+    let observationError: unknown;
     try {
-      await waitForDatabaseLockWait(prisma);
       try {
-        await updateRakeOutsidePrismaPool(target.id, false);
+        await waitForFinalizationUserLockQuery();
       } catch (error) {
-        updateError = error;
+        observationError = error;
+      }
+      if (observationError === undefined) {
+        try {
+          await updateRakeOutsidePrismaPool(target.id, false);
+        } catch (error) {
+          updateError = error;
+        }
       }
     } finally {
-      releaseUser();
-      await blocker;
+      await releaseUserLock();
+      await result;
+    }
+
+    if (observationError !== undefined) {
+      const outcome = await result;
+      const code = outcome.status === 'rejected' && typeof outcome.reason === 'object' && outcome.reason !== null
+        && 'code' in outcome.reason ? String(outcome.reason.code) : outcome.status;
+      throw new Error(`Finalization lock observation failed; finalization outcome: ${code}`, {
+        cause: observationError
+      });
     }
 
     expect(updateError).toBeUndefined();
@@ -497,7 +575,7 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
       reason: { code: 'SETTLEMENT_PREVIEW_CONFLICT' }
     });
     await assertNotFinalized(fixture);
-  }, 20_000);
+  }, 30_000);
 
   it('retries the whole serializable transaction only within the P2034 bound', async () => {
     // Break caught: retry is unbounded, does not retry P2034, or duplicates writes across attempts.

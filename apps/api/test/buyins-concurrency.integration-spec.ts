@@ -295,13 +295,19 @@ describe.sequential('buy-in transaction concurrency', () => {
     const buying = buyins.buy(game.id, authUser(player), {
       hands: 1,
       idempotencyKey: `${prefix}-stale-actor`
-    }).finally(() => { settled = true; });
+    }).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
+    ).finally(() => { settled = true; });
     await delay(200);
     expect(settled).toBe(false);
     releaseUser();
     await blocker;
 
-    await expect(buying).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(buying).resolves.toMatchObject({
+      status: 'rejected',
+      reason: { code: 'FORBIDDEN' }
+    });
     await expect(prisma.gamePlayer.count({ where: { gameId: game.id } })).resolves.toBe(0);
     await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(0);
     await expect(prisma.activePlayerLock.findUnique({ where: { userId: player.id } })).resolves.toBeNull();
