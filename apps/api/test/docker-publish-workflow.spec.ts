@@ -24,6 +24,7 @@ type WorkflowJob = {
   needs?: string | string[];
   uses?: string;
   if?: string | boolean;
+  "continue-on-error"?: boolean | string;
   permissions?: Record<string, string>;
   env?: Record<string, string>;
   services?: Record<string, Record<string, unknown>>;
@@ -86,7 +87,44 @@ function actionReferences(workflow: Workflow) {
     .filter((uses): uses is string => typeof uses === "string");
 }
 
+function expectDigestOnlyLatestPromotion(step: WorkflowStep) {
+  const lines = executableLines(step);
+  const createCommand =
+    'docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"';
+  const inspectCommand =
+    "docker buildx imagetools inspect --format '{{json .Manifest}}' docker.io/tianyi920/poker-scorekeeper:latest > latest-manifest.json";
+  const create = lineIndex(lines, createCommand);
+  const inspect = lineIndex(lines, inspectCommand);
+  const latestDigest = lineIndex(lines, /^LATEST_DIGEST=/);
+  const equality = lineIndex(lines, '[[ "$LATEST_DIGEST" == "$VERIFIED_DIGEST" ]]');
+
+  expect(lines.filter((line) => line.includes("imagetools create"))).toEqual([createCommand]);
+  expect(create).toBeGreaterThanOrEqual(0);
+  expect(inspect).toBeGreaterThan(create);
+  expect(latestDigest).toBeGreaterThan(inspect);
+  expect(equality).toBeGreaterThan(latestDigest);
+}
+
 describe("GitHub Actions Docker publication workflows", () => {
+  it("keeps every job and step fail-closed under global read-only permissions", async () => {
+    // Break caught: one job escalates permissions or a release/security gate is allowed to fail silently.
+    for (const name of ["verify.yml", "publish-docker.yml", "promote-latest.yml"]) {
+      const { workflow } = await readWorkflow(name);
+      expect(workflow.permissions, `${name}: global permissions`).toEqual({ contents: "read" });
+      for (const [jobName, job] of Object.entries(workflow.jobs ?? {})) {
+        expect(job.permissions, `${name}/${jobName}: job permissions`).toBeUndefined();
+        expect(job["continue-on-error"], `${name}/${jobName}: job continue-on-error`)
+          .toBeUndefined();
+        for (const step of job.steps ?? []) {
+          expect(
+            step["continue-on-error"],
+            `${name}/${jobName}/${step.name ?? step.uses ?? "unnamed"}: step continue-on-error`,
+          ).toBeUndefined();
+        }
+      }
+    }
+  });
+
   it("makes verification reusable for pull requests and branch pushes with only read permission", async () => {
     // Break caught: an ordinary verification event can publish, receive write permission, or omit a required CI entry point.
     const { workflow } = await readWorkflow("verify.yml");
@@ -309,6 +347,10 @@ describe("GitHub Actions Docker publication workflows", () => {
     const digestEquality = lineIndex(lines, '[[ "$COMMIT_DIGEST" == "$VERIFIED_DIGEST" ]]');
     const digestImage = lineIndex(lines, 'DIGEST_IMAGE="${IMAGE_REPOSITORY}@${VERIFIED_DIGEST}"');
     const raw = lineIndex(lines, 'docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json');
+    const manifest = lineIndex(
+      lines,
+      "node scripts/release/docker-publish-contract.mjs manifest raw-index.json",
+    );
     const identity = lineIndex(
       lines,
       'node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$GITHUB_SHA"',
@@ -318,7 +360,8 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(digestEquality).toBeGreaterThan(commitDigest);
     expect(digestImage).toBeGreaterThan(digestEquality);
     expect(raw).toBeGreaterThan(digestImage);
-    expect(identity).toBeGreaterThan(raw);
+    expect(manifest).toBeGreaterThan(raw);
+    expect(identity).toBeGreaterThan(manifest);
     expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
       'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
       'docker buildx imagetools inspect --format \'{{json (index .Image "linux/arm64")}}\' "$DIGEST_IMAGE" > arm64-image.json',
@@ -341,9 +384,7 @@ describe("GitHub Actions Docker publication workflows", () => {
       "promote_latest",
       "Promote only the verified digest to latest",
     );
-    expect(executableLines(promotion)).toContain(
-      'docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"',
-    );
+    expectDigestOnlyLatestPromotion(promotion);
     expect(executableLines(promotion).some((line) => /docker (?:build|push)(?:\s|$)/.test(line)))
       .toBe(false);
   });
@@ -398,6 +439,10 @@ describe("GitHub Actions Docker publication workflows", () => {
     const fixedDigest = lineIndex(lines, /^FIXED_DIGEST=/);
     const digestImage = lineIndex(lines, 'DIGEST_IMAGE="${IMAGE_REPOSITORY}@${FIXED_DIGEST}"');
     const raw = lineIndex(lines, 'docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json');
+    const manifest = lineIndex(
+      lines,
+      "node scripts/release/docker-publish-contract.mjs manifest raw-index.json",
+    );
     const identity = lineIndex(
       lines,
       'node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$EXPECTED_COMMIT"',
@@ -407,7 +452,8 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(fixedDigest).toBeGreaterThanOrEqual(0);
     expect(digestImage).toBeGreaterThan(fixedDigest);
     expect(raw).toBeGreaterThan(digestImage);
-    expect(identity).toBeGreaterThan(raw);
+    expect(manifest).toBeGreaterThan(raw);
+    expect(identity).toBeGreaterThan(manifest);
     expect(shaDigest).toBeGreaterThan(identity);
     expect(digestEquality).toBeGreaterThan(shaDigest);
     expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
@@ -424,9 +470,7 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(finalShaEquality).toBeGreaterThan(finalFixedEquality);
 
     const promotion = requiredRunStep(workflow, "promote", "Promote only the revalidated digest");
-    expect(executableLines(promotion)).toContain(
-      'docker buildx imagetools create --tag docker.io/tianyi920/poker-scorekeeper:latest "docker.io/tianyi920/poker-scorekeeper@$VERIFIED_DIGEST"',
-    );
+    expectDigestOnlyLatestPromotion(promotion);
     expect(actionReferences(workflow).some((uses) => uses.startsWith("docker/build-push-action@")))
       .toBe(false);
   });
