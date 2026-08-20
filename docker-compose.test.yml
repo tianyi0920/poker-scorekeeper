@@ -23,7 +23,7 @@ services:
       dockerfile: Dockerfile
       args:
         DEPLOYMENT_ID: ${DEPLOYMENT_ID:-test-build-20260819}
-    image: poker-scorekeeper:test-local
+    image: ${POKER_TEST_IMAGE:-poker-scorekeeper:test-local}
     restart: "no"
     entrypoint: []
     command:
@@ -32,7 +32,7 @@ services:
       - --
       - sh
       - -c
-      - pnpm --dir apps/api exec prisma migrate deploy && exec node apps/api/dist/main.js
+      - /app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js
     depends_on:
       mysql:
         condition: service_healthy

@@ -55,6 +55,26 @@ describe('production deployment artifacts', () => {
     expect(entrypoint).toMatch(/exec node apps\/api\/dist\/main\.js/);
   });
 
+  it('keeps the runtime independent from Corepack while preserving direct Prisma migrations', async () => {
+    // Break caught: the production runtime requires pnpm/Corepack instead of the installed Prisma executable.
+    const dockerfile = await readRepositoryFile('Dockerfile');
+    const entrypoint = await readRepositoryFile('scripts/docker/entrypoint.sh');
+    const compose = parse(await readRepositoryFile('docker-compose.test.yml')) as {
+      services: { app: ComposeService };
+    };
+    const runtime = dockerfile.slice(dockerfile.indexOf('FROM node:24-bookworm-slim AS runtime'));
+
+    expect(runtime).not.toMatch(/corepack|PNPM_HOME|pnpm\s/);
+    expect(runtime).toContain('test -x /app/apps/api/node_modules/.bin/prisma');
+    expect(runtime).not.toContain('COPY scripts ./scripts');
+    expect(runtime).not.toMatch(/\.test\.ts|run-with-test-env|seed-release-drill|assert-restored/);
+    expect(entrypoint).toContain('/app/apps/api/node_modules/.bin/prisma migrate deploy');
+    expect(entrypoint).not.toMatch(/\bpnpm\b|\bcorepack\b/);
+    expect(compose.services.app.command).toContain(
+      '/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js'
+    );
+  });
+
   it('publishes only the app on loopback and persists controlled application data', async () => {
     // Break caught: MySQL or the app is accidentally exposed to the LAN/WAN without the Synology proxy.
     const compose = parse(await readRepositoryFile('docker-compose.yml')) as {
@@ -98,7 +118,7 @@ describe('production deployment artifacts', () => {
     expect(compose.services.app.entrypoint).toEqual([]);
     expect(compose.services.app.command).toEqual([
       '/usr/bin/tini', '-g', '--', 'sh', '-c',
-      'pnpm --dir apps/api exec prisma migrate deploy && exec node apps/api/dist/main.js'
+      '/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js'
     ]);
   });
 

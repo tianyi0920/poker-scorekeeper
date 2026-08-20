@@ -31,7 +31,7 @@ trap 'forward_migration_signal HUP 129' HUP
 trap 'forward_migration_signal INT 130' INT
 trap 'forward_migration_signal TERM 143' TERM
 
-pnpm --dir apps/api exec prisma migrate deploy &
+/app/apps/api/node_modules/.bin/prisma migrate deploy &
 migration_pid=$!
 set +e
 wait "$migration_pid"

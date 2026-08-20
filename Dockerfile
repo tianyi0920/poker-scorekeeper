@@ -42,16 +42,12 @@ LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID
 ENV NODE_ENV=production \
     PORT=3000 \
     WEB_DIST_ROOT=/app/apps/web/dist \
-    AVATAR_ROOT=/data/avatars \
-    PNPM_HOME=/pnpm \
-    PATH=/pnpm:$PATH
+    AVATAR_ROOT=/data/avatars
 WORKDIR /app
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates default-mysql-client gzip tar tini \
     && rm -rf /var/lib/apt/lists/* \
-    && corepack enable \
-    && corepack prepare pnpm@10.15.1 --activate \
     && mkdir -p /data/avatars /data/backups \
     && chown -R node:node /data
 
@@ -60,6 +56,7 @@ COPY --from=production-dependencies /app/apps/api/node_modules ./apps/api/node_m
 COPY --from=production-dependencies /app/apps/web/node_modules ./apps/web/node_modules
 COPY --from=production-dependencies /app/packages/contracts/node_modules ./packages/contracts/node_modules
 COPY --from=production-dependencies /app/packages/settlement/node_modules ./packages/settlement/node_modules
+RUN test -x /app/apps/api/node_modules/.bin/prisma
 COPY --from=production-dependencies /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
 COPY --from=production-dependencies /app/apps/api/package.json ./apps/api/package.json
 COPY --from=production-dependencies /app/apps/web/package.json ./apps/web/package.json
@@ -72,10 +69,15 @@ COPY --from=build /app/packages/settlement/dist ./packages/settlement/dist
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
 COPY --from=build --chmod=0444 /app/deployment-id ./deployment-id
-COPY scripts ./scripts
-RUN chmod 0555 scripts/docker/entrypoint.sh \
-    && chmod 0444 scripts/docker/healthcheck.mjs scripts/backup/restore-input-guard.mjs \
-    && chmod 0555 scripts/backup/backup.sh scripts/backup/restore.sh
+COPY --chmod=0555 scripts/docker/entrypoint.sh ./scripts/docker/entrypoint.sh
+COPY --chmod=0444 scripts/docker/healthcheck.mjs ./scripts/docker/healthcheck.mjs
+COPY --chmod=0444 scripts/database/production-preflight.mjs ./scripts/database/production-preflight.mjs
+COPY --chmod=0444 scripts/database/create-database.mjs ./scripts/database/create-database.mjs
+COPY --chmod=0444 scripts/database/production-backup-target.mjs ./scripts/database/production-backup-target.mjs
+COPY --chmod=0444 scripts/database/production-migration-evidence.mjs ./scripts/database/production-migration-evidence.mjs
+COPY --chmod=0555 scripts/backup/backup.sh ./scripts/backup/backup.sh
+COPY --chmod=0555 scripts/backup/restore.sh ./scripts/backup/restore.sh
+COPY --chmod=0444 scripts/backup/restore-input-guard.mjs ./scripts/backup/restore-input-guard.mjs
 
 USER node
 EXPOSE 3000
