@@ -1,11 +1,21 @@
 import { spawnSync } from 'node:child_process';
-import { resolve } from 'node:path';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 
 const repositoryRoot = resolve(import.meta.dirname, '../../..');
 const contractPath = resolve(repositoryRoot, 'scripts/release/docker-publish-contract.mjs');
 const contract = await import(contractPath);
 const commit = '0123456789abcdef0123456789abcdef01234567';
+
+function imageIdentity(architecture: string, revision = commit) {
+  return {
+    os: 'linux',
+    architecture,
+    labels: { 'org.opencontainers.image.revision': revision }
+  };
+}
 
 describe('Docker publication contract', () => {
   it('derives fixed release metadata from a stable tag and full lowercase commit', () => {
@@ -34,12 +44,13 @@ describe('Docker publication contract', () => {
 
   it('queries only the fixed Docker Hub tag and treats 404 as absent', async () => {
     // Break caught: the fixed-tag preflight probes a different resource or rejects a confirmed absence.
-    const fetchImpl = vi.fn(async () => ({ status: 404 }));
+    const fetchImpl = vi.fn(async () => ({ status: 404, redirected: false, type: 'basic' }));
 
     await expect(contract.assertDockerHubTagAbsent('tianyi920/poker-scorekeeper', '1.0.0', fetchImpl))
       .resolves.toBeUndefined();
     expect(fetchImpl).toHaveBeenCalledWith(
-      'https://hub.docker.com/v2/repositories/tianyi920/poker-scorekeeper/tags/1.0.0'
+      'https://hub.docker.com/v2/repositories/tianyi920/poker-scorekeeper/tags/1.0.0',
+      { redirect: 'manual' }
     );
   });
 
@@ -48,8 +59,21 @@ describe('Docker publication contract', () => {
     await expect(contract.assertDockerHubTagAbsent(
       'tianyi920/poker-scorekeeper',
       '1.0.0',
-      async () => ({ status: 200 })
+      async () => ({ status: 200, redirected: false, type: 'basic' })
     )).rejects.toThrow('FIXED_TAG_ALREADY_EXISTS');
+  });
+
+  it.each([
+    { status: 404, redirected: true, type: 'basic' },
+    { status: 404, redirected: false, type: 'opaqueredirect' },
+    { status: 302, redirected: false, type: 'basic' }
+  ])('fails closed for Docker Hub redirect response %#', async (response) => {
+    // Break caught: a redirected request ending in 404 is accepted as an absent immutable tag.
+    await expect(contract.assertDockerHubTagAbsent(
+      'tianyi920/poker-scorekeeper',
+      '1.0.0',
+      async () => response
+    )).rejects.toThrow('REMOTE_TAG_STATUS_UNKNOWN');
   });
 
   it.each([
@@ -91,6 +115,23 @@ describe('Docker publication contract', () => {
     }, ['linux/amd64', 'linux/arm64'])).not.toThrow();
   });
 
+  it('accepts only a fully identified Buildx attestation beside the two executable platforms', () => {
+    // Break caught: a legitimate Buildx attestation prevents validating the two executable platforms.
+    expect(() => contract.assertManifestPlatforms({
+      manifests: [
+        { platform: { os: 'linux', architecture: 'amd64' } },
+        { platform: { os: 'linux', architecture: 'arm64' } },
+        {
+          platform: { os: 'unknown', architecture: 'unknown' },
+          annotations: {
+            'vnd.docker.reference.type': 'attestation-manifest',
+            'vnd.docker.reference.digest': `sha256:${'a'.repeat(64)}`
+          }
+        }
+      ]
+    }, ['linux/amd64', 'linux/arm64'])).not.toThrow();
+  });
+
   it.each([
     [{ manifests: [{ platform: { os: 'linux', architecture: 'amd64' } }] }],
     { manifests: [
@@ -109,25 +150,54 @@ describe('Docker publication contract', () => {
       .toThrow('MANIFEST_PLATFORMS_INVALID');
   });
 
+  it.each([
+    { platform: { os: 'unknown', architecture: 'unknown' } },
+    {
+      platform: { os: 'unknown', architecture: 'unknown' },
+      annotations: {
+        'vnd.docker.reference.type': 'not-an-attestation',
+        'vnd.docker.reference.digest': `sha256:${'a'.repeat(64)}`
+      }
+    },
+    {
+      platform: { os: 'unknown', architecture: 'unknown' },
+      annotations: {
+        'vnd.docker.reference.type': 'attestation-manifest',
+        'vnd.docker.reference.digest': 'sha256:not-a-digest'
+      }
+    }
+  ])('rejects an unknown platform that is not a complete Buildx attestation', (unknownDescriptor) => {
+    // Break caught: unclassified or malformed unknown descriptors hide extra unverified content.
+    expect(() => contract.assertManifestPlatforms({
+      manifests: [
+        { platform: { os: 'linux', architecture: 'amd64' } },
+        { platform: { os: 'linux', architecture: 'arm64' } },
+        unknownDescriptor
+      ]
+    }, ['linux/amd64', 'linux/arm64'])).toThrow('MANIFEST_PLATFORMS_INVALID');
+  });
+
   it('requires both architecture image revisions to equal the full release commit', () => {
     // Break caught: one platform image is built from a different source revision.
     expect(() => contract.assertImageIdentity([
-      { 'org.opencontainers.image.revision': commit },
-      { 'org.opencontainers.image.revision': commit }
+      imageIdentity('amd64'),
+      imageIdentity('arm64')
     ], commit)).not.toThrow();
   });
 
   it.each([
-    [{ 'org.opencontainers.image.revision': commit }],
+    [imageIdentity('amd64')],
+    [imageIdentity('amd64'), imageIdentity('amd64')],
     [
-      { 'org.opencontainers.image.revision': commit },
-      { 'org.opencontainers.image.revision': 'fedcba9876543210fedcba9876543210fedcba98' }
+      imageIdentity('amd64'),
+      imageIdentity('arm64', 'fedcba9876543210fedcba9876543210fedcba98')
     ],
     [
-      { 'org.opencontainers.image.revision': commit },
-      { 'org.opencontainers.image.revision': commit.toUpperCase() }
-    ]
-  ])('rejects missing or inconsistent architecture revision labels', (labels) => {
+      imageIdentity('amd64'),
+      imageIdentity('arm64', commit.toUpperCase())
+    ],
+    [imageIdentity('amd64'), imageIdentity('arm64'), imageIdentity('s390x')]
+  ])('rejects missing, duplicate, extra, or inconsistent platform image identities', (labels) => {
     // Break caught: an incomplete or mismatched per-platform image identity passes promotion.
     expect(() => contract.assertImageIdentity(labels, commit)).toThrow('IMAGE_IDENTITY_MISMATCH');
   });
@@ -142,5 +212,34 @@ describe('Docker publication contract', () => {
     expect(result.stdout).toBe('');
     expect(result.stderr.trim()).toBe('INVALID_RELEASE_TAG');
     expect(`${result.stdout}${result.stderr}`).not.toMatch(/Error:|at |https?:\/\//i);
+  });
+
+  it('rejects a CLI manifest request that tries to weaken the required platform set', async () => {
+    // Break caught: a workflow caller can validate only one architecture through the CLI.
+    const root = await mkdtemp(join(tmpdir(), 'docker-publish-contract-'));
+    const manifestPath = join(root, 'manifest.json');
+    try {
+      await writeFile(manifestPath, JSON.stringify({
+        manifests: [{ platform: { os: 'linux', architecture: 'amd64' } }]
+      }));
+      const result = spawnSync(process.execPath, [
+        contractPath, 'manifest', manifestPath, 'linux/amd64'
+      ], { encoding: 'utf8' });
+
+      expect(result.status).toBe(1);
+      expect(result.stdout).toBe('');
+      expect(result.stderr.trim()).toBe('INVALID_CLI_ARGUMENTS');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it('normalizes hostile manifest and identity accessors to stable contract errors', () => {
+    // Break caught: a proxy or accessor leaks arbitrary exception text from an exported validator.
+    const hostile = new Proxy({}, { get() { throw new Error('hostile accessor'); } });
+
+    expect(() => contract.assertManifestPlatforms(hostile, ['linux/amd64', 'linux/arm64']))
+      .toThrow('MANIFEST_PLATFORMS_INVALID');
+    expect(() => contract.assertImageIdentity(hostile, commit)).toThrow('IMAGE_IDENTITY_MISMATCH');
   });
 });

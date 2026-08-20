@@ -5,6 +5,7 @@ import { pathToFileURL } from 'node:url';
 const RELEASE_TAG = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 const FULL_COMMIT = /^[0-9a-f]{40}$/;
+const SHA256_DIGEST = /^sha256:[0-9a-f]{64}$/;
 const DOCKER_HUB_REPOSITORY = 'tianyi920/poker-scorekeeper';
 const STABLE_ERROR_CODES = new Set([
   'INVALID_RELEASE_TAG',
@@ -20,6 +21,10 @@ function fail(code) {
   const error = new Error(code);
   error.code = code;
   throw error;
+}
+
+function isStableContractError(error) {
+  return error instanceof Error && STABLE_ERROR_CODES.has(error.message);
 }
 
 function validVersion(version) {
@@ -71,16 +76,24 @@ export async function assertDockerHubTagAbsent(repository, version, fetchImpl) {
   let response;
   try {
     response = await fetchImpl(
-      `https://hub.docker.com/v2/repositories/${DOCKER_HUB_REPOSITORY}/tags/${version}`
+      `https://hub.docker.com/v2/repositories/${DOCKER_HUB_REPOSITORY}/tags/${version}`,
+      { redirect: 'manual' }
     );
   } catch {
     fail('REMOTE_TAG_STATUS_UNKNOWN');
   }
 
   let status;
+  let redirected;
+  let type;
   try {
     status = response?.status;
+    redirected = response?.redirected;
+    type = response?.type;
   } catch {
+    fail('REMOTE_TAG_STATUS_UNKNOWN');
+  }
+  if (redirected !== false || !['basic', 'cors', 'default'].includes(type)) {
     fail('REMOTE_TAG_STATUS_UNKNOWN');
   }
   if (status === 404) return;
@@ -89,54 +102,86 @@ export async function assertDockerHubTagAbsent(repository, version, fetchImpl) {
 }
 
 export function assertManifestPlatforms(rawManifest, expectedPlatforms) {
-  const manifest = parseManifest(rawManifest);
-  const expected = normalizeExpectedPlatforms(expectedPlatforms);
-  if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.manifests)) {
-    fail('MANIFEST_PLATFORMS_INVALID');
-  }
-
-  const actual = new Set();
-  for (const descriptor of manifest.manifests) {
-    const platform = descriptor?.platform;
-    if (!platform || typeof platform !== 'object') fail('MANIFEST_PLATFORMS_INVALID');
-    const { os, architecture } = platform;
-    if (os === 'unknown' && architecture === 'unknown') continue;
-    if (typeof os !== 'string' || typeof architecture !== 'string' || os === 'unknown' || architecture === 'unknown') {
+  try {
+    const manifest = parseManifest(rawManifest);
+    const expected = normalizeExpectedPlatforms(expectedPlatforms);
+    if (!manifest || typeof manifest !== 'object' || !Array.isArray(manifest.manifests)) {
       fail('MANIFEST_PLATFORMS_INVALID');
     }
-    const identifier = `${os}/${architecture}`;
-    if (!expected.has(identifier) || actual.has(identifier)) fail('MANIFEST_PLATFORMS_INVALID');
-    actual.add(identifier);
-  }
 
-  if (actual.size !== expected.size || [...expected].some((platform) => !actual.has(platform))) {
+    const actual = new Set();
+    for (const descriptor of manifest.manifests) {
+      const platform = descriptor?.platform;
+      if (!platform || typeof platform !== 'object') fail('MANIFEST_PLATFORMS_INVALID');
+      const { os, architecture } = platform;
+      if (os === 'unknown' && architecture === 'unknown') {
+        const annotations = descriptor.annotations;
+        if (
+          !annotations
+          || typeof annotations !== 'object'
+          || annotations['vnd.docker.reference.type'] !== 'attestation-manifest'
+          || typeof annotations['vnd.docker.reference.digest'] !== 'string'
+          || !SHA256_DIGEST.test(annotations['vnd.docker.reference.digest'])
+        ) {
+          fail('MANIFEST_PLATFORMS_INVALID');
+        }
+        continue;
+      }
+      if (typeof os !== 'string' || typeof architecture !== 'string' || os === 'unknown' || architecture === 'unknown') {
+        fail('MANIFEST_PLATFORMS_INVALID');
+      }
+      const identifier = `${os}/${architecture}`;
+      if (!expected.has(identifier) || actual.has(identifier)) fail('MANIFEST_PLATFORMS_INVALID');
+      actual.add(identifier);
+    }
+
+    if (actual.size !== expected.size || [...expected].some((platform) => !actual.has(platform))) {
+      fail('MANIFEST_PLATFORMS_INVALID');
+    }
+  } catch (error) {
+    if (isStableContractError(error)) throw error;
     fail('MANIFEST_PLATFORMS_INVALID');
   }
 }
 
-export function assertImageIdentity(labels, expectedCommit) {
-  if (
-    typeof expectedCommit !== 'string'
-    || !FULL_COMMIT.test(expectedCommit)
-    || !Array.isArray(labels)
-    || labels.length !== 2
-  ) {
-    fail('IMAGE_IDENTITY_MISMATCH');
-  }
-
-  for (const imageLabels of labels) {
+export function assertImageIdentity(identities, expectedCommit) {
+  try {
     if (
-      !imageLabels
-      || typeof imageLabels !== 'object'
-      || imageLabels['org.opencontainers.image.revision'] !== expectedCommit
+      typeof expectedCommit !== 'string'
+      || !FULL_COMMIT.test(expectedCommit)
+      || !Array.isArray(identities)
+      || identities.length !== 2
     ) {
       fail('IMAGE_IDENTITY_MISMATCH');
     }
+
+    const expectedPlatforms = new Set(['linux/amd64', 'linux/arm64']);
+    const actualPlatforms = new Set();
+    for (const identity of identities) {
+      if (!identity || typeof identity !== 'object') fail('IMAGE_IDENTITY_MISMATCH');
+      const { os, architecture, labels } = identity;
+      const platform = `${os}/${architecture}`;
+      if (
+        os !== 'linux'
+        || !expectedPlatforms.has(platform)
+        || actualPlatforms.has(platform)
+        || !labels
+        || typeof labels !== 'object'
+        || labels['org.opencontainers.image.revision'] !== expectedCommit
+      ) {
+        fail('IMAGE_IDENTITY_MISMATCH');
+      }
+      actualPlatforms.add(platform);
+    }
+    if (actualPlatforms.size !== expectedPlatforms.size) fail('IMAGE_IDENTITY_MISMATCH');
+  } catch (error) {
+    if (isStableContractError(error)) throw error;
+    fail('IMAGE_IDENTITY_MISMATCH');
   }
 }
 
 function stableErrorCode(error) {
-  return error instanceof Error && STABLE_ERROR_CODES.has(error.message)
+  return isStableContractError(error)
     ? error.message
     : 'INVALID_CLI_ARGUMENTS';
 }
@@ -159,9 +204,9 @@ async function main(args) {
     await assertDockerHubTagAbsent(commandArgs[0], commandArgs[1], globalThis.fetch);
     return;
   }
-  if (command === 'manifest' && commandArgs.length === 2) {
+  if (command === 'manifest' && commandArgs.length === 1) {
     const rawManifest = await readFile(commandArgs[0], 'utf8').catch(() => fail('INVALID_CLI_ARGUMENTS'));
-    assertManifestPlatforms(rawManifest, commandArgs[1].split(','));
+    assertManifestPlatforms(rawManifest, ['linux/amd64', 'linux/arm64']);
     return;
   }
   if (command === 'identity' && commandArgs.length === 2) {
