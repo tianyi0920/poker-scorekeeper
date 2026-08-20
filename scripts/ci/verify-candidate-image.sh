@@ -74,6 +74,17 @@ wait_for_health() {
   fail "Timed out waiting for $path"
 }
 
+assert_deployment_identity() {
+  local deployment_response
+  if ! deployment_response="$(curl --fail --silent --show-error --connect-timeout 1 "$base_url/api/health/deployment")"; then
+    fail 'Candidate deployment identity endpoint is unavailable'
+  fi
+  if ! printf '%s' "$deployment_response" |
+    EXPECTED_DEPLOYMENT_ID="$EXPECTED_COMMIT" node scripts/release/assert-deployment-response.mjs; then
+    fail 'Candidate deployment identity does not match the expected commit'
+  fi
+}
+
 wait_for_mysql() {
   for _ in $(seq 1 60); do
     if "${compose[@]}" exec -T mysql mysqladmin ping -h 127.0.0.1 -u poker_test -ppoker_test --silent >/dev/null 2>&1; then
@@ -103,6 +114,7 @@ assert_app_absent
 "${compose[@]}" up -d --pull never --no-build
 wait_for_health '/api/health/live'
 wait_for_health '/api/health/ready'
+assert_deployment_identity
 
 app_container="$("${compose[@]}" ps -q app)"
 [[ -n "$app_container" ]] || fail 'Candidate app container was not created'
@@ -115,6 +127,7 @@ app_container="$("${compose[@]}" ps -q app)"
 "${compose[@]}" restart app
 wait_for_health '/api/health/live'
 wait_for_health '/api/health/ready'
+assert_deployment_identity
 "${compose[@]}" exec -T app sh -c "test \"\$(cat /data/avatars/avatar-marker-${marker})\" = '$marker'"
 "${compose[@]}" exec -T app sh -c "test \"\$(cat /data/backups/backup-marker-${marker})\" = '$marker'"
 

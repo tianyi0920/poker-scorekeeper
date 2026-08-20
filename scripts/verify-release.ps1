@@ -29,6 +29,32 @@ function Assert-PortAvailable {
   if ($connected) { throw "Release verification port $Port is already in use" }
 }
 
+function Assert-DeploymentIdentity {
+  param(
+    [Parameter(Mandatory)][string] $BaseUri,
+    [Parameter(Mandatory)][string] $ExpectedDeploymentId
+  )
+  try {
+    $response = Invoke-WebRequest -UseBasicParsing -TimeoutSec 5 -Uri "$BaseUri/api/health/deployment"
+  } catch {
+    throw 'Deployment identity endpoint is unavailable'
+  }
+  if ($response.StatusCode -ne 200) { throw 'Deployment identity endpoint is unavailable' }
+
+  $previousExpectedDeploymentId = [Environment]::GetEnvironmentVariable('EXPECTED_DEPLOYMENT_ID', 'Process')
+  try {
+    $env:EXPECTED_DEPLOYMENT_ID = $ExpectedDeploymentId
+    $response.Content | & $node 'scripts/release/assert-deployment-response.mjs'
+    if ($LASTEXITCODE -ne 0) { throw 'Deployment identity does not match the expected image' }
+  } finally {
+    if ($null -eq $previousExpectedDeploymentId) {
+      Remove-Item Env:EXPECTED_DEPLOYMENT_ID -ErrorAction SilentlyContinue
+    } else {
+      $env:EXPECTED_DEPLOYMENT_ID = $previousExpectedDeploymentId
+    }
+  }
+}
+
 $node = (Get-Command node -ErrorAction Stop).Source
 
 # Docker is a mandatory release capability and must fail before the long local gates.
@@ -87,11 +113,13 @@ try {
   $composeStarted = $true
   Invoke-External $docker ($compose + @('up', '-d', '--build'))
   Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3000'
+  Assert-DeploymentIdentity -BaseUri 'http://127.0.0.1:3000' -ExpectedDeploymentId $deploymentId
 
   Invoke-External $docker ($compose + @('exec', '-T', '-e', "TASK18_DRILL_RUN_ID=$runId", 'app', 'node', 'scripts/database/seed-release-drill.mjs'))
   Write-Output 'gate: docker compose restart app and persistent volume'
   Invoke-External $docker ($compose + @('restart', 'app'))
   Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3000'
+  Assert-DeploymentIdentity -BaseUri 'http://127.0.0.1:3000' -ExpectedDeploymentId $deploymentId
   Invoke-External $docker ($compose + @('exec', '-T', 'app', 'sh', '-lc', 'test -n "$(find /data/avatars -mindepth 1 -maxdepth 1 -type f -name ''t18usr*.webp'' -print -quit)"'))
 
   Write-Output 'gate: backup.sh'
@@ -140,6 +168,7 @@ try {
   Assert-PortAvailable -Port 3001
   Invoke-External $docker ($compose + @('run', '-d', '--name', $restoreContainer, '--no-deps', '--env-from-file', $restoreEnvironmentFile, '-p', '127.0.0.1:3001:3001', 'app'))
   Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3001'
+  Assert-DeploymentIdentity -BaseUri 'http://127.0.0.1:3001' -ExpectedDeploymentId $deploymentId
   $previousRestoredBaseUrl = $env:RESTORED_BASE_URL
   $previousDrillRunId = $env:TASK18_DRILL_RUN_ID
   try {

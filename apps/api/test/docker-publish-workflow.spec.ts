@@ -616,6 +616,10 @@ describe('candidate-image smoke contract', () => {
     expect(script.indexOf('assert_app_absent', negativeProbeStart + 1)).toBeGreaterThan(negativeProbeStart);
     expect(script).toContain('/api/health/live');
     expect(script).toContain('/api/health/ready');
+    expect(script).toContain('/api/health/deployment');
+    expect(script).toContain('scripts/release/assert-deployment-response.mjs');
+    expect(script).toContain('EXPECTED_DEPLOYMENT_ID="$EXPECTED_COMMIT"');
+    expect(script.match(/^assert_deployment_identity$/gm)).toHaveLength(2);
     expect(script).toContain("base_url='http://127.0.0.1:3000'");
     expect(script).not.toMatch(/(?:tianyi\.wiki|x\.tianyi\.wiki|https?:\/\/[^\s"']*(?:production|remote))/i);
   });

@@ -1221,6 +1221,13 @@ describe("production deployment artifacts", () => {
     expect(release).toContain("assert-restored-api.mjs");
     expect(releaseRuntime).toContain("/api/health/live");
     expect(releaseRuntime).toContain("/api/health/ready");
+    expect(release).toContain("/api/health/deployment");
+    expect(release).toContain("scripts/release/assert-deployment-response.mjs");
+    expect(
+      release.match(
+        /^\s*Assert-DeploymentIdentity -BaseUri '[^']+' -ExpectedDeploymentId \$deploymentId$/gm,
+      ),
+    ).toHaveLength(3);
     expect(release.match(/Wait-ApplicationHealthy/g)).toHaveLength(3);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3000/);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3001/);
