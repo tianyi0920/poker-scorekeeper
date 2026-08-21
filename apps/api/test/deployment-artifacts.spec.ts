@@ -125,10 +125,19 @@ function validateReleaseHelperAvailability(input: {
   const runtimeCopies = new Map<string, string>();
   for (const line of applicationAssembly.split(/\r?\n/)) {
     const copy = line.match(
-      /^COPY(?:\s+--\S+)*\s+(scripts\/\S+)\s+(?:\.\/|\/app\/)(scripts\/\S+)$/,
+      /^COPY(?:\s+--\S+)*\s+(.+?)\s+((?:\.\/|\/app\/)scripts\/\S+)$/,
     );
-    if (copy?.[1] && copy[2]) {
-      runtimeCopies.set(copy[1], `/app/${copy[2]}`);
+    if (!copy?.[1] || !copy[2]) continue;
+
+    const sources = copy[1]
+      .split(/\s+/)
+      .filter((source) => source.startsWith("scripts/"));
+    const destination = copy[2].replace(/^\.\//, "/app/");
+    for (const source of sources) {
+      const target = destination.endsWith("/")
+        ? `${destination}${source.slice(source.lastIndexOf("/") + 1)}`
+        : destination;
+      runtimeCopies.set(source, target);
     }
   }
 
@@ -634,6 +643,16 @@ describe("production deployment artifacts", () => {
     expect(bundle).toMatch(
       /^FROM production-dependencies AS runtime-bundle$/m,
     );
+    expect(bundle).toContain(
+      "COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs /app/scripts/docker/",
+    );
+    expect(bundle).toContain(
+      "COPY --chmod=0444 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/",
+    );
+    expect(bundle).toContain(
+      "COPY --chmod=0555 scripts/backup/backup.sh scripts/backup/restore.sh scripts/backup/restore-input-guard.mjs /app/scripts/backup/",
+    );
+    expect(bundle.match(/^COPY --chmod=\S+ scripts\//gm)).toHaveLength(3);
     for (const requiredPath of [
       "/app/apps/api/dist",
       "/app/apps/web/dist",
@@ -642,16 +661,6 @@ describe("production deployment artifacts", () => {
       "/app/packages/settlement/dist",
       "/app/prisma-schema-engine",
       "/app/deployment-id",
-      "/app/scripts/docker/entrypoint.sh",
-      "/app/scripts/docker/healthcheck.mjs",
-      "/app/scripts/database/production-preflight.mjs",
-      "/app/scripts/database/create-database.mjs",
-      "/app/scripts/database/production-backup-target.mjs",
-      "/app/scripts/database/assert-production-avatar-files.mjs",
-      "/app/scripts/database/production-migration-evidence.mjs",
-      "/app/scripts/backup/backup.sh",
-      "/app/scripts/backup/restore.sh",
-      "/app/scripts/backup/restore-input-guard.mjs",
     ]) {
       expect(bundle, requiredPath).toContain(requiredPath);
     }
@@ -687,7 +696,7 @@ describe("production deployment artifacts", () => {
       "LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID",
     );
     expect(dockerfile).toContain(
-      "COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs /app/scripts/database/assert-production-avatar-files.mjs",
+      "scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/",
     );
     expect(dockerfile).toContain("/app/deployment-id /app/deployment-id");
     expect(dockerfile).toMatch(/^USER node$/m);

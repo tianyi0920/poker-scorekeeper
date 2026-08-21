@@ -54,16 +54,9 @@ COPY --from=build --chmod=0555 /app/prisma-schema-engine /app/prisma-schema-engi
 COPY --from=build /app/apps/api/prisma /app/apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts /app/apps/api/prisma.config.ts
 COPY --from=build --chmod=0444 /app/deployment-id /app/deployment-id
-COPY --chmod=0555 scripts/docker/entrypoint.sh /app/scripts/docker/entrypoint.sh
-COPY --chmod=0444 scripts/docker/healthcheck.mjs /app/scripts/docker/healthcheck.mjs
-COPY --chmod=0444 scripts/database/production-preflight.mjs /app/scripts/database/production-preflight.mjs
-COPY --chmod=0444 scripts/database/create-database.mjs /app/scripts/database/create-database.mjs
-COPY --chmod=0444 scripts/database/production-backup-target.mjs /app/scripts/database/production-backup-target.mjs
-COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs /app/scripts/database/assert-production-avatar-files.mjs
-COPY --chmod=0444 scripts/database/production-migration-evidence.mjs /app/scripts/database/production-migration-evidence.mjs
-COPY --chmod=0555 scripts/backup/backup.sh /app/scripts/backup/backup.sh
-COPY --chmod=0555 scripts/backup/restore.sh /app/scripts/backup/restore.sh
-COPY --chmod=0444 scripts/backup/restore-input-guard.mjs /app/scripts/backup/restore-input-guard.mjs
+COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs /app/scripts/docker/
+COPY --chmod=0444 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/
+COPY --chmod=0555 scripts/backup/backup.sh scripts/backup/restore.sh scripts/backup/restore-input-guard.mjs /app/scripts/backup/
 
 FROM node:24-bookworm-slim AS runtime
 ARG DEPLOYMENT_ID
