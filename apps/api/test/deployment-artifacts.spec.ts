@@ -24,7 +24,10 @@ interface ComposeService {
 }
 
 async function readRepositoryFile(path: string): Promise<string> {
-  return readFile(resolve(repositoryRoot, path), "utf8");
+  return (await readFile(resolve(repositoryRoot, path), "utf8")).replace(
+    /\r\n/g,
+    "\n",
+  );
 }
 
 function validateActiveGuideMigrationCommands(guides: string[]): void {
