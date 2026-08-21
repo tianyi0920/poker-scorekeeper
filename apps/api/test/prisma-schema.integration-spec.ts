@@ -2,6 +2,7 @@ import { PrismaMariaDb } from '@prisma/adapter-mariadb';
 import { randomUUID } from 'node:crypto';
 import { PrismaClient } from '../src/generated/prisma/client.js';
 import { requireAuthorizedTestDatabase } from './support/authorized-test-database.js';
+import { normalizeInformationSchemaRows } from './support/information-schema.js';
 
 const databaseUrl = requireAuthorizedTestDatabase();
 const database = databaseUrl.pathname.slice(1);
@@ -23,10 +24,14 @@ afterAll(async () => {
 
 describe('Prisma financial schema', () => {
   it('creates all twelve business tables and one settings row', async () => {
-    const tables = await prisma.$queryRaw<Array<{ table_name: string }>>`
+    const rawTables = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       SELECT table_name FROM information_schema.tables
       WHERE table_schema = DATABASE() AND table_name <> '_prisma_migrations'
     `;
+    const tables = normalizeInformationSchemaRows<{ table_name: string }>(
+      rawTables,
+      ['table_name']
+    );
 
     expect(tables.map((row) => row.table_name).sort()).toEqual([
       'active_player_locks',
@@ -56,21 +61,27 @@ describe('Prisma financial schema', () => {
   });
 
   it('uses BIGINT for all eighteen money columns and no floating numeric type', async () => {
-    const columns = await prisma.$queryRaw<
-      Array<{ table_name: string; column_name: string; data_type: string }>
-    >`
+    const rawColumns = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       SELECT table_name, column_name, data_type
       FROM information_schema.columns
       WHERE table_schema = DATABASE() AND data_type = 'bigint'
     `;
-    const forbidden = await prisma.$queryRaw<
-      Array<{ table_name: string; column_name: string; data_type: string }>
-    >`
+    const columns = normalizeInformationSchemaRows<{
+      table_name: string;
+      column_name: string;
+      data_type: string;
+    }>(rawColumns, ['table_name', 'column_name', 'data_type']);
+    const rawForbidden = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       SELECT table_name, column_name, data_type
       FROM information_schema.columns
       WHERE table_schema = DATABASE()
         AND data_type IN ('float', 'double', 'decimal', 'numeric')
     `;
+    const forbidden = normalizeInformationSchemaRows<{
+      table_name: string;
+      column_name: string;
+      data_type: string;
+    }>(rawForbidden, ['table_name', 'column_name', 'data_type']);
 
     expect(
       columns
@@ -100,20 +111,25 @@ describe('Prisma financial schema', () => {
   });
 
   it('creates every required unique and lookup index', async () => {
-    const rows = await prisma.$queryRaw<
-      Array<{
-        table_name: string;
-        index_name: string;
-        non_unique: bigint;
-        seq_in_index: bigint;
-        column_name: string;
-      }>
-    >`
+    const rawRows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       SELECT table_name, index_name, non_unique, seq_in_index, column_name
       FROM information_schema.statistics
       WHERE table_schema = DATABASE() AND index_name <> 'PRIMARY'
       ORDER BY table_name, index_name, seq_in_index
     `;
+    const rows = normalizeInformationSchemaRows<{
+      table_name: string;
+      index_name: string;
+      non_unique: bigint;
+      seq_in_index: bigint;
+      column_name: string;
+    }>(rawRows, [
+      'table_name',
+      'index_name',
+      'non_unique',
+      'seq_in_index',
+      'column_name'
+    ]);
     const grouped = new Map<string, string[]>();
     for (const row of rows) {
       const key = `${row.table_name}|${Number(row.non_unique)}`;
@@ -147,13 +163,7 @@ describe('Prisma financial schema', () => {
   });
 
   it('stores idempotency keys with binary collation and event versions as required integers', async () => {
-    const columns = await prisma.$queryRaw<Array<{
-      column_name: string;
-      data_type: string;
-      is_nullable: string;
-      character_maximum_length: bigint | null;
-      collation_name: string | null;
-    }>>`
+    const rawColumns = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       SELECT column_name, data_type, is_nullable, character_maximum_length, collation_name
       FROM information_schema.columns
       WHERE table_schema = DATABASE()
@@ -161,13 +171,29 @@ describe('Prisma financial schema', () => {
         AND column_name IN ('idempotency_key', 'game_version')
       ORDER BY column_name
     `;
+    const columns = normalizeInformationSchemaRows<{
+      column_name: string;
+      data_type: string;
+      is_nullable: string;
+      character_maximum_length: bigint | null;
+      collation_name: string | null;
+    }>(rawColumns, [
+      'column_name',
+      'data_type',
+      'is_nullable',
+      'character_maximum_length',
+      'collation_name'
+    ]);
 
-    expect(columns.map((column) => ({
-      ...column,
-      character_maximum_length: column.character_maximum_length === null
-        ? null
-        : Number(column.character_maximum_length)
-    }))).toEqual([
+    expect(
+      columns.map((column) => ({
+        ...column,
+        character_maximum_length:
+          column.character_maximum_length === null
+            ? null
+            : Number(column.character_maximum_length)
+      }))
+    ).toEqual([
       {
         column_name: 'game_version',
         data_type: 'int',
@@ -239,13 +265,15 @@ describe('Prisma financial schema', () => {
   });
 
   it('declares restrictive foreign keys for permanent financial history', async () => {
-    const rows = await prisma.$queryRaw<
-      Array<{ constraint_name: string; delete_rule: string }>
-    >`
+    const rawRows = await prisma.$queryRaw<Array<Record<string, unknown>>>`
       SELECT constraint_name, delete_rule
       FROM information_schema.referential_constraints
       WHERE constraint_schema = DATABASE()
     `;
+    const rows = normalizeInformationSchemaRows<{
+      constraint_name: string;
+      delete_rule: string;
+    }>(rawRows, ['constraint_name', 'delete_rule']);
     const deleteRules = rows.map(
       (row) => `${row.constraint_name}:${row.delete_rule}`
     );
