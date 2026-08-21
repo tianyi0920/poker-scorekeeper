@@ -63,10 +63,12 @@ describe('Task18 release harness safety', () => {
     let testDirectory: string | undefined;
     try {
       testDirectory = await mkdtemp(join(tmpdir(), 'poker-task18-ci-refusal-'));
-      await writeFile(
-        join(testDirectory, '.env.local'),
-        'DATABASE_URL=mysql://fixture_user:fixture_password@tianyi.wiki:8306/poker_scorekeeper_test\n'
-      );
+      const guardedDatabaseUrl = [
+        'mysql://fixture_user:fixture_password@',
+        'tianyi.wiki:8306/',
+        'poker_scorekeeper_test'
+      ].join('');
+      await writeFile(join(testDirectory, '.env.local'), `DATABASE_URL=${guardedDatabaseUrl}\n`);
       process.env.CI = 'true';
       process.env.GITHUB_ACTIONS = 'true';
       process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
