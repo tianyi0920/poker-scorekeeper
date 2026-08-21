@@ -631,6 +631,26 @@ describe("production deployment artifacts", () => {
     expect(dockerfile).not.toMatch(/FROM .*:latest/);
   });
 
+  it("detects OpenSSL before installing or generating Prisma artifacts", async () => {
+    // Break caught: Prisma silently selects an OpenSSL 1.1 engine in a Bookworm/OpenSSL 3 image.
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const workspace = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS workspace"),
+      dockerfile.indexOf("FROM workspace AS build"),
+    );
+    const productionDependencies = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS production-dependencies"),
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+
+    for (const stage of [workspace, productionDependencies]) {
+      expect(stage).toMatch(/apt-get install[^\n]*\bopenssl\b/);
+      expect(stage.indexOf("apt-get install")).toBeLessThan(
+        stage.indexOf("pnpm install"),
+      );
+    }
+  });
+
   it("starts by deploying migrations and then replacing the shell with the API process", async () => {
     // Break caught: migrations are skipped or PID 1 does not receive termination signals.
     const entrypoint = await readRepositoryFile("scripts/docker/entrypoint.sh");
