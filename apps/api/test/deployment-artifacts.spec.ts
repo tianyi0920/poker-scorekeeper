@@ -651,6 +651,39 @@ describe("production deployment artifacts", () => {
     }
   });
 
+  it("bundles a fixed Prisma schema engine before switching to the non-root runtime user", async () => {
+    // Break caught: migrate deploy tries to download into root-owned node_modules and the app exits before health checks pass.
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const build = dockerfile.slice(
+      dockerfile.indexOf("FROM workspace AS build"),
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS production-dependencies"),
+    );
+    const runtime = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+
+    expect(build).toContain(
+      "install -m 0555 \"$engine_path\" /app/prisma-schema-engine",
+    );
+    expect(runtime).toContain(
+      "PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine",
+    );
+    expect(runtime).toContain(
+      "COPY --from=build --chmod=0555 /app/prisma-schema-engine ./prisma-schema-engine",
+    );
+    expect(runtime.indexOf("./prisma-schema-engine")).toBeLessThan(
+      runtime.indexOf("USER node"),
+    );
+    const finalUserPreflight = runtime.slice(
+      runtime.indexOf("USER node"),
+      runtime.indexOf("EXPOSE"),
+    );
+    expect(finalUserPreflight).toContain("test -x /app/prisma-schema-engine");
+    expect(finalUserPreflight).toContain(
+      "test -x /app/apps/api/node_modules/.bin/prisma",
+    );
+  });
+
   it("starts by deploying migrations and then replacing the shell with the API process", async () => {
     // Break caught: migrations are skipped or PID 1 does not receive termination signals.
     const entrypoint = await readRepositoryFile("scripts/docker/entrypoint.sh");
@@ -687,8 +720,10 @@ describe("production deployment artifacts", () => {
       /\.test\.ts|run-with-test-env|seed-release-drill|assert-restored/,
     );
     // Break caught: root verifies only mode bits while the final node user cannot execute Prisma.
-    expect(runtime).toMatch(
-      /USER node\s+RUN test -x \/app\/apps\/api\/node_modules\/\.bin\/prisma\s+EXPOSE/,
+    expect(
+      runtime.slice(runtime.indexOf("USER node"), runtime.indexOf("EXPOSE")),
+    ).toContain(
+      "test -x /app/apps/api/node_modules/.bin/prisma",
     );
     expect(entrypoint).toContain(
       "/app/apps/api/node_modules/.bin/prisma migrate deploy",

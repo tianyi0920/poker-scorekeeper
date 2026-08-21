@@ -26,6 +26,9 @@ RUN node scripts/build/create-deployment-id.mjs "$DEPLOYMENT_ID"
 # Prisma Client generation reads this variable but does not connect during the build.
 ENV DATABASE_URL=mysql://build:build@127.0.0.1:3306/poker_scorekeeper_build
 RUN pnpm -r build
+RUN engine_path="$(find /app/node_modules/.pnpm -path '*/@prisma/engines/schema-engine-*' -type f -print -quit)" \
+    && test -n "$engine_path" \
+    && install -m 0555 "$engine_path" /app/prisma-schema-engine
 
 FROM node:24-bookworm-slim AS production-dependencies
 ENV PNPM_HOME=/pnpm
@@ -48,7 +51,8 @@ LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID
 ENV NODE_ENV=production \
     PORT=3000 \
     WEB_DIST_ROOT=/app/apps/web/dist \
-    AVATAR_ROOT=/data/avatars
+    AVATAR_ROOT=/data/avatars \
+    PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine
 WORKDIR /app
 
 RUN apt-get update \
@@ -71,6 +75,7 @@ COPY --from=build /app/apps/api/dist ./apps/api/dist
 COPY --from=build /app/apps/web/dist ./apps/web/dist
 COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
 COPY --from=build /app/packages/settlement/dist ./packages/settlement/dist
+COPY --from=build --chmod=0555 /app/prisma-schema-engine ./prisma-schema-engine
 COPY --from=build /app/apps/api/prisma ./apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
 COPY --from=build --chmod=0444 /app/deployment-id ./deployment-id
@@ -86,7 +91,8 @@ COPY --chmod=0555 scripts/backup/restore.sh ./scripts/backup/restore.sh
 COPY --chmod=0444 scripts/backup/restore-input-guard.mjs ./scripts/backup/restore-input-guard.mjs
 
 USER node
-RUN test -x /app/apps/api/node_modules/.bin/prisma
+RUN test -x /app/prisma-schema-engine \
+    && test -x /app/apps/api/node_modules/.bin/prisma
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "scripts/docker/healthcheck.mjs"]
