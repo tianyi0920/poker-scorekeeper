@@ -12,6 +12,7 @@
     "test:e2e": "pnpm build && playwright test",
     "verify:release": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/verify-release.ps1",
     "lint": "pnpm -r lint",
+    "pretypecheck": "pnpm --filter @poker/contracts build && pnpm --filter @poker/settlement build",
     "typecheck": "pnpm -r typecheck",
     "dev:api": "pnpm --filter @poker/api dev",
     "dev:web": "pnpm --filter @poker/web dev"
