@@ -80,10 +80,12 @@ services:
       retries: 30
     networks:
       - isolated_test
+      - host_test
 
 networks:
   isolated_test:
     internal: true
+  host_test: {}
 
 volumes:
   mysql_test_data:

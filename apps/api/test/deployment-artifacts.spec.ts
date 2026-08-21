@@ -21,6 +21,7 @@ interface ComposeService {
   environment?: Record<string, string>;
   entrypoint?: unknown;
   command?: unknown;
+  networks?: string[];
 }
 
 async function readRepositoryFile(path: string): Promise<string> {
@@ -843,6 +844,7 @@ describe("production deployment artifacts", () => {
       await readRepositoryFile("docker-compose.test.yml"),
     ) as {
       services: { app: ComposeService; mysql: ComposeService };
+      networks: Record<string, { internal?: boolean } | null>;
     };
     expect(Object.keys(compose.services).sort()).toEqual(["app", "mysql"]);
     expect(compose.services.mysql.ports).toBeUndefined();
@@ -856,6 +858,13 @@ describe("production deployment artifacts", () => {
     expect(compose.services.mysql.environment?.MYSQL_DATABASE).toBe(
       "poker_scorekeeper_test",
     );
+    expect(compose.services.mysql.networks).toEqual(["isolated_test"]);
+    expect(compose.services.app.networks).toEqual([
+      "isolated_test",
+      "host_test",
+    ]);
+    expect(compose.networks.isolated_test?.internal).toBe(true);
+    expect(compose.networks.host_test?.internal).not.toBe(true);
     expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe(
       "${DEPLOYMENT_ID:-test-build-20260819}",
     );
