@@ -319,6 +319,7 @@ function validateExtremeSpaceRunbook(content: string): void {
     "只选择一种正式启动方式",
     "不要再执行 Compose 的 `up -d`",
     "升级单独创建的容器时",
+    "回滚单独创建的容器时",
     "HTTPS",
     "WebSocket",
     "### 3.1 立即创建并验证首次备份",
@@ -1062,6 +1063,7 @@ describe("production deployment artifacts", () => {
       "只选择一种正式启动方式",
       "不要再执行 Compose 的 `up -d`",
       "升级单独创建的容器时",
+      "回滚单独创建的容器时",
     ]) {
       expect(runbook).toContain(required);
     }

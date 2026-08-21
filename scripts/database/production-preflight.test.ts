@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import {
   assertProductionEnvironment,
   assertProductionTarget,
+  executeProductionPreflightCli,
   runProductionPreflight
 } from './production-preflight.mjs';
 import {
@@ -126,7 +127,7 @@ function fakeConnector(options: {
 }
 
 describe('production target validation', () => {
-  it('rejects every image-provided placeholder before contacting production', () => {
+  it('rejects every image-provided placeholder before contacting production', async () => {
     // Break caught: an operator can start with a long but public example secret from image metadata.
     const configured = {
       PUBLIC_ORIGIN: 'https://poker.example.com',
@@ -162,14 +163,30 @@ describe('production target validation', () => {
       MYSQL_PASSWORD: 'backup-password'
     })).not.toThrow();
 
-    const script = resolve(import.meta.dirname, 'production-preflight.mjs');
-    const result = spawnSync(process.execPath, [script], {
-      env: { ...process.env, NODE_ENV: 'production', ...configured },
-      encoding: 'utf8'
+    const preflight = vi.fn();
+    await expect(executeProductionPreflightCli(configured, preflight)).resolves.toEqual({
+      exitCode: 1,
+      stdout: '',
+      stderr: 'PRODUCTION_CONFIGURATION_PLACEHOLDER\n'
     });
-    expect(result.status).toBe(1);
-    expect(result.stdout).toBe('');
-    expect(result.stderr.trim()).toBe('PRODUCTION_CONFIGURATION_PLACEHOLDER');
+    expect(preflight).not.toHaveBeenCalled();
+
+    const validEnvironment = {
+      PUBLIC_ORIGIN: 'https://poker.example.net',
+      DATABASE_URL: productionUrl,
+      SESSION_SECRET: 's'.repeat(64),
+      CSRF_SECRET: 'c'.repeat(64),
+      BOOTSTRAP_ADMIN_NICKNAME: '管理员',
+      BOOTSTRAP_ADMIN_PASSWORD: 'Unique-Admin-Password-123!',
+      MYSQL_PASSWORD: 'backup-password'
+    };
+    const validPreflight = vi.fn().mockResolvedValue({ databaseExists: true });
+    await expect(executeProductionPreflightCli(validEnvironment, validPreflight)).resolves.toEqual({
+      exitCode: 0,
+      stdout: '{"databaseExists":true}\n',
+      stderr: ''
+    });
+    expect(validPreflight).toHaveBeenCalledWith(productionUrl);
   });
 
   it.each([

@@ -154,7 +154,9 @@ curl --fail http://127.0.0.1:3000/api/health/deployment
 POKER_IMAGE_VERSION=1.0.1 # previous fixed version
 ```
 
-然后再次拉取并启动该固定版本：
+回滚单独创建的容器时，先停止并删除失败的应用容器，但保留原环境值和三个宿主机持久目录；在向导中选择 `1.0.1` 固定版本，重新挂载同一组目录并保持默认入口和命令为空，再启动唯一的正式容器。该路径不要执行 Compose 的 `up -d`，并在启动后重新检查日志及三个健康地址。
+
+若原本选择 Compose，则再次拉取并启动该固定版本：
 
 ```sh
 docker compose --env-file .env.production -f docker-compose.registry.yml pull

@@ -187,16 +187,33 @@ function publicErrorCode(error) {
   return isControlledError(error) ? error.message : 'PRODUCTION_PREFLIGHT_FAILED';
 }
 
+export async function executeProductionPreflightCli(
+  environment,
+  preflight = runProductionPreflight
+) {
+  try {
+    assertProductionEnvironment(environment);
+    const report = await preflight(environment.DATABASE_URL ?? '');
+    return {
+      exitCode: 0,
+      stdout: `${JSON.stringify(report)}\n`,
+      stderr: ''
+    };
+  } catch (error) {
+    return {
+      exitCode: 1,
+      stdout: '',
+      stderr: `${publicErrorCode(error)}\n`
+    };
+  }
+}
+
 if (
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  try {
-    assertProductionEnvironment(process.env);
-    const report = await runProductionPreflight(process.env.DATABASE_URL ?? '');
-    process.stdout.write(`${JSON.stringify(report)}\n`);
-  } catch (error) {
-    process.stderr.write(`${publicErrorCode(error)}\n`);
-    process.exitCode = 1;
-  }
+  const result = await executeProductionPreflightCli(process.env);
+  if (result.stdout !== '') process.stdout.write(result.stdout);
+  if (result.stderr !== '') process.stderr.write(result.stderr);
+  process.exitCode = result.exitCode;
 }
