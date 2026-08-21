@@ -665,10 +665,12 @@ describe("production deployment artifacts", () => {
       runtime.indexOf("COPY --from=production-dependencies"),
     );
 
-    expect(dataPreparation).toContain(
+    const mkdirIndex = dataPreparation.indexOf(
       "mkdir -p /data/avatars /data/backups /data/restore",
     );
-    expect(dataPreparation).toContain("chown -R node:node /data");
+    const chownIndex = dataPreparation.indexOf("chown -R node:node /data");
+    expect(mkdirIndex).toBeGreaterThanOrEqual(0);
+    expect(chownIndex).toBeGreaterThan(mkdirIndex);
     expect(runtime.indexOf("chown -R node:node /data")).toBeLessThan(
       runtime.indexOf("USER node"),
     );
