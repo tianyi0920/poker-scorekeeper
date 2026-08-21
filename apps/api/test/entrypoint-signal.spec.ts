@@ -102,7 +102,7 @@ exit 23
       const bashWithKillObserver = join(root, 'bash-with-kill-observer.sh');
       const observedKills = join(root, 'observed-kills');
       await mkdir(bin);
-      await executable(bashWithKillObserver, `#!/bin/sh
+      await executable(bashWithKillObserver, `#!${shellPath(bash)}
 kill() {
   printf '%s\\n' "$*" >> "$KILL_OBSERVER_FILE"
   builtin kill "$@"
@@ -111,6 +111,9 @@ staged_entrypoint="$1"
 shift
 . "$staged_entrypoint"
 `);
+      expect(await readFile(bashWithKillObserver, 'utf8')).toMatch(
+        new RegExp(`^#!${shellPath(bash).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`)
+      );
       await stageEntrypoint(`#!/bin/sh
 printf '%s\n' "$$" > "$MIGRATION_PID_FILE"
 printf '%s\n' ready > "$MIGRATION_READY_FILE"
