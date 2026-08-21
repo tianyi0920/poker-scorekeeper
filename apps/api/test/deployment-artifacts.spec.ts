@@ -315,6 +315,10 @@ function validateExtremeSpaceRunbook(content: string): void {
     "curl --fail http://127.0.0.1:3000/api/health/live",
     "curl --fail http://127.0.0.1:3000/api/health/ready",
     "curl --fail http://127.0.0.1:3000/api/health/deployment",
+    "点击“应用”前，必须先完成第 3.1 节",
+    "只选择一种正式启动方式",
+    "不要再执行 Compose 的 `up -d`",
+    "升级单独创建的容器时",
     "HTTPS",
     "WebSocket",
     "### 3.1 立即创建并验证首次备份",
@@ -1054,6 +1058,10 @@ describe("production deployment artifacts", () => {
       "环境变量会自动列出",
       "三个数据卷会自动列出",
       "匿名卷",
+      "点击“应用”前，必须先完成第 3.1 节",
+      "只选择一种正式启动方式",
+      "不要再执行 Compose 的 `up -d`",
+      "升级单独创建的容器时",
     ]) {
       expect(runbook).toContain(required);
     }

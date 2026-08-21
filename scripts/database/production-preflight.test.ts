@@ -151,6 +151,25 @@ describe('production target validation', () => {
         [key]: configured[key as keyof typeof configured]
       })).toThrow('PRODUCTION_CONFIGURATION_PLACEHOLDER');
     }
+
+    expect(() => assertProductionEnvironment({
+      PUBLIC_ORIGIN: 'https://poker.example.net',
+      DATABASE_URL: productionUrl,
+      SESSION_SECRET: 's'.repeat(64),
+      CSRF_SECRET: 'c'.repeat(64),
+      BOOTSTRAP_ADMIN_NICKNAME: '管理员',
+      BOOTSTRAP_ADMIN_PASSWORD: 'Unique-Admin-Password-123!',
+      MYSQL_PASSWORD: 'backup-password'
+    })).not.toThrow();
+
+    const script = resolve(import.meta.dirname, 'production-preflight.mjs');
+    const result = spawnSync(process.execPath, [script], {
+      env: { ...process.env, NODE_ENV: 'production', ...configured },
+      encoding: 'utf8'
+    });
+    expect(result.status).toBe(1);
+    expect(result.stdout).toBe('');
+    expect(result.stderr.trim()).toBe('PRODUCTION_CONFIGURATION_PLACEHOLDER');
   });
 
   it.each([
