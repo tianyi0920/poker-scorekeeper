@@ -11,6 +11,80 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
 describe('Task18 release harness safety', () => {
+  it('uses the guarded loopback CI database without reading .env.local', async () => {
+    // Break caught: GitHub Actions injects a validated DATABASE_URL but has no local-only env file.
+    const previous = {
+      ci: process.env.CI,
+      githubActions: process.env.GITHUB_ACTIONS,
+      databaseUrl: process.env.DATABASE_URL
+    };
+    const previousDirectory = process.cwd();
+    let testDirectory: string | undefined;
+    try {
+      testDirectory = await mkdtemp(join(tmpdir(), 'poker-task18-ci-environment-'));
+      process.env.CI = 'true';
+      process.env.GITHUB_ACTIONS = 'true';
+      process.env.DATABASE_URL = [
+        'mysql://poker_ci:poker_ci@',
+        '127.0.0.1:3306/',
+        'poker_scorekeeper_ci_test'
+      ].join('');
+      process.chdir(testDirectory);
+
+      const environment = await readTestDatabaseEnvironment();
+
+      expect(environment.url).toMatchObject({
+        protocol: 'mysql:',
+        hostname: '127.0.0.1',
+        port: '3306',
+        pathname: '/poker_scorekeeper_ci_test'
+      });
+      expect(environment.values).toEqual({ DATABASE_URL: process.env.DATABASE_URL });
+    } finally {
+      process.chdir(previousDirectory);
+      if (previous.ci === undefined) delete process.env.CI;
+      else process.env.CI = previous.ci;
+      if (previous.githubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = previous.githubActions;
+      if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous.databaseUrl;
+      if (testDirectory !== undefined) await rm(testDirectory, { recursive: true, force: true });
+    }
+  });
+
+  it('fails closed instead of falling back to .env.local when CI markers are present', async () => {
+    // Break caught: a poisoned CI target must never be replaced by a developer's remote test file.
+    const previous = {
+      ci: process.env.CI,
+      githubActions: process.env.GITHUB_ACTIONS,
+      databaseUrl: process.env.DATABASE_URL
+    };
+    const previousDirectory = process.cwd();
+    let testDirectory: string | undefined;
+    try {
+      testDirectory = await mkdtemp(join(tmpdir(), 'poker-task18-ci-refusal-'));
+      await writeFile(
+        join(testDirectory, '.env.local'),
+        'DATABASE_URL=mysql://fixture_user:fixture_password@tianyi.wiki:8306/poker_scorekeeper_test\n'
+      );
+      process.env.CI = 'true';
+      process.env.GITHUB_ACTIONS = 'true';
+      process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
+      process.chdir(testDirectory);
+
+      await expect(readTestDatabaseEnvironment()).rejects.toThrow('CI_TEST_DATABASE_TARGET_REFUSED');
+    } finally {
+      process.chdir(previousDirectory);
+      if (previous.ci === undefined) delete process.env.CI;
+      else process.env.CI = previous.ci;
+      if (previous.githubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = previous.githubActions;
+      if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous.databaseUrl;
+      if (testDirectory !== undefined) await rm(testDirectory, { recursive: true, force: true });
+    }
+  });
+
   it('replaces a poisoned parent DATABASE_URL with the guarded .env.local test target', async () => {
     // Break caught: Playwright's API process inherits an unrelated parent DATABASE_URL.
     const previous = process.env.DATABASE_URL;

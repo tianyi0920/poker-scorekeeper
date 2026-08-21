@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
+// @ts-expect-error The CI guard is intentionally a small, plain ESM boundary.
+import { validateCiTestEnvironment } from '../../../scripts/database/ci-test-environment.mjs';
 
 const requireFromApi = createRequire(resolve('apps/api/package.json'));
 const { parse } = requireFromApi('dotenv') as { parse(source: string): Record<string, string> };
@@ -14,6 +16,12 @@ export interface TestDatabaseEnvironment {
 }
 
 export async function readTestDatabaseEnvironment(): Promise<TestDatabaseEnvironment> {
+  if (process.env.GITHUB_ACTIONS !== undefined) {
+    const databaseUrl = validateCiTestEnvironment(process.env) as string;
+    process.env.DATABASE_URL = databaseUrl;
+    return { values: { DATABASE_URL: databaseUrl }, url: new URL(databaseUrl) };
+  }
+
   const values = parse(await readFile('.env.local', 'utf8'));
   if (!values.DATABASE_URL) throw new Error('DATABASE_URL is missing from ignored .env.local');
   const url = new URL(values.DATABASE_URL);
