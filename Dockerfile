@@ -45,17 +45,7 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/settlement/package.json packages/settlement/package.json
 RUN pnpm install --prod --frozen-lockfile
 
-FROM scratch AS runtime-bundle
-COPY --from=production-dependencies /app/node_modules /app/node_modules
-COPY --from=production-dependencies /app/apps/api/node_modules /app/apps/api/node_modules
-COPY --from=production-dependencies /app/apps/web/node_modules /app/apps/web/node_modules
-COPY --from=production-dependencies /app/packages/contracts/node_modules /app/packages/contracts/node_modules
-COPY --from=production-dependencies /app/packages/settlement/node_modules /app/packages/settlement/node_modules
-COPY --from=production-dependencies /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/
-COPY --from=production-dependencies /app/apps/api/package.json /app/apps/api/package.json
-COPY --from=production-dependencies /app/apps/web/package.json /app/apps/web/package.json
-COPY --from=production-dependencies /app/packages/contracts/package.json /app/packages/contracts/package.json
-COPY --from=production-dependencies /app/packages/settlement/package.json /app/packages/settlement/package.json
+FROM production-dependencies AS runtime-bundle
 COPY --from=build /app/apps/api/dist /app/apps/api/dist
 COPY --from=build /app/apps/web/dist /app/apps/web/dist
 COPY --from=build /app/packages/contracts/dist /app/packages/contracts/dist
@@ -100,13 +90,13 @@ ENV NODE_ENV=production \
     BACKUP_DIR=/data/backups
 WORKDIR /app
 
-RUN apt-get update \
+RUN --mount=type=bind,from=runtime-bundle,source=/app,target=/mnt/runtime-bundle \
+    apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates default-mysql-client gzip tar tini \
     && rm -rf /var/lib/apt/lists/* \
+    && cp -a /mnt/runtime-bundle/. /app/ \
     && mkdir -p /data/avatars /data/backups /data/restore \
     && chown -R node:node /data
-
-COPY --from=runtime-bundle /app /app
 
 USER node
 RUN set -eux; \
