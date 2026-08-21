@@ -108,7 +108,7 @@ export function configureApplication(
         scriptSrc: ["'self'"],
         styleSrc: ["'self'"],
         workerSrc: ["'self'", 'blob:'],
-        upgradeInsecureRequests: environment === 'production' ? [] : null
+        upgradeInsecureRequests: null
       }
     },
     crossOriginEmbedderPolicy: false,

@@ -578,14 +578,14 @@ function validateExtremeSpaceRunbook(content: string): void {
   );
   if (
     !upgradeSection.includes("第 3.1 节的备份验证块") ||
-    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.4")
+    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.5")
   ) {
     throw new Error(
       "upgrade instructions do not require a fresh verified backup and fixed version",
     );
   }
   if (
-    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.4") >
+    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.5") >
       upgradeSection.indexOf(
         "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
       ) ||
@@ -1082,7 +1082,7 @@ describe("production deployment artifacts", () => {
     const environment = await readRepositoryFile(".env.extremespace.example");
     const values = validateExtremeSpaceEnvironmentTemplate(environment);
 
-    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.4");
+    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.5");
     expect(environment).toContain("PUBLIC_ORIGIN=https://poker.example.com");
     expect(environment).toContain(
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
@@ -1118,7 +1118,7 @@ describe("production deployment artifacts", () => {
 
     for (const required of [
       "github.com/tianyi0920/poker-scorekeeper",
-      "docker.io/tianyi920/poker-scorekeeper:1.0.4",
+      "docker.io/tianyi920/poker-scorekeeper:1.0.5",
       "docker-compose.registry.yml",
       ".env.extremespace.example",
       "cp .env.extremespace.example .env.production",
@@ -1246,7 +1246,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.4",
+          "POKER_IMAGE_VERSION=1.0.5",
           'POKER_IMAGE_VERSION="latest"',
         ),
       ),
@@ -1254,7 +1254,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.4",
+          "POKER_IMAGE_VERSION=1.0.5",
           "export POKER_IMAGE_VERSION='latest'",
         ),
       ),
@@ -1331,8 +1331,8 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.4/,
-          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.4",
+          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.5/,
+          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.5",
         ),
       ),
     ).toThrow(/upgrade command order/);

@@ -153,6 +153,15 @@ describe('production HTTP security', () => {
     expect(response.headers['strict-transport-security']).toContain('max-age=');
   });
 
+  it('keeps the production PWA shell loadable over direct HTTP', async () => {
+    // Break caught: CSP upgrades relative JS/CSS to HTTPS even though the app port serves HTTP only.
+    const response = await request(app.getHttpServer()).get('/').expect(200);
+
+    expect(response.headers['content-security-policy']).not.toContain(
+      'upgrade-insecure-requests'
+    );
+  });
+
   it('propagates a validated request ID to success and stable error responses', async () => {
     // Break caught: correlation IDs disappear between request, header, and error body.
     const success = await request(app.getHttpServer())
