@@ -241,6 +241,8 @@ describe("GitHub Actions Docker publication workflows", () => {
       "Install browser engines",
       "Run the 23-test browser suite",
       "Run the complete isolated container release drill",
+      "Set up the publication-style Docker builder",
+      "Build and smoke the publication-style candidate",
       "Validate registry Compose and repository hygiene",
     ];
     let position = -1;
@@ -267,6 +269,40 @@ describe("GitHub Actions Docker publication workflows", () => {
       "pwsh -NoProfile -File scripts/verify-release.ps1 -ContainerOnly",
     ]);
     expect(containerDrill.run).not.toMatch(/run-with-test-env|\.env\.local/);
+    const publicationBuilder = requiredStep(
+      workflow,
+      "verify",
+      "Set up the publication-style Docker builder",
+    );
+    expect(publicationBuilder.uses).toBe(
+      "docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5",
+    );
+    const publicationCandidate = executableLines(
+      requiredRunStep(
+        workflow,
+        "verify",
+        "Build and smoke the publication-style candidate",
+      ),
+    );
+    expect(publicationCandidate).toEqual(
+      expect.arrayContaining([
+        "docker buildx build \\",
+        "--load \\",
+        "--platform linux/amd64 \\",
+        '--build-arg "DEPLOYMENT_ID=$EXPECTED_COMMIT" \\',
+        "bash scripts/ci/verify-candidate-image.sh",
+      ]),
+    );
+    expect(
+      publicationCandidate.some((line) =>
+        /^POKER_TEST_IMAGE="poker-scorekeeper:candidate-/.test(line),
+      ),
+    ).toBe(true);
+    expect(
+      publicationCandidate.some((line) =>
+        /^COMPOSE_PROJECT_NAME="poker-candidate-/.test(line),
+      ),
+    ).toBe(true);
     const composeLines = executableLines(
       requiredRunStep(workflow, "verify", "Validate registry Compose and repository hygiene"),
     );

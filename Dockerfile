@@ -109,18 +109,19 @@ RUN apt-get update \
 COPY --from=runtime-bundle /app /app
 
 USER node
-RUN test -x /app/prisma-schema-engine \
-    && test -x /app/apps/api/node_modules/.bin/prisma \
-    && test -x /app/scripts/docker/entrypoint.sh \
-    && test -r /app/scripts/docker/healthcheck.mjs \
-    && test -r /app/scripts/database/production-preflight.mjs \
-    && test -r /app/scripts/database/create-database.mjs \
-    && test -r /app/scripts/database/production-backup-target.mjs \
-    && test -r /app/scripts/database/assert-production-avatar-files.mjs \
-    && test -r /app/scripts/database/production-migration-evidence.mjs \
-    && test -x /app/scripts/backup/backup.sh \
-    && test -x /app/scripts/backup/restore.sh \
-    && test -r /app/scripts/backup/restore-input-guard.mjs
+RUN set -eux; \
+    test -x /app/prisma-schema-engine; \
+    test -x /app/apps/api/node_modules/.bin/prisma; \
+    test -x /app/scripts/docker/entrypoint.sh; \
+    test -r /app/scripts/docker/healthcheck.mjs; \
+    test -r /app/scripts/database/production-preflight.mjs; \
+    test -r /app/scripts/database/create-database.mjs; \
+    test -r /app/scripts/database/production-backup-target.mjs; \
+    test -r /app/scripts/database/assert-production-avatar-files.mjs; \
+    test -r /app/scripts/database/production-migration-evidence.mjs; \
+    test -x /app/scripts/backup/backup.sh; \
+    test -x /app/scripts/backup/restore.sh; \
+    test -r /app/scripts/backup/restore-input-guard.mjs
 VOLUME ["/data/avatars", "/data/backups", "/data/restore"]
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

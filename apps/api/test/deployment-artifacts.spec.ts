@@ -808,6 +808,7 @@ describe("production deployment artifacts", () => {
       runtime.indexOf("USER node"),
       runtime.indexOf("EXPOSE"),
     );
+    expect(finalUserPreflight).toContain("RUN set -eux; \\");
     expect(finalUserPreflight).toContain("test -x /app/prisma-schema-engine");
     expect(finalUserPreflight).toContain(
       "test -x /app/apps/api/node_modules/.bin/prisma",

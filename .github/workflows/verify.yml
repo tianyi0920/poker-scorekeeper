@@ -97,6 +97,28 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File scripts/verify-release.ps1 -ContainerOnly
 
+      - name: Set up the publication-style Docker builder
+        uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
+
+      - name: Build and smoke the publication-style candidate
+        shell: bash
+        env:
+          EXPECTED_COMMIT: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          candidate_suffix="$(node -e 'const value = BigInt(process.env.GITHUB_RUN_ID); process.stdout.write(value.toString(16).padStart(8, "0").slice(-8))')"
+          project_suffix="$(printf '%s' "${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}:${GITHUB_SHA}" | sha256sum | cut -c1-12)"
+          POKER_TEST_IMAGE="poker-scorekeeper:candidate-${EXPECTED_COMMIT}-${candidate_suffix}"
+          COMPOSE_PROJECT_NAME="poker-candidate-${project_suffix}"
+          export POKER_TEST_IMAGE COMPOSE_PROJECT_NAME
+          docker buildx build \
+            --load \
+            --platform linux/amd64 \
+            --build-arg "DEPLOYMENT_ID=$EXPECTED_COMMIT" \
+            --tag "$POKER_TEST_IMAGE" \
+            .
+          bash scripts/ci/verify-candidate-image.sh
+
       - name: Validate registry Compose and repository hygiene
         shell: bash
         run: |
