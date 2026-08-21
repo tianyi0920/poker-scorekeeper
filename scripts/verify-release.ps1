@@ -144,7 +144,7 @@ try {
   Invoke-External $docker ($compose + @('exec', '-T', 'app', 'sh', '-lc', 'test -n "$(find /data/avatars -mindepth 1 -maxdepth 1 -type f -name ''t18usr*.webp'' -print -quit)"'))
 
   Write-Output 'gate: backup.sh'
-  Invoke-External $docker ($compose + @('exec', '-T', 'app', 'sh', 'scripts/backup/backup.sh'))
+  Invoke-External $docker ($compose + @('exec', '-T', 'app', '/app/scripts/backup/backup.sh'))
   $restoreStamp = (& $docker @($compose + @('exec', '-T', 'app', 'cat', '/data/backups/latest-stamp'))).Trim()
   if ($LASTEXITCODE -ne 0 -or $restoreStamp -notmatch '^[0-9]{8}T[0-9]{6}Z$') { throw 'Invalid backup stamp' }
 
@@ -180,7 +180,7 @@ try {
   $restoreUserCreated = $true
 
   Write-Output 'gate: restore.sh into poker_scorekeeper_restore_test'
-  Invoke-External $docker ($compose + @('run', '--rm', '-T', '--no-deps', '--env-from-file', $restoreEnvironmentFile, '--entrypoint', 'sh', 'app', 'scripts/backup/restore.sh'))
+  Invoke-External $docker ($compose + @('run', '--rm', '-T', '--no-deps', '--env-from-file', $restoreEnvironmentFile, '--entrypoint', '/app/scripts/backup/restore.sh', 'app'))
 
   $avatarFile = (& $docker @($compose + @('run', '--rm', '-T', '--no-deps', '--env-from-file', $restoreEnvironmentFile, '--entrypoint', 'node', 'app', 'scripts/database/assert-restored-data.mjs', '--print-avatar-path'))).Trim()
   if ($LASTEXITCODE -ne 0 -or $avatarFile -notmatch '^[a-z0-9-]+\.webp$') { throw 'Restored data assertion failed' }

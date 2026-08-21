@@ -1407,6 +1407,18 @@ describe("production deployment artifacts", () => {
     ).toHaveLength(1);
     expect(release).toContain("'logs', '--no-color', '--tail', '200', 'app'");
     expect(release).toContain("'ps', '-a'");
+    expect(release).toContain(
+      "@('exec', '-T', 'app', '/app/scripts/backup/backup.sh')",
+    );
+    expect(release).not.toContain(
+      "@('exec', '-T', 'app', 'sh', 'scripts/backup/backup.sh')",
+    );
+    expect(release).toContain(
+      "'--entrypoint', '/app/scripts/backup/restore.sh', 'app'",
+    );
+    expect(release).not.toContain(
+      "'--entrypoint', 'sh', 'app', 'scripts/backup/restore.sh'",
+    );
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3000/);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3001/);
     expect(releaseRuntime).toMatch(/--env-file|--env-from-file/);
