@@ -55,6 +55,21 @@ function Assert-DeploymentIdentity {
   }
 }
 
+function Write-ComposeStartupDiagnostics {
+  param(
+    [Parameter(Mandatory)][string] $Docker,
+    [Parameter(Mandatory)][string[]] $Compose
+  )
+  Write-Output 'diagnostic: compose service state'
+  try { & $Docker @($Compose + @('ps', '-a')) } catch { Write-Warning 'Unable to read Compose state' }
+  Write-Output 'diagnostic: app service logs (last 200 lines)'
+  try {
+    & $Docker @($Compose + @('logs', '--no-color', '--tail', '200', 'app'))
+  } catch {
+    Write-Warning 'Unable to read app service logs'
+  }
+}
+
 $node = (Get-Command node -ErrorAction Stop).Source
 
 # Docker is a mandatory release capability and must fail before the long local gates.
@@ -112,7 +127,13 @@ try {
   Assert-PortAvailable -Port 3000
   $composeStarted = $true
   Invoke-External $docker ($compose + @('up', '-d', '--build'))
-  Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3000'
+  try {
+    Wait-ApplicationHealthy -BaseUri 'http://127.0.0.1:3000'
+  } catch {
+    $startupFailure = $_
+    Write-ComposeStartupDiagnostics -Docker $docker -Compose $compose
+    throw $startupFailure
+  }
   Assert-DeploymentIdentity -BaseUri 'http://127.0.0.1:3000' -ExpectedDeploymentId $deploymentId
 
   Invoke-External $docker ($compose + @('exec', '-T', '-e', "TASK18_DRILL_RUN_ID=$runId", 'app', 'node', 'scripts/database/seed-release-drill.mjs'))

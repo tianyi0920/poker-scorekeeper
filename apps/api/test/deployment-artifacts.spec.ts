@@ -1334,6 +1334,13 @@ describe("production deployment artifacts", () => {
       ),
     ).toHaveLength(3);
     expect(release.match(/Wait-ApplicationHealthy/g)).toHaveLength(3);
+    expect(
+      release.match(
+        /^\s*Write-ComposeStartupDiagnostics -Docker \$docker -Compose \$compose$/gm,
+      ),
+    ).toHaveLength(1);
+    expect(release).toContain("'logs', '--no-color', '--tail', '200', 'app'");
+    expect(release).toContain("'ps', '-a'");
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3000/);
     expect(release).toMatch(/Assert-PortAvailable[^\r\n]+3001/);
     expect(releaseRuntime).toMatch(/--env-file|--env-from-file/);
