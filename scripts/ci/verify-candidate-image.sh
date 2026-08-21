@@ -96,6 +96,7 @@ wait_for_mysql() {
 }
 
 assert_port_unused
+docker pull mysql:8.4
 "${compose[@]}" up -d --pull never --no-build mysql
 wait_for_mysql
 

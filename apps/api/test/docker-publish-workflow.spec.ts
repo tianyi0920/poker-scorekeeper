@@ -588,6 +588,11 @@ describe('candidate-image smoke contract', () => {
     expect(script).toMatch(/\[\[\s+!\s+"\$COMPOSE_PROJECT_NAME"\s+=~\s+\^poker-candidate-\[a-f0-9\]\{12\}\$\s+\]\]/);
     expect(script).toContain('docker compose -p "$COMPOSE_PROJECT_NAME" -f docker-compose.test.yml');
     expect(script).toContain('up -d --pull never --no-build');
+    expect(script.match(/^docker pull mysql:8\.4$/gm)).toHaveLength(1);
+    expect(script).not.toContain('docker pull "$POKER_TEST_IMAGE"');
+    expect(script.indexOf('docker pull mysql:8.4')).toBeLessThan(
+      script.indexOf('"${compose[@]}" up -d --pull never --no-build mysql'),
+    );
     const cleanup = script.match(/cleanup\(\) \{([\s\S]*?)\n\}/)?.[1];
     expect(cleanup).toContain('"${compose[@]}" down -v --remove-orphans');
     expect(script).toMatch(/trap cleanup EXIT/);
