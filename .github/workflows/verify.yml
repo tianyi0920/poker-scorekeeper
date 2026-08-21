@@ -84,14 +84,14 @@ jobs:
       - name: Run API integration tests
         run: node scripts/database/run-with-ci-test-env.mjs pnpm --filter @poker/api test:integration
 
+      - name: Build all packages
+        run: pnpm build
+
       - name: Install browser engines
         run: pnpm exec playwright install --with-deps chromium webkit
 
       - name: Run the 23-test browser suite
         run: node scripts/database/run-with-ci-test-env.mjs pnpm exec playwright test
-
-      - name: Build all packages
-        run: pnpm build
 
       - name: Run the complete isolated container release drill
         shell: pwsh

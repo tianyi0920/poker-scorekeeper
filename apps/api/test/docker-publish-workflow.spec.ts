@@ -237,9 +237,9 @@ describe("GitHub Actions Docker publication workflows", () => {
       "Lint and typecheck",
       "Run full package tests",
       "Run API integration tests",
+      "Build all packages",
       "Install browser engines",
       "Run the 23-test browser suite",
-      "Build all packages",
       "Run the complete isolated container release drill",
       "Validate registry Compose and repository hygiene",
     ];
