@@ -109,13 +109,24 @@ function validateReleaseHelperAvailability(input: {
     throw new Error("runtime workdir does not anchor relative helper paths");
   }
 
+  const bundleStart = input.dockerfile.indexOf("FROM scratch AS runtime-bundle");
+  const applicationAssembly =
+    bundleStart >= 0
+      ? input.dockerfile.slice(
+          bundleStart,
+          input.dockerfile.indexOf(
+            "FROM node:24-bookworm-slim AS runtime",
+            bundleStart,
+          ),
+        )
+      : runtime;
   const runtimeCopies = new Map<string, string>();
-  for (const line of runtime.split(/\r?\n/)) {
+  for (const line of applicationAssembly.split(/\r?\n/)) {
     const copy = line.match(
-      /^COPY(?:\s+--\S+)*\s+(scripts\/\S+)\s+(\.\/scripts\/\S+)$/,
+      /^COPY(?:\s+--\S+)*\s+(scripts\/\S+)\s+(?:\.\/|\/app\/)(scripts\/\S+)$/,
     );
     if (copy?.[1] && copy[2]) {
-      runtimeCopies.set(copy[1], `/app/${copy[2].slice(2)}`);
+      runtimeCopies.set(copy[1], `/app/${copy[2]}`);
     }
   }
 
@@ -336,7 +347,7 @@ function validateExtremeSpaceRunbook(content: string): void {
     'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
     'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
     "备份或四件套/校验任一步失败即停止升级",
-    "POKER_IMAGE_VERSION=1.0.1 # previous fixed version",
+    "POKER_IMAGE_VERSION=1.0.2 # previous fixed version",
     "forward-only",
     "does not roll back the schema",
   ];
@@ -556,14 +567,14 @@ function validateExtremeSpaceRunbook(content: string): void {
   );
   if (
     !upgradeSection.includes("第 3.1 节的备份验证块") ||
-    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.2")
+    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.3")
   ) {
     throw new Error(
       "upgrade instructions do not require a fresh verified backup and fixed version",
     );
   }
   if (
-    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.2") >
+    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.3") >
       upgradeSection.indexOf(
         "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
       ) ||
@@ -578,7 +589,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
   const rollbackSection = content.slice(content.indexOf("## 6. 回滚操作卡"));
   for (const rollbackCommand of [
-    "POKER_IMAGE_VERSION=1.0.1 # previous fixed version",
+    "POKER_IMAGE_VERSION=1.0.2 # previous fixed version",
     "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
     "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
   ]) {
@@ -590,7 +601,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
   if (
     rollbackSection.indexOf(
-      "POKER_IMAGE_VERSION=1.0.1 # previous fixed version",
+      "POKER_IMAGE_VERSION=1.0.2 # previous fixed version",
     ) >
       rollbackSection.indexOf(
         "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
@@ -607,6 +618,48 @@ function validateExtremeSpaceRunbook(content: string): void {
 }
 
 describe("production deployment artifacts", () => {
+  it("assembles all runtime application files atomically for NAS container runtimes", async () => {
+    // Break caught: some NAS runtimes silently omit late image layers, leaving the entrypoint present but its preflight helper absent.
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const bundle = dockerfile.slice(
+      dockerfile.indexOf("FROM scratch AS runtime-bundle"),
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+    const runtime = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+
+    expect(bundle).toMatch(/^FROM scratch AS runtime-bundle$/m);
+    for (const requiredPath of [
+      "/app/node_modules",
+      "/app/apps/api/node_modules",
+      "/app/apps/api/dist",
+      "/app/apps/web/dist",
+      "/app/apps/api/prisma",
+      "/app/packages/contracts/dist",
+      "/app/packages/settlement/dist",
+      "/app/prisma-schema-engine",
+      "/app/deployment-id",
+      "/app/scripts/docker/entrypoint.sh",
+      "/app/scripts/docker/healthcheck.mjs",
+      "/app/scripts/database/production-preflight.mjs",
+      "/app/scripts/database/create-database.mjs",
+      "/app/scripts/database/production-backup-target.mjs",
+      "/app/scripts/database/assert-production-avatar-files.mjs",
+      "/app/scripts/database/production-migration-evidence.mjs",
+      "/app/scripts/backup/backup.sh",
+      "/app/scripts/backup/restore.sh",
+      "/app/scripts/backup/restore-input-guard.mjs",
+    ]) {
+      expect(bundle, requiredPath).toContain(requiredPath);
+    }
+
+    expect(runtime.match(/^COPY .*$/gm)).toEqual([
+      "COPY --from=runtime-bundle /app /app",
+    ]);
+    expect(runtime).not.toMatch(/^COPY --from=(?:build|production-dependencies)\b/m);
+  });
+
   it("builds one non-root Node 24 runtime containing API, web, migrations, and production dependencies", async () => {
     // Break caught: the image builds only one half of the monorepo or needs dev dependencies at runtime.
     const dockerfile = await readRepositoryFile("Dockerfile");
@@ -628,9 +681,9 @@ describe("production deployment artifacts", () => {
       "LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID",
     );
     expect(dockerfile).toContain(
-      "COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs ./scripts/database/assert-production-avatar-files.mjs",
+      "COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs /app/scripts/database/assert-production-avatar-files.mjs",
     );
-    expect(dockerfile).toContain("/app/deployment-id ./deployment-id");
+    expect(dockerfile).toContain("/app/deployment-id /app/deployment-id");
     expect(dockerfile).toMatch(/^USER node$/m);
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"');
     expect(dockerfile).not.toMatch(/FROM .*:latest/);
@@ -647,7 +700,7 @@ describe("production deployment artifacts", () => {
       dockerfile.indexOf(
         "FROM node:24-bookworm-slim AS production-dependencies",
       ),
-      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+      dockerfile.indexOf("FROM scratch AS runtime-bundle"),
     );
 
     for (const stage of [workspace, productionDependencies]) {
@@ -666,7 +719,7 @@ describe("production deployment artifacts", () => {
     );
     const dataPreparation = runtime.slice(
       runtime.indexOf("RUN apt-get update"),
-      runtime.indexOf("COPY --from=production-dependencies"),
+      runtime.indexOf("COPY --from=runtime-bundle"),
     );
 
     const mkdirIndex = dataPreparation.indexOf(
@@ -686,7 +739,6 @@ describe("production deployment artifacts", () => {
     const runtime = dockerfile.slice(
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
-
     for (const assignment of [
       "PUBLIC_ORIGIN=https://poker.example.com",
       'WS_ALLOWED_ORIGINS=""',
@@ -735,6 +787,10 @@ describe("production deployment artifacts", () => {
     const runtime = dockerfile.slice(
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
+    const bundle = dockerfile.slice(
+      dockerfile.indexOf("FROM scratch AS runtime-bundle"),
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
 
     expect(build).toContain(
       'install -m 0555 "$engine_path" /app/prisma-schema-engine',
@@ -742,12 +798,12 @@ describe("production deployment artifacts", () => {
     expect(runtime).toContain(
       "PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine",
     );
-    expect(runtime).toContain(
-      "COPY --from=build --chmod=0555 /app/prisma-schema-engine ./prisma-schema-engine",
+    expect(bundle).toContain(
+      "COPY --from=build --chmod=0555 /app/prisma-schema-engine /app/prisma-schema-engine",
     );
-    expect(runtime.indexOf("./prisma-schema-engine")).toBeLessThan(
-      runtime.indexOf("USER node"),
-    );
+    expect(
+      runtime.indexOf("COPY --from=runtime-bundle /app /app"),
+    ).toBeLessThan(runtime.indexOf("USER node"));
     const finalUserPreflight = runtime.slice(
       runtime.indexOf("USER node"),
       runtime.indexOf("EXPOSE"),
@@ -1009,7 +1065,7 @@ describe("production deployment artifacts", () => {
     const environment = await readRepositoryFile(".env.extremespace.example");
     const values = validateExtremeSpaceEnvironmentTemplate(environment);
 
-    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.2");
+    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.3");
     expect(environment).toContain("PUBLIC_ORIGIN=https://poker.example.com");
     expect(environment).toContain(
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
@@ -1045,7 +1101,7 @@ describe("production deployment artifacts", () => {
 
     for (const required of [
       "github.com/tianyi0920/poker-scorekeeper",
-      "docker.io/tianyi920/poker-scorekeeper:1.0.2",
+      "docker.io/tianyi920/poker-scorekeeper:1.0.3",
       "docker-compose.registry.yml",
       ".env.extremespace.example",
       "cp .env.extremespace.example .env.production",
@@ -1068,7 +1124,7 @@ describe("production deployment artifacts", () => {
       expect(runbook).toContain(required);
     }
 
-    expect(runbook).toContain("POKER_IMAGE_VERSION=1.0.1");
+    expect(runbook).toContain("POKER_IMAGE_VERSION=1.0.2");
     expect(runbook).toMatch(/POKER_IMAGE_VERSION=.*previous fixed version/i);
     expect(runbook).toContain("forward-only");
     expect(runbook).toContain("does not roll back the schema");
@@ -1173,7 +1229,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.2",
+          "POKER_IMAGE_VERSION=1.0.3",
           'POKER_IMAGE_VERSION="latest"',
         ),
       ),
@@ -1181,7 +1237,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.2",
+          "POKER_IMAGE_VERSION=1.0.3",
           "export POKER_IMAGE_VERSION='latest'",
         ),
       ),
@@ -1258,8 +1314,8 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.2/,
-          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.2",
+          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.3/,
+          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.3",
         ),
       ),
     ).toThrow(/upgrade command order/);

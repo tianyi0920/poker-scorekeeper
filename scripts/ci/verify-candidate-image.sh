@@ -48,6 +48,30 @@ fail() {
   exit 1
 }
 
+max_image_layers=16
+image_layer_count="$(docker image inspect --format '{{ len .RootFS.Layers }}' "$POKER_TEST_IMAGE")"
+[[ "$image_layer_count" =~ ^[0-9]+$ ]] \
+  || fail 'Candidate image layer count is not numeric'
+(( image_layer_count <= max_image_layers )) \
+  || fail "Candidate image has $image_layer_count filesystem layers; maximum is $max_image_layers"
+
+docker run --rm --pull never --entrypoint /bin/sh "$POKER_TEST_IMAGE" -ec '
+  test -r /app/apps/api/dist/main.js
+  test -r /app/apps/web/dist/index.html
+  test -x /app/prisma-schema-engine
+  test -x /app/apps/api/node_modules/.bin/prisma
+  test -x /app/scripts/docker/entrypoint.sh
+  test -r /app/scripts/docker/healthcheck.mjs
+  test -r /app/scripts/database/production-preflight.mjs
+  test -r /app/scripts/database/create-database.mjs
+  test -r /app/scripts/database/production-backup-target.mjs
+  test -r /app/scripts/database/assert-production-avatar-files.mjs
+  test -r /app/scripts/database/production-migration-evidence.mjs
+  test -x /app/scripts/backup/backup.sh
+  test -x /app/scripts/backup/restore.sh
+  test -r /app/scripts/backup/restore-input-guard.mjs
+' || fail 'Candidate image is missing a startup-critical runtime file'
+
 assert_port_unused() {
   if timeout 2s bash -c 'exec 3<>/dev/tcp/127.0.0.1/3000' >/dev/null 2>&1; then
     fail '127.0.0.1:3000 is already in use'

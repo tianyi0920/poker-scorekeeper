@@ -45,6 +45,36 @@ COPY packages/contracts/package.json packages/contracts/package.json
 COPY packages/settlement/package.json packages/settlement/package.json
 RUN pnpm install --prod --frozen-lockfile
 
+FROM scratch AS runtime-bundle
+COPY --from=production-dependencies /app/node_modules /app/node_modules
+COPY --from=production-dependencies /app/apps/api/node_modules /app/apps/api/node_modules
+COPY --from=production-dependencies /app/apps/web/node_modules /app/apps/web/node_modules
+COPY --from=production-dependencies /app/packages/contracts/node_modules /app/packages/contracts/node_modules
+COPY --from=production-dependencies /app/packages/settlement/node_modules /app/packages/settlement/node_modules
+COPY --from=production-dependencies /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml /app/
+COPY --from=production-dependencies /app/apps/api/package.json /app/apps/api/package.json
+COPY --from=production-dependencies /app/apps/web/package.json /app/apps/web/package.json
+COPY --from=production-dependencies /app/packages/contracts/package.json /app/packages/contracts/package.json
+COPY --from=production-dependencies /app/packages/settlement/package.json /app/packages/settlement/package.json
+COPY --from=build /app/apps/api/dist /app/apps/api/dist
+COPY --from=build /app/apps/web/dist /app/apps/web/dist
+COPY --from=build /app/packages/contracts/dist /app/packages/contracts/dist
+COPY --from=build /app/packages/settlement/dist /app/packages/settlement/dist
+COPY --from=build --chmod=0555 /app/prisma-schema-engine /app/prisma-schema-engine
+COPY --from=build /app/apps/api/prisma /app/apps/api/prisma
+COPY --from=build /app/apps/api/prisma.config.ts /app/apps/api/prisma.config.ts
+COPY --from=build --chmod=0444 /app/deployment-id /app/deployment-id
+COPY --chmod=0555 scripts/docker/entrypoint.sh /app/scripts/docker/entrypoint.sh
+COPY --chmod=0444 scripts/docker/healthcheck.mjs /app/scripts/docker/healthcheck.mjs
+COPY --chmod=0444 scripts/database/production-preflight.mjs /app/scripts/database/production-preflight.mjs
+COPY --chmod=0444 scripts/database/create-database.mjs /app/scripts/database/create-database.mjs
+COPY --chmod=0444 scripts/database/production-backup-target.mjs /app/scripts/database/production-backup-target.mjs
+COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs /app/scripts/database/assert-production-avatar-files.mjs
+COPY --chmod=0444 scripts/database/production-migration-evidence.mjs /app/scripts/database/production-migration-evidence.mjs
+COPY --chmod=0555 scripts/backup/backup.sh /app/scripts/backup/backup.sh
+COPY --chmod=0555 scripts/backup/restore.sh /app/scripts/backup/restore.sh
+COPY --chmod=0444 scripts/backup/restore-input-guard.mjs /app/scripts/backup/restore-input-guard.mjs
+
 FROM node:24-bookworm-slim AS runtime
 ARG DEPLOYMENT_ID
 LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID
@@ -76,38 +106,21 @@ RUN apt-get update \
     && mkdir -p /data/avatars /data/backups /data/restore \
     && chown -R node:node /data
 
-COPY --from=production-dependencies /app/node_modules ./node_modules
-COPY --from=production-dependencies /app/apps/api/node_modules ./apps/api/node_modules
-COPY --from=production-dependencies /app/apps/web/node_modules ./apps/web/node_modules
-COPY --from=production-dependencies /app/packages/contracts/node_modules ./packages/contracts/node_modules
-COPY --from=production-dependencies /app/packages/settlement/node_modules ./packages/settlement/node_modules
-COPY --from=production-dependencies /app/package.json /app/pnpm-lock.yaml /app/pnpm-workspace.yaml ./
-COPY --from=production-dependencies /app/apps/api/package.json ./apps/api/package.json
-COPY --from=production-dependencies /app/apps/web/package.json ./apps/web/package.json
-COPY --from=production-dependencies /app/packages/contracts/package.json ./packages/contracts/package.json
-COPY --from=production-dependencies /app/packages/settlement/package.json ./packages/settlement/package.json
-COPY --from=build /app/apps/api/dist ./apps/api/dist
-COPY --from=build /app/apps/web/dist ./apps/web/dist
-COPY --from=build /app/packages/contracts/dist ./packages/contracts/dist
-COPY --from=build /app/packages/settlement/dist ./packages/settlement/dist
-COPY --from=build --chmod=0555 /app/prisma-schema-engine ./prisma-schema-engine
-COPY --from=build /app/apps/api/prisma ./apps/api/prisma
-COPY --from=build /app/apps/api/prisma.config.ts ./apps/api/prisma.config.ts
-COPY --from=build --chmod=0444 /app/deployment-id ./deployment-id
-COPY --chmod=0555 scripts/docker/entrypoint.sh ./scripts/docker/entrypoint.sh
-COPY --chmod=0444 scripts/docker/healthcheck.mjs ./scripts/docker/healthcheck.mjs
-COPY --chmod=0444 scripts/database/production-preflight.mjs ./scripts/database/production-preflight.mjs
-COPY --chmod=0444 scripts/database/create-database.mjs ./scripts/database/create-database.mjs
-COPY --chmod=0444 scripts/database/production-backup-target.mjs ./scripts/database/production-backup-target.mjs
-COPY --chmod=0444 scripts/database/assert-production-avatar-files.mjs ./scripts/database/assert-production-avatar-files.mjs
-COPY --chmod=0444 scripts/database/production-migration-evidence.mjs ./scripts/database/production-migration-evidence.mjs
-COPY --chmod=0555 scripts/backup/backup.sh ./scripts/backup/backup.sh
-COPY --chmod=0555 scripts/backup/restore.sh ./scripts/backup/restore.sh
-COPY --chmod=0444 scripts/backup/restore-input-guard.mjs ./scripts/backup/restore-input-guard.mjs
+COPY --from=runtime-bundle /app /app
 
 USER node
 RUN test -x /app/prisma-schema-engine \
-    && test -x /app/apps/api/node_modules/.bin/prisma
+    && test -x /app/apps/api/node_modules/.bin/prisma \
+    && test -x /app/scripts/docker/entrypoint.sh \
+    && test -r /app/scripts/docker/healthcheck.mjs \
+    && test -r /app/scripts/database/production-preflight.mjs \
+    && test -r /app/scripts/database/create-database.mjs \
+    && test -r /app/scripts/database/production-backup-target.mjs \
+    && test -r /app/scripts/database/assert-production-avatar-files.mjs \
+    && test -r /app/scripts/database/production-migration-evidence.mjs \
+    && test -x /app/scripts/backup/backup.sh \
+    && test -x /app/scripts/backup/restore.sh \
+    && test -r /app/scripts/backup/restore-input-guard.mjs
 VOLUME ["/data/avatars", "/data/backups", "/data/restore"]
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \

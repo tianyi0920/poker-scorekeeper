@@ -573,6 +573,36 @@ describe("GitHub Actions Docker publication workflows", () => {
 });
 
 describe('candidate-image smoke contract', () => {
+  it('rejects fragmented images and verifies every startup-critical file before database work', async () => {
+    // Break caught: a registry image can pass a normal build while a NAS runtime drops late filesystem layers.
+    const script = await readRepositoryFile('scripts/ci/verify-candidate-image.sh');
+
+    expect(script).toContain("max_image_layers=16");
+    expect(script).toContain("{{ len .RootFS.Layers }}");
+    expect(script).toContain('docker run --rm --pull never --entrypoint /bin/sh');
+    for (const requiredPath of [
+      '/app/apps/api/dist/main.js',
+      '/app/apps/web/dist/index.html',
+      '/app/prisma-schema-engine',
+      '/app/apps/api/node_modules/.bin/prisma',
+      '/app/scripts/docker/entrypoint.sh',
+      '/app/scripts/docker/healthcheck.mjs',
+      '/app/scripts/database/production-preflight.mjs',
+      '/app/scripts/database/create-database.mjs',
+      '/app/scripts/database/production-backup-target.mjs',
+      '/app/scripts/database/assert-production-avatar-files.mjs',
+      '/app/scripts/database/production-migration-evidence.mjs',
+      '/app/scripts/backup/backup.sh',
+      '/app/scripts/backup/restore.sh',
+      '/app/scripts/backup/restore-input-guard.mjs',
+    ]) {
+      expect(script, requiredPath).toContain(requiredPath);
+    }
+    expect(script.indexOf('max_image_layers=16')).toBeLessThan(
+      script.indexOf('docker pull mysql:8.4'),
+    );
+  });
+
   it('fails closed around one isolated candidate image', async () => {
     // Break caught: a candidate smoke can pull or run an image that was not built for the expected commit.
     const script = await readRepositoryFile('scripts/ci/verify-candidate-image.sh');
