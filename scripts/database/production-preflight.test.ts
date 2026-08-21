@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { spawnSync } from 'node:child_process';
 import { resolve } from 'node:path';
 import {
+  assertProductionEnvironment,
   assertProductionTarget,
   runProductionPreflight
 } from './production-preflight.mjs';
@@ -125,6 +126,33 @@ function fakeConnector(options: {
 }
 
 describe('production target validation', () => {
+  it('rejects every image-provided placeholder before contacting production', () => {
+    // Break caught: an operator can start with a long but public example secret from image metadata.
+    const configured = {
+      PUBLIC_ORIGIN: 'https://poker.example.com',
+      DATABASE_URL: 'mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper',
+      SESSION_SECRET: 'CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
+      CSRF_SECRET: 'CHANGE_ME_AT_LEAST_32_RANDOM_BYTES',
+      BOOTSTRAP_ADMIN_NICKNAME: 'CHANGE_ME_ADMIN_NICKNAME',
+      BOOTSTRAP_ADMIN_PASSWORD: 'CHANGE_ME_UNIQUE_STRONG_PASSWORD',
+      MYSQL_PASSWORD: 'CHANGE_ME'
+    };
+
+    for (const key of Object.keys(configured)) {
+      expect(() => assertProductionEnvironment({
+        ...configured,
+        PUBLIC_ORIGIN: 'https://poker.example.net',
+        DATABASE_URL: productionUrl,
+        SESSION_SECRET: 's'.repeat(64),
+        CSRF_SECRET: 'c'.repeat(64),
+        BOOTSTRAP_ADMIN_NICKNAME: '管理员',
+        BOOTSTRAP_ADMIN_PASSWORD: 'Unique-Admin-Password-123!',
+        MYSQL_PASSWORD: 'backup-password',
+        [key]: configured[key as keyof typeof configured]
+      })).toThrow('PRODUCTION_CONFIGURATION_PLACEHOLDER');
+    }
+  });
+
   it.each([
     ['mysql://u:p@tianyi.wiki:8306/poker_scorekeeper', 'PRODUCTION_DATABASE_HOST_INVALID'],
     ['mysql://u:p@192.168.10.248:3306/poker_scorekeeper_test', 'PRODUCTION_DATABASE_NAME_INVALID'],

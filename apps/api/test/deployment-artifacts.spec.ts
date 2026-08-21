@@ -331,7 +331,7 @@ function validateExtremeSpaceRunbook(content: string): void {
     'sudo test -f "$POKER_DIR/data/backups/checksums-$STAMP.txt"',
     'sudo sh -c \'cd "$1" && sha256sum --check "$2"\' sh "$POKER_DIR/data/backups" "checksums-$STAMP.txt"',
     "备份或四件套/校验任一步失败即停止升级",
-    "POKER_IMAGE_VERSION=1.0.0 # previous fixed version",
+    "POKER_IMAGE_VERSION=1.0.1 # previous fixed version",
     "forward-only",
     "does not roll back the schema",
   ];
@@ -551,15 +551,14 @@ function validateExtremeSpaceRunbook(content: string): void {
   );
   if (
     !upgradeSection.includes("第 3.1 节的备份验证块") ||
-    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.1")
+    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.2")
   ) {
     throw new Error(
       "upgrade instructions do not require a fresh verified backup and fixed version",
     );
   }
   if (
-    firstBackupIndex > content.indexOf("POKER_IMAGE_VERSION=1.0.1") ||
-    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.1") >
+    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.2") >
       upgradeSection.indexOf(
         "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
       ) ||
@@ -574,7 +573,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
   const rollbackSection = content.slice(content.indexOf("## 6. 回滚操作卡"));
   for (const rollbackCommand of [
-    "POKER_IMAGE_VERSION=1.0.0 # previous fixed version",
+    "POKER_IMAGE_VERSION=1.0.1 # previous fixed version",
     "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
     "docker compose --env-file .env.production -f docker-compose.registry.yml up -d",
   ]) {
@@ -586,7 +585,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
   if (
     rollbackSection.indexOf(
-      "POKER_IMAGE_VERSION=1.0.0 # previous fixed version",
+      "POKER_IMAGE_VERSION=1.0.1 # previous fixed version",
     ) >
       rollbackSection.indexOf(
         "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
@@ -673,6 +672,49 @@ describe("production deployment artifacts", () => {
     expect(chownIndex).toBeGreaterThan(mkdirIndex);
     expect(runtime.indexOf("chown -R node:node /data")).toBeLessThan(
       runtime.indexOf("USER node"),
+    );
+  });
+
+  it("declares editable secret-free NAS environment defaults in the runtime image", async () => {
+    // Break caught: a NAS direct-create wizard omits required deployment fields and forces operators to add every key manually.
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const runtime = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+
+    for (const assignment of [
+      "PUBLIC_ORIGIN=https://poker.example.com",
+      'WS_ALLOWED_ORIGINS=""',
+      "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
+      "SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+      "CSRF_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
+      "BOOTSTRAP_ADMIN_USERNAME=rootadmin",
+      "BOOTSTRAP_ADMIN_NICKNAME=CHANGE_ME_ADMIN_NICKNAME",
+      "BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_UNIQUE_STRONG_PASSWORD",
+      "READINESS_TIMEOUT_MS=2000",
+      "MYSQL_HOST=192.168.10.248",
+      "MYSQL_PORT=3306",
+      "MYSQL_USER=poker_backup_user",
+      "MYSQL_PASSWORD=CHANGE_ME",
+      "MYSQL_DATABASE=poker_scorekeeper",
+      "BACKUP_DIR=/data/backups",
+    ]) {
+      expect(runtime, assignment).toContain(assignment);
+    }
+  });
+
+  it("declares exactly the three operator-managed persistent data volumes", async () => {
+    // Break caught: a NAS wizard cannot pre-populate the host-folder rows or silently creates an unmanaged extra volume.
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const runtime = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+
+    expect(runtime.match(/^VOLUME .*$/gm)).toEqual([
+      'VOLUME ["/data/avatars", "/data/backups", "/data/restore"]',
+    ]);
+    expect(runtime.indexOf("chown -R node:node /data")).toBeLessThan(
+      runtime.indexOf('VOLUME ["/data/avatars"'),
     );
   });
 
@@ -962,7 +1004,7 @@ describe("production deployment artifacts", () => {
     const environment = await readRepositoryFile(".env.extremespace.example");
     const values = validateExtremeSpaceEnvironmentTemplate(environment);
 
-    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.0");
+    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.2");
     expect(environment).toContain("PUBLIC_ORIGIN=https://poker.example.com");
     expect(environment).toContain(
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
@@ -998,7 +1040,7 @@ describe("production deployment artifacts", () => {
 
     for (const required of [
       "github.com/tianyi0920/poker-scorekeeper",
-      "docker.io/tianyi920/poker-scorekeeper:1.0.0",
+      "docker.io/tianyi920/poker-scorekeeper:1.0.2",
       "docker-compose.registry.yml",
       ".env.extremespace.example",
       "cp .env.extremespace.example .env.production",
@@ -1008,11 +1050,15 @@ describe("production deployment artifacts", () => {
       "/api/health/live",
       "/api/health/ready",
       "/api/health/deployment",
+      "单独创建容器",
+      "环境变量会自动列出",
+      "三个数据卷会自动列出",
+      "匿名卷",
     ]) {
       expect(runbook).toContain(required);
     }
 
-    expect(runbook).toContain("POKER_IMAGE_VERSION=1.0.0");
+    expect(runbook).toContain("POKER_IMAGE_VERSION=1.0.1");
     expect(runbook).toMatch(/POKER_IMAGE_VERSION=.*previous fixed version/i);
     expect(runbook).toContain("forward-only");
     expect(runbook).toContain("does not roll back the schema");
@@ -1117,7 +1163,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.1",
+          "POKER_IMAGE_VERSION=1.0.2",
           'POKER_IMAGE_VERSION="latest"',
         ),
       ),
@@ -1125,7 +1171,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.1",
+          "POKER_IMAGE_VERSION=1.0.2",
           "export POKER_IMAGE_VERSION='latest'",
         ),
       ),
@@ -1202,8 +1248,8 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.1",
-          "docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.1",
+          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.2/,
+          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.2",
         ),
       ),
     ).toThrow(/upgrade command order/);

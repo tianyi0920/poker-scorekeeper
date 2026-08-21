@@ -52,7 +52,22 @@ ENV NODE_ENV=production \
     PORT=3000 \
     WEB_DIST_ROOT=/app/apps/web/dist \
     AVATAR_ROOT=/data/avatars \
-    PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine
+    PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine \
+    PUBLIC_ORIGIN=https://poker.example.com \
+    WS_ALLOWED_ORIGINS="" \
+    DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper \
+    SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES \
+    CSRF_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES \
+    BOOTSTRAP_ADMIN_USERNAME=rootadmin \
+    BOOTSTRAP_ADMIN_NICKNAME=CHANGE_ME_ADMIN_NICKNAME \
+    BOOTSTRAP_ADMIN_PASSWORD=CHANGE_ME_UNIQUE_STRONG_PASSWORD \
+    READINESS_TIMEOUT_MS=2000 \
+    MYSQL_HOST=192.168.10.248 \
+    MYSQL_PORT=3306 \
+    MYSQL_USER=poker_backup_user \
+    MYSQL_PASSWORD=CHANGE_ME \
+    MYSQL_DATABASE=poker_scorekeeper \
+    BACKUP_DIR=/data/backups
 WORKDIR /app
 
 RUN apt-get update \
@@ -93,6 +108,7 @@ COPY --chmod=0444 scripts/backup/restore-input-guard.mjs ./scripts/backup/restor
 USER node
 RUN test -x /app/prisma-schema-engine \
     && test -x /app/apps/api/node_modules/.bin/prisma
+VOLUME ["/data/avatars", "/data/backups", "/data/restore"]
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "scripts/docker/healthcheck.mjs"]

@@ -3,10 +3,18 @@
 ## 先回答三个容易混淆的问题
 
 - 源码仓库是私有的：`github.com/tianyi0920/poker-scorekeeper`。极空间不需要登录 GitHub，也不需要完整源码树。
-- 镜像仓库是公开的：`docker.io/tianyi920/poker-scorekeeper`；首次发布版本为 `docker.io/tianyi920/poker-scorekeeper:1.0.0`。NAS 只拉取已经发布的固定版本镜像。
+- 镜像仓库是公开的：`docker.io/tianyi920/poker-scorekeeper`；当前推荐固定版本为 `docker.io/tianyi920/poker-scorekeeper:1.0.2`。NAS 只拉取已经发布的固定版本镜像。
 - NAS 项目目录只需要仓库根目录的 `docker-compose.registry.yml` 和 `.env.extremespace.example`，再加上本机生成的 `.env.production` 与 `data` 持久目录。
 
 不要在 NAS 上执行源码构建，也不要把私有仓库的完整工作树复制到 NAS。请从可信的发布包或管理电脑取得上述两个不含秘密的模板文件；真实 `.env.production` 只保留在 NAS，绝不提交、截图或发送到聊天中。
+
+### 极空间“单独创建容器”向导
+
+从 `1.0.2` 开始，选择 `docker.io/tianyi920/poker-scorekeeper:1.0.2` 后，生产环境变量会自动列出；保留镜像自带的运行时默认值，只修改 `CHANGE_ME` 占位符、`PUBLIC_ORIGIN`、数据库账号和首次管理员信息。镜像不包含任何真实密码或随机密钥，未替换占位符时生产入口会失败关闭。
+
+`/data/avatars`、`/data/backups`、`/data/restore` 三个数据卷会自动列出。必须分别为它们选择极空间上的持久文件夹并保持读写，不能直接接受 Docker 自动创建的匿名卷；匿名卷的位置和生命周期不便于备份、迁移与恢复。镜像内路径已经固定，不要改装载路径，只选择对应的宿主机文件夹。
+
+单独创建模式仍需把容器端口 `3000/TCP` 映射到 NAS 的 `127.0.0.1:3000`、启用开机自动启动，并保持镜像默认入口和命令为空。若图形界面无法限制监听地址、设置只读根文件系统、`/tmp` 临时目录、`no-new-privileges` 和删除全部 capabilities，请改用下面的 Compose 方式。
 
 ## 1. 建立 NAS 项目目录
 
@@ -53,7 +61,7 @@ chmod 600 .env.production
 编辑 `.env.production`。首次部署保留固定版本，而不是使用可变标签：
 
 ```dotenv
-POKER_IMAGE_VERSION=1.0.0
+POKER_IMAGE_VERSION=1.0.2
 ```
 
 把模板中的所有 `CHANGE_ME` 值替换为新的实际值；数据库继续使用现有的 `192.168.10.248:3306/poker_scorekeeper`，并确认 `PUBLIC_ORIGIN` 是公网的完整 HTTPS 地址。`SESSION_SECRET` 与 `CSRF_SECRET` 必须各自独立且随机。密码若含 `@`、`:`、`/` 等字符，填入 `DATABASE_URL` 前必须进行 URL 编码。
@@ -118,7 +126,7 @@ curl --fail http://127.0.0.1:3000/api/health/deployment
 编辑 `.env.production`，把 `POKER_IMAGE_VERSION` 改为要升级的已发布固定版本，例如：
 
 ```dotenv
-POKER_IMAGE_VERSION=1.0.1
+POKER_IMAGE_VERSION=1.0.2
 ```
 
 然后拉取、重建并再次完成全部健康检查：
@@ -137,7 +145,7 @@ curl --fail http://127.0.0.1:3000/api/health/deployment
 如果新镜像未通过健康检查或应用验收，先保留日志和备份记录。将 `.env.production` 改回 previous fixed version，例如：
 
 ```dotenv
-POKER_IMAGE_VERSION=1.0.0 # previous fixed version
+POKER_IMAGE_VERSION=1.0.1 # previous fixed version
 ```
 
 然后再次拉取并启动该固定版本：

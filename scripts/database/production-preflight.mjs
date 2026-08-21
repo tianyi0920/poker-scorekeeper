@@ -6,9 +6,29 @@ import { pathToFileURL } from 'node:url';
 const requireFromApi = createRequire(new URL('../../apps/api/package.json', import.meta.url));
 const mariadb = requireFromApi('mariadb');
 const TARGET_DATABASE = 'poker_scorekeeper';
+const CONFIGURATION_KEYS_WITH_PLACEHOLDERS = [
+  'DATABASE_URL',
+  'SESSION_SECRET',
+  'CSRF_SECRET',
+  'BOOTSTRAP_ADMIN_NICKNAME',
+  'BOOTSTRAP_ADMIN_PASSWORD',
+  'MYSQL_PASSWORD'
+];
 
 function controlledError(code) {
   return new Error(code);
+}
+
+export function assertProductionEnvironment(environment) {
+  for (const key of CONFIGURATION_KEYS_WITH_PLACEHOLDERS) {
+    const value = environment[key];
+    if (typeof value === 'string' && value.toUpperCase().includes('CHANGE_ME')) {
+      throw controlledError('PRODUCTION_CONFIGURATION_PLACEHOLDER');
+    }
+  }
+  if (environment.PUBLIC_ORIGIN === 'https://poker.example.com') {
+    throw controlledError('PRODUCTION_CONFIGURATION_PLACEHOLDER');
+  }
 }
 
 export function assertProductionTarget(databaseUrl) {
@@ -172,6 +192,7 @@ if (
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
   try {
+    assertProductionEnvironment(process.env);
     const report = await runProductionPreflight(process.env.DATABASE_URL ?? '');
     process.stdout.write(`${JSON.stringify(report)}\n`);
   } catch (error) {
