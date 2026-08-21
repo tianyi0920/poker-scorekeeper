@@ -13,10 +13,8 @@ export interface TestDatabaseEnvironment {
   url: URL;
 }
 
-export async function readTestDatabaseEnvironment(
-  environmentFile = '.env.local'
-): Promise<TestDatabaseEnvironment> {
-  const values = parse(await readFile(environmentFile, 'utf8'));
+export async function readTestDatabaseEnvironment(): Promise<TestDatabaseEnvironment> {
+  const values = parse(await readFile('.env.local', 'utf8'));
   if (!values.DATABASE_URL) throw new Error('DATABASE_URL is missing from ignored .env.local');
   const url = new URL(values.DATABASE_URL);
   if (

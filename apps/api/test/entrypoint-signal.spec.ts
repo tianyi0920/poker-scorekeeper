@@ -102,7 +102,7 @@ exit 23
       const bashWithKillObserver = join(root, 'bash-with-kill-observer.sh');
       const observedKills = join(root, 'observed-kills');
       await mkdir(bin);
-      await executable(bashWithKillObserver, `#!${shellPath(bash)}
+      await executable(bashWithKillObserver, `# Executed explicitly by REAL_BASH_PATH.
 kill() {
   printf '%s\\n' "$*" >> "$KILL_OBSERVER_FILE"
   builtin kill "$@"
@@ -111,9 +111,6 @@ staged_entrypoint="$1"
 shift
 . "$staged_entrypoint"
 `);
-      expect(await readFile(bashWithKillObserver, 'utf8')).toMatch(
-        new RegExp(`^#!${shellPath(bash).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\n`)
-      );
       await stageEntrypoint(`#!/bin/sh
 printf '%s\n' "$$" > "$MIGRATION_PID_FILE"
 printf '%s\n' ready > "$MIGRATION_READY_FILE"
@@ -129,10 +126,10 @@ printf '%s\n' started > "$API_STARTED_FILE"
 exit 0
 `);
       const driver = join(root, 'driver.sh');
-      await executable(driver, `#!/bin/sh
+      const driverContents = `#!/bin/sh
 set -eu
 set -m
-"$BASH_PATH" "$ENTRYPOINT" &
+"$REAL_BASH_PATH" "$BASH_OBSERVER" "$ENTRYPOINT" &
 entrypoint_pid=$!
 attempt=0
 while [ ! -f "$MIGRATION_READY_FILE" ] && [ "$attempt" -lt 20 ]; do
@@ -153,7 +150,11 @@ wait "$entrypoint_pid" 2>/dev/null || status=$?
 if [ "$REQUIRE_MIGRATION_SIGNAL_FILE" = true ] && [ ! -f "$MIGRATION_SIGNAL_FILE" ]; then
   exit 21
 fi
-`);
+`;
+      await executable(driver, driverContents);
+      expect(driverContents).toContain(
+        '"$REAL_BASH_PATH" "$BASH_OBSERVER" "$ENTRYPOINT" &'
+      );
 
       const signalFile = join(root, 'migration.signal');
       const result = spawnSync(bash, [shellPath(driver)], {
@@ -161,7 +162,8 @@ fi
         env: {
           ...process.env,
           PATH: `${shellPath(bin)}:/usr/bin:/bin`,
-          BASH_PATH: shellPath(bashWithKillObserver),
+          REAL_BASH_PATH: shellPath(bash),
+          BASH_OBSERVER: shellPath(bashWithKillObserver),
           KILL_OBSERVER_FILE: shellPath(observedKills),
           REQUIRE_MIGRATION_SIGNAL_FILE: signal === 'INT' ? 'false' : 'true',
           NODE_DELAY: shellPath(process.execPath),

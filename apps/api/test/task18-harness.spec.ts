@@ -10,25 +10,23 @@ import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
-const repositoryRoot = resolve(import.meta.dirname, '../../..');
-
 describe('Task18 release harness safety', () => {
   it('replaces a poisoned parent DATABASE_URL with the guarded .env.local test target', async () => {
     // Break caught: Playwright's API process inherits an unrelated parent DATABASE_URL.
     const previous = process.env.DATABASE_URL;
     const previousDirectory = process.cwd();
-    const testDirectory = await mkdtemp(join(tmpdir(), 'poker-task18-environment-'));
-    const environmentFile = join(testDirectory, '.env.local');
-    const guardedDatabaseUrl = [
-      'mysql://fixture_user:fixture_password@',
-      'tianyi.wiki:8306/',
-      'poker_scorekeeper_test'
-    ].join('');
-    await writeFile(environmentFile, `DATABASE_URL=${guardedDatabaseUrl}\n`);
-    process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
+    let testDirectory: string | undefined;
     try {
-      process.chdir(repositoryRoot);
-      await readTestDatabaseEnvironment(environmentFile);
+      testDirectory = await mkdtemp(join(tmpdir(), 'poker-task18-environment-'));
+      const guardedDatabaseUrl = [
+        'mysql://fixture_user:fixture_password@',
+        'tianyi.wiki:8306/',
+        'poker_scorekeeper_test'
+      ].join('');
+      await writeFile(join(testDirectory, '.env.local'), `DATABASE_URL=${guardedDatabaseUrl}\n`);
+      process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
+      process.chdir(testDirectory);
+      await readTestDatabaseEnvironment();
       expect(process.env.DATABASE_URL).toBe(guardedDatabaseUrl);
       const effective = new URL(process.env.DATABASE_URL!);
       expect({
@@ -46,7 +44,9 @@ describe('Task18 release harness safety', () => {
       process.chdir(previousDirectory);
       if (previous === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = previous;
-      await rm(testDirectory, { recursive: true, force: true });
+      if (testDirectory !== undefined) {
+        await rm(testDirectory, { recursive: true, force: true });
+      }
     }
   });
 
