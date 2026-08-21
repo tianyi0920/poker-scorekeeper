@@ -58,7 +58,7 @@ WORKDIR /app
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates default-mysql-client gzip tar tini \
     && rm -rf /var/lib/apt/lists/* \
-    && mkdir -p /data/avatars /data/backups \
+    && mkdir -p /data/avatars /data/backups /data/restore \
     && chown -R node:node /data
 
 COPY --from=production-dependencies /app/node_modules ./node_modules

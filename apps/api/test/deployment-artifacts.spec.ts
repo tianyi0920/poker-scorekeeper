@@ -654,6 +654,26 @@ describe("production deployment artifacts", () => {
     }
   });
 
+  it("prepares every writable data mount for the non-root runtime user", async () => {
+    // Break caught: an empty restore volume is mounted over a missing image path and becomes root-owned.
+    const dockerfile = await readRepositoryFile("Dockerfile");
+    const runtime = dockerfile.slice(
+      dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
+    );
+    const dataPreparation = runtime.slice(
+      runtime.indexOf("RUN apt-get update"),
+      runtime.indexOf("COPY --from=production-dependencies"),
+    );
+
+    expect(dataPreparation).toContain(
+      "mkdir -p /data/avatars /data/backups /data/restore",
+    );
+    expect(dataPreparation).toContain("chown -R node:node /data");
+    expect(runtime.indexOf("chown -R node:node /data")).toBeLessThan(
+      runtime.indexOf("USER node"),
+    );
+  });
+
   it("bundles a fixed Prisma schema engine before switching to the non-root runtime user", async () => {
     // Break caught: migrate deploy tries to download into root-owned node_modules and the app exits before health checks pass.
     const dockerfile = await readRepositoryFile("Dockerfile");
