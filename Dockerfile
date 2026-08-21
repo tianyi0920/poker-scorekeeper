@@ -55,7 +55,7 @@ COPY --from=build /app/apps/api/prisma /app/apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts /app/apps/api/prisma.config.ts
 COPY --from=build --chmod=0444 /app/deployment-id /app/deployment-id
 COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs /app/scripts/docker/
-COPY --chmod=0444 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/
+COPY --chmod=0555 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/
 COPY --chmod=0555 scripts/backup/backup.sh scripts/backup/restore.sh scripts/backup/restore-input-guard.mjs /app/scripts/backup/
 
 FROM node:24-bookworm-slim AS runtime
@@ -93,9 +93,6 @@ RUN --mount=type=bind,from=runtime-bundle,source=/app,target=/mnt/runtime-bundle
 
 USER node
 RUN set -eux; \
-    id; \
-    ls -ld /app/scripts /app/scripts/docker /app/scripts/database /app/scripts/backup; \
-    find /app/scripts -maxdepth 2 -type f -printf '%m %u:%g %p\n' | sort; \
     test -x /app/prisma-schema-engine; \
     test -x /app/apps/api/node_modules/.bin/prisma; \
     test -x /app/scripts/docker/entrypoint.sh; \

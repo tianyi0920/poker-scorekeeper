@@ -647,12 +647,13 @@ describe("production deployment artifacts", () => {
       "COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs /app/scripts/docker/",
     );
     expect(bundle).toContain(
-      "COPY --chmod=0444 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/",
+      "COPY --chmod=0555 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/",
     );
     expect(bundle).toContain(
       "COPY --chmod=0555 scripts/backup/backup.sh scripts/backup/restore.sh scripts/backup/restore-input-guard.mjs /app/scripts/backup/",
     );
     expect(bundle.match(/^COPY --chmod=\S+ scripts\//gm)).toHaveLength(3);
+    expect(bundle).not.toMatch(/^COPY --chmod=0444 scripts\//gm);
     for (const requiredPath of [
       "/app/apps/api/dist",
       "/app/apps/web/dist",
