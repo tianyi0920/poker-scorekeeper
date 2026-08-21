@@ -601,7 +601,7 @@ describe('candidate-image smoke contract', () => {
     const negativeProbeEnd = script.indexOf('assert_app_absent', negativeProbeStart);
     const negativeProbe = script.slice(negativeProbeStart, negativeProbeEnd);
     expect(negativeProbe).toContain('-e "DATABASE_URL=$invalid_database_url"');
-    expect(negativeProbe).toContain('app /app/apps/api/node_modules/.bin/prisma migrate deploy');
+    expect(negativeProbe).toContain('app /app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts');
     expect(negativeProbe).not.toContain('node apps/api/dist/main.js');
     expect(negativeProbe).not.toContain('--service-ports');
     expect(negativeProbe).toContain('migration_status=$?');
@@ -654,6 +654,6 @@ describe('candidate-image smoke contract', () => {
     expect(compose.services.app.cap_drop).toContain('ALL');
     expect(compose.services.app.pull_policy).toBe('never');
     expect(compose.services.app.entrypoint).toEqual([]);
-    expect(compose.services.app.command).toContain('/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js');
+    expect(compose.services.app.command).toContain('/app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts && exec node apps/api/dist/main.js');
   });
 });

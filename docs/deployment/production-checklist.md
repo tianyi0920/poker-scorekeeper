@@ -43,7 +43,7 @@ docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-
 docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production build --pull
 docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app node scripts/database/production-preflight.mjs
 docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app node scripts/database/create-database.mjs
-docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app /app/apps/api/node_modules/.bin/prisma migrate deploy
+docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production run --rm app /app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts
 docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production up -d
 docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-file .env.production ps
 ```

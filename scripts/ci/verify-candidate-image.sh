@@ -102,7 +102,7 @@ wait_for_mysql
 migration_status=0
 timeout 30s "${compose[@]}" run --rm --no-deps \
   -e "DATABASE_URL=$invalid_database_url" \
-  app /app/apps/api/node_modules/.bin/prisma migrate deploy || migration_status=$?
+  app /app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts || migration_status=$?
 if (( migration_status == 0 )); then
   fail 'Migration unexpectedly succeeded with test-only invalid credentials'
 fi

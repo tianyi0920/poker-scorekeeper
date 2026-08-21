@@ -37,7 +37,7 @@ services:
       - --
       - sh
       - -c
-      - /app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js
+      - /app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts && exec node apps/api/dist/main.js
     depends_on:
       mysql:
         condition: service_healthy

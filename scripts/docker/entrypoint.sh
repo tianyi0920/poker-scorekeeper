@@ -31,7 +31,7 @@ trap 'forward_migration_signal HUP 129' HUP
 trap 'forward_migration_signal INT 130' INT
 trap 'forward_migration_signal TERM 143' TERM
 
-/app/apps/api/node_modules/.bin/prisma migrate deploy &
+/app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts &
 migration_pid=$!
 set +e
 wait "$migration_pid"

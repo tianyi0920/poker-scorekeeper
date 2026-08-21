@@ -46,7 +46,7 @@ function validateActiveGuideMigrationCommands(guides: string[]): void {
   for (const command of commands) {
     if (
       !command.endsWith(
-        " app /app/apps/api/node_modules/.bin/prisma migrate deploy",
+        " app /app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts",
       ) ||
       command.includes("pnpm")
     ) {
@@ -639,7 +639,9 @@ describe("production deployment artifacts", () => {
       dockerfile.indexOf("FROM workspace AS build"),
     );
     const productionDependencies = dockerfile.slice(
-      dockerfile.indexOf("FROM node:24-bookworm-slim AS production-dependencies"),
+      dockerfile.indexOf(
+        "FROM node:24-bookworm-slim AS production-dependencies",
+      ),
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
 
@@ -656,14 +658,16 @@ describe("production deployment artifacts", () => {
     const dockerfile = await readRepositoryFile("Dockerfile");
     const build = dockerfile.slice(
       dockerfile.indexOf("FROM workspace AS build"),
-      dockerfile.indexOf("FROM node:24-bookworm-slim AS production-dependencies"),
+      dockerfile.indexOf(
+        "FROM node:24-bookworm-slim AS production-dependencies",
+      ),
     );
     const runtime = dockerfile.slice(
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
 
     expect(build).toContain(
-      "install -m 0555 \"$engine_path\" /app/prisma-schema-engine",
+      'install -m 0555 "$engine_path" /app/prisma-schema-engine',
     );
     expect(runtime).toContain(
       "PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine",
@@ -682,6 +686,26 @@ describe("production deployment artifacts", () => {
     expect(finalUserPreflight).toContain(
       "test -x /app/apps/api/node_modules/.bin/prisma",
     );
+  });
+
+  it("passes the packaged Prisma config to every runtime migration command", async () => {
+    // Break caught: runtime commands execute from /app, so Prisma cannot discover apps/api/prisma.config.ts implicitly.
+    const migration =
+      "/app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts";
+    const [entrypoint, testCompose, candidate, productionChecklist, synology] =
+      await Promise.all([
+        readRepositoryFile("scripts/docker/entrypoint.sh"),
+        readRepositoryFile("docker-compose.test.yml"),
+        readRepositoryFile("scripts/ci/verify-candidate-image.sh"),
+        readRepositoryFile("docs/deployment/production-checklist.md"),
+        readRepositoryFile("docs/deployment/synology.md"),
+      ]);
+
+    expect(entrypoint).toContain(`${migration} &`);
+    expect(testCompose).toContain(`${migration} && exec node`);
+    expect(candidate).toContain(`app ${migration}`);
+    expect(productionChecklist).toContain(`app ${migration}`);
+    expect(synology).toContain(`app ${migration}`);
   });
 
   it("starts by deploying migrations and then replacing the shell with the API process", async () => {
@@ -722,15 +746,13 @@ describe("production deployment artifacts", () => {
     // Break caught: root verifies only mode bits while the final node user cannot execute Prisma.
     expect(
       runtime.slice(runtime.indexOf("USER node"), runtime.indexOf("EXPOSE")),
-    ).toContain(
-      "test -x /app/apps/api/node_modules/.bin/prisma",
-    );
+    ).toContain("test -x /app/apps/api/node_modules/.bin/prisma");
     expect(entrypoint).toContain(
       "/app/apps/api/node_modules/.bin/prisma migrate deploy",
     );
     expect(entrypoint).not.toMatch(/\bpnpm\b|\bcorepack\b/);
     expect(compose.services.app.command).toContain(
-      "/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js",
+      "/app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts && exec node apps/api/dist/main.js",
     );
   });
 
@@ -844,7 +866,7 @@ describe("production deployment artifacts", () => {
       "--",
       "sh",
       "-c",
-      "/app/apps/api/node_modules/.bin/prisma migrate deploy && exec node apps/api/dist/main.js",
+      "/app/apps/api/node_modules/.bin/prisma migrate deploy --config /app/apps/api/prisma.config.ts && exec node apps/api/dist/main.js",
     ]);
   });
 
