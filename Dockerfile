@@ -93,6 +93,9 @@ RUN --mount=type=bind,from=runtime-bundle,source=/app,target=/mnt/runtime-bundle
 
 USER node
 RUN set -eux; \
+    id; \
+    ls -ld /app/scripts /app/scripts/docker /app/scripts/database /app/scripts/backup; \
+    find /app/scripts -maxdepth 2 -type f -printf '%m %u:%g %p\n' | sort; \
     test -x /app/prisma-schema-engine; \
     test -x /app/apps/api/node_modules/.bin/prisma; \
     test -x /app/scripts/docker/entrypoint.sh; \

@@ -231,6 +231,8 @@ describe("GitHub Actions Docker publication workflows", () => {
     const { workflow } = await readWorkflow("verify.yml");
     const stepNames = stepsFor(workflow, "verify").map((step) => step.name);
     const ordered = [
+      "Set up the publication-style Docker builder",
+      "Build and smoke the publication-style candidate",
       "Install frozen dependencies",
       "Check guarded CI database connectivity",
       "Apply migrations to the isolated CI database",
@@ -241,8 +243,6 @@ describe("GitHub Actions Docker publication workflows", () => {
       "Install browser engines",
       "Run the 23-test browser suite",
       "Run the complete isolated container release drill",
-      "Set up the publication-style Docker builder",
-      "Build and smoke the publication-style candidate",
       "Validate registry Compose and repository hygiene",
     ];
     let position = -1;
