@@ -87,7 +87,11 @@ describe('Task18 release harness safety', () => {
 
   it('replaces a poisoned parent DATABASE_URL with the guarded .env.local test target', async () => {
     // Break caught: Playwright's API process inherits an unrelated parent DATABASE_URL.
-    const previous = process.env.DATABASE_URL;
+    const previous = {
+      ci: process.env.CI,
+      githubActions: process.env.GITHUB_ACTIONS,
+      databaseUrl: process.env.DATABASE_URL
+    };
     const previousDirectory = process.cwd();
     let testDirectory: string | undefined;
     try {
@@ -98,6 +102,8 @@ describe('Task18 release harness safety', () => {
         'poker_scorekeeper_test'
       ].join('');
       await writeFile(join(testDirectory, '.env.local'), `DATABASE_URL=${guardedDatabaseUrl}\n`);
+      delete process.env.CI;
+      delete process.env.GITHUB_ACTIONS;
       process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
       process.chdir(testDirectory);
       await readTestDatabaseEnvironment();
@@ -116,8 +122,12 @@ describe('Task18 release harness safety', () => {
       });
     } finally {
       process.chdir(previousDirectory);
-      if (previous === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = previous;
+      if (previous.ci === undefined) delete process.env.CI;
+      else process.env.CI = previous.ci;
+      if (previous.githubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = previous.githubActions;
+      if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous.databaseUrl;
       if (testDirectory !== undefined) {
         await rm(testDirectory, { recursive: true, force: true });
       }
