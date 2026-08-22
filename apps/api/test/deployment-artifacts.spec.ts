@@ -659,6 +659,110 @@ function validateSecureProductionChecklist(content: string): void {
   }
 }
 
+const secureLoopbackHttpOrigins = new Set([
+  "http://127.0.0.1:3000",
+  "http://localhost:3000",
+  "http://[::1]:3000",
+]);
+
+function rejectInsecureBackendGuide(name: string, detail: string): never {
+  throw new Error(`${name} permits an insecure public application backend: ${detail}`);
+}
+
+function parseGuideUrl(candidate: string, name: string): URL {
+  try {
+    return new URL(candidate);
+  } catch {
+    return rejectInsecureBackendGuide(name, `invalid URL ${candidate}`);
+  }
+}
+
+function validateGuideUrl(candidate: string, name: string): void {
+  const url = parseGuideUrl(candidate.replace(/[.,;:]+$/u, ""), name);
+  const protocol = url.protocol.toLowerCase();
+  if (protocol === "ws:") {
+    rejectInsecureBackendGuide(name, `insecure WebSocket URL ${candidate}`);
+  }
+  if (protocol === "http:" && !secureLoopbackHttpOrigins.has(url.origin)) {
+    rejectInsecureBackendGuide(name, `insecure HTTP URL ${candidate}`);
+  }
+}
+
+function validateGuideOrigin(value: string, key: string, name: string): void {
+  const origin = value.trim();
+  if (origin.length === 0) {
+    rejectInsecureBackendGuide(name, `${key} contains an empty origin`);
+  }
+
+  const url = parseGuideUrl(origin, name);
+  if (
+    url.protocol.toLowerCase() !== "https:" ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== "" ||
+    url.origin === "null"
+  ) {
+    rejectInsecureBackendGuide(name, `${key} must contain a complete HTTPS origin`);
+  }
+}
+
+function validateGuideEnvironmentAssignments(content: string, name: string): void {
+  const assignments = content.matchAll(
+    /\b(PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS|PORT)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s`]+))/g,
+  );
+
+  for (const assignment of assignments) {
+    const key = assignment[1]!;
+    const rawValue = (assignment[2] ?? assignment[3] ?? assignment[4] ?? "").trim();
+    const value = key === "PORT" ? rawValue.split("#", 1)[0]!.trim() : rawValue;
+    if (key === "PORT") {
+      if (value !== "80") {
+        rejectInsecureBackendGuide(name, `PORT must be 80, received ${value}`);
+      }
+      continue;
+    }
+
+    const origins = value.split(",");
+    if (origins.length === 0 || origins.some((origin) => origin.trim() === "")) {
+      rejectInsecureBackendGuide(name, `${key} must not be empty`);
+    }
+    for (const origin of origins) {
+      validateGuideOrigin(origin, key, name);
+    }
+  }
+}
+
+function validateGuidePortMappings(content: string, name: string): void {
+  const shortMappings = content.matchAll(
+    /(?<![\w.:])(?:(127\.0\.0\.1|localhost|\[::1\]|0\.0\.0\.0):)?(\d+):(\d+)(?![\w.:])/g,
+  );
+  for (const mapping of shortMappings) {
+    const [, hostIp, published, target] = mapping;
+    // A two-number token is a Compose mapping here only when it targets the
+    // application's internal port. This avoids treating unrelated UID:GID prose
+    // as a port mapping while still rejecting every public way to publish 80.
+    if (hostIp === undefined && target !== "80") continue;
+    if (hostIp !== "127.0.0.1" || published !== "3000" || target !== "80") {
+      rejectInsecureBackendGuide(name, `unsafe short port mapping ${mapping[0]}`);
+    }
+  }
+
+  const longMappingStarts = [...content.matchAll(/^\s*-\s*target\s*:\s*(\d+)\s*(?:#.*)?$/gm)];
+  for (const [index, targetMatch] of longMappingStarts.entries()) {
+    const nextStart = longMappingStarts[index + 1]?.index ?? content.length;
+    const mapping = content.slice(targetMatch.index, nextStart);
+    const published = mapping.match(/^\s*published\s*:\s*(\d+)\s*(?:#.*)?$/m)?.[1];
+    const hostIp = mapping
+      .match(/^\s*host_ip\s*:\s*(\S+)\s*(?:#.*)?$/m)?.[1]
+      ?.replace(/^['"]|['"]$/g, "");
+    if (targetMatch[1] !== "80" || published !== "3000" || hostIp !== "127.0.0.1") {
+      rejectInsecureBackendGuide(name, "unsafe long-form port mapping");
+    }
+  }
+}
+
 function validateSecureBackendDeploymentGuide(content: string, name: string): void {
   for (const requirement of [
     "PORT=80",
@@ -675,47 +779,13 @@ function validateSecureBackendDeploymentGuide(content: string, name: string): vo
     }
   }
 
-  const loopbackHttpOrigins = new Set([
-    "http://127.0.0.1:3000",
-    "http://localhost:3000",
-    "http://[::1]:3000",
-  ]);
-  const urls = content.match(/\b(?:https?|wss?):\/\/[^\s`'"<>)}\]]+/g) ?? [];
+  const urls = content.match(/\b(?:https?|wss?):\/\/[^\s`'"<>{})]+/gi) ?? [];
   for (const candidate of urls) {
-    const url = new URL(candidate.replace(/[.,;:]+$/, ""));
-    if (url.protocol === "ws:") {
-      throw new Error(`${name} permits an insecure public application backend`);
-    }
-    if (url.protocol === "http:" && !loopbackHttpOrigins.has(url.origin)) {
-      throw new Error(`${name} permits an insecure public application backend`);
-    }
+    validateGuideUrl(candidate, name);
   }
 
-  const assignmentValues = new Map<string, string[]>();
-  for (const line of content.split(/\r?\n/)) {
-    const assignment = line.match(/^\s*(PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS|PORT)\s*=\s*([^#\r\n]*?)(?:\s+#.*)?\s*$/);
-    if (assignment === null) continue;
-    const key = assignment[1]!;
-    const value = assignment[2]!.trim().replace(/^['"]|['"]$/g, "");
-    const values = assignmentValues.get(key) ?? [];
-    values.push(value);
-    assignmentValues.set(key, values);
-  }
-  for (const [key, values] of assignmentValues) {
-    if (key === "PORT" && values.some((value) => value !== "80")) {
-      throw new Error(`${name} permits an insecure public application backend`);
-    }
-    if (
-      (key === "PUBLIC_ORIGIN" || key === "WS_ALLOWED_ORIGINS") &&
-      values.some((value) => value.split(",").some((origin) => !origin.trim().startsWith("https://")))
-    ) {
-      throw new Error(`${name} permits an insecure public application backend`);
-    }
-  }
-
-  if (/(?:^|[^\d])80:80(?:[^\d]|$)/.test(content)) {
-    throw new Error(`${name} permits an insecure public application backend`);
-  }
+  validateGuideEnvironmentAssignments(content, name);
+  validateGuidePortMappings(content, name);
 
   for (const line of content.split(/\r?\n/)) {
     if (
@@ -1286,6 +1356,20 @@ describe("production deployment artifacts", () => {
     }
 
     const synology = guides[1]!;
+    for (const insecureProtocol of ["HTTP", "hTtP", "WS", "wS"]) {
+      expect(() =>
+        validateSecureBackendDeploymentGuide(
+          synology.replace("https://poker.example.com", `${insecureProtocol}://poker.example.com`),
+          `mutated ${insecureProtocol} guide`,
+        ),
+      ).toThrow(/insecure public application backend/);
+    }
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        `${synology}\nhttps://[2001:db8::1]/\nwss://[2001:db8::1]/\nhttp://[::1]:3000`,
+        "IPv6 guide",
+      ),
+    ).not.toThrow();
     expect(() =>
       validateSecureBackendDeploymentGuide(
         synology.replace("https://poker.example.com", "http://poker.example.com"),
@@ -1322,6 +1406,49 @@ describe("production deployment artifacts", () => {
         "mutated Synology guide",
       ),
     ).toThrow(/missing secure backend requirement|insecure public application backend/);
+    for (const assignment of [
+      'export PORT = "3000" # application listen port',
+      "- PORT='3000'# application listen port",
+      "PORT=3000#application listen port",
+      "docker run -e PORT = 3000 # application listen port",
+      'PUBLIC_ORIGIN="https://"',
+      "WS_ALLOWED_ORIGINS='https://,https://poker.example.com'",
+      'export PUBLIC_ORIGIN = "https://operator:secret@poker.example.com"',
+      "- PUBLIC_ORIGIN=https://poker.example.com/room",
+      "docker run -e WS_ALLOWED_ORIGINS=https://poker.example.com?preview=1",
+      "WS_ALLOWED_ORIGINS=https://poker.example.com#fragment",
+    ]) {
+      expect(
+        () =>
+          validateSecureBackendDeploymentGuide(
+            `${synology}\n${assignment}`,
+            `mutated assignment ${assignment}`,
+          ),
+        `must reject assignment mutation: ${assignment}`,
+      ).toThrow(/insecure public application backend/);
+    }
+    for (const mapping of [
+      'ports:\n  - "3000:80"',
+      'ports:\n  - "0.0.0.0:3000:80"',
+      'ports:\n  - "80:80"',
+      'ports:\n  - target: 80\n    published: 3000\n    host_ip: 0.0.0.0',
+      'ports:\n  - target: 80\n    published: 3000',
+      'ports:\n  - target: 3000\n    published: 3000\n    host_ip: 127.0.0.1',
+      'ports:\n  - target: 80\n    published: 80\n    host_ip: 127.0.0.1',
+    ]) {
+      expect(() =>
+        validateSecureBackendDeploymentGuide(
+          `${synology}\n${mapping}`,
+          `mutated mapping ${mapping}`,
+        ),
+      ).toThrow(/insecure public application backend/);
+    }
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        `${synology}\nports:\n  - target: 80\n    published: 3000\n    host_ip: 127.0.0.1`,
+        "loopback long mapping guide",
+      ),
+    ).not.toThrow();
   });
 
   it("documents source-free Extreme Space deployment with fixed image versions", async () => {
