@@ -31,3 +31,9 @@ it('uses a negative raw-profit tone and unsigned final payable amount', () => {
   expect(screen.getByText('最终应付')).toBeInTheDocument();
   expect(screen.getByText('¥1,800').parentElement).toHaveClass('settlement-metric--final');
 });
+
+it('omits the total other-fee entry when its amount is zero', () => {
+  // Break caught: the summary presents a nonexistent other fee as ¥0.
+  render(<SettlementBreakdown breakdown={{ ...breakdown, totals: { ...breakdown.totals, otherFee: '0' }, players: [{ ...breakdown.players[0]!, otherFeeShare: '0' }] }} mode="history" />);
+  expect(screen.queryByText(/总其他费/)).not.toBeInTheDocument();
+});
