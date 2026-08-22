@@ -675,14 +675,61 @@ function validateSecureBackendDeploymentGuide(content: string, name: string): vo
     }
   }
 
-  if (
-    /(?:^|\n)PORT=3000(?:\r?$|\r?\n)/m.test(content) ||
-    /(?:^|[^\d])80:80(?:[^\d]|$)/.test(content) ||
-    /http:\/\/pk\.tianyi\.wiki/.test(content) ||
-    /ws:\/\/pk\.tianyi\.wiki/.test(content) ||
-    /公网 IPv6 直连/.test(content)
-  ) {
+  const loopbackHttpOrigins = new Set([
+    "http://127.0.0.1:3000",
+    "http://localhost:3000",
+    "http://[::1]:3000",
+  ]);
+  const urls = content.match(/\b(?:https?|wss?):\/\/[^\s`'"<>)}\]]+/g) ?? [];
+  for (const candidate of urls) {
+    const url = new URL(candidate.replace(/[.,;:]+$/, ""));
+    if (url.protocol === "ws:") {
+      throw new Error(`${name} permits an insecure public application backend`);
+    }
+    if (url.protocol === "http:" && !loopbackHttpOrigins.has(url.origin)) {
+      throw new Error(`${name} permits an insecure public application backend`);
+    }
+  }
+
+  const assignmentValues = new Map<string, string[]>();
+  for (const line of content.split(/\r?\n/)) {
+    const assignment = line.match(/^\s*(PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS|PORT)\s*=\s*([^#\r\n]*?)(?:\s+#.*)?\s*$/);
+    if (assignment === null) continue;
+    const key = assignment[1]!;
+    const value = assignment[2]!.trim().replace(/^['"]|['"]$/g, "");
+    const values = assignmentValues.get(key) ?? [];
+    values.push(value);
+    assignmentValues.set(key, values);
+  }
+  for (const [key, values] of assignmentValues) {
+    if (key === "PORT" && values.some((value) => value !== "80")) {
+      throw new Error(`${name} permits an insecure public application backend`);
+    }
+    if (
+      (key === "PUBLIC_ORIGIN" || key === "WS_ALLOWED_ORIGINS") &&
+      values.some((value) => value.split(",").some((origin) => !origin.trim().startsWith("https://")))
+    ) {
+      throw new Error(`${name} permits an insecure public application backend`);
+    }
+  }
+
+  if (/(?:^|[^\d])80:80(?:[^\d]|$)/.test(content)) {
     throw new Error(`${name} permits an insecure public application backend`);
+  }
+
+  for (const line of content.split(/\r?\n/)) {
+    if (
+      /公网 IPv6/.test(line) &&
+      !/(?:不得|禁止|不能|仅.*回环)/.test(line)
+    ) {
+      throw new Error(`${name} permits an insecure public application backend`);
+    }
+    if (
+      /(?:公开|发布|映射).{0,24}(?:应用|容器).{0,24}(?:TCP )?80/.test(line) &&
+      !/(?:不得|禁止|不能|127\.0\.0\.1)/.test(line)
+    ) {
+      throw new Error(`${name} permits an insecure public application backend`);
+    }
   }
 }
 
@@ -1239,6 +1286,24 @@ describe("production deployment artifacts", () => {
     }
 
     const synology = guides[1]!;
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        synology.replace("https://poker.example.com", "http://poker.example.com"),
+        "mutated Synology guide",
+      ),
+    ).toThrow(/insecure public application backend/);
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        guides[2]!.replace("wss://pk.tianyi.wiki", "ws://pk.tianyi.wiki"),
+        "mutated production checklist",
+      ),
+    ).toThrow(/insecure public application backend/);
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        synology.replace("PORT=80", "PORT=3000 # application listen port"),
+        "mutated Synology guide",
+      ),
+    ).toThrow(/insecure public application backend/);
     expect(() =>
       validateSecureBackendDeploymentGuide(
         synology.replace("127.0.0.1:3000:80", "80:80"),
