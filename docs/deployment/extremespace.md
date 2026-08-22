@@ -10,7 +10,7 @@
 
 ### 极空间“单独创建容器”向导
 
-从 `1.0.2` 开始，生产环境变量会自动列出；本次版本发布后请选择 `docker.io/tianyi920/poker-scorekeeper:1.0.6`。保留镜像自带的运行时默认值，只修改 `CHANGE_ME` 占位符、数据库账号和首次管理员信息，并保持 `PORT=80`、`PUBLIC_ORIGIN=http://pk.tianyi.wiki`。镜像不包含任何真实密码或随机密钥，未替换占位符时生产入口会失败关闭。`1.0.4` 起在 Buildx 构建时把全部运行文件实际写入同一个最终镜像层；`1.0.5` 修复直连 HTTP 的前端白屏；`1.0.6` 将应用默认端口改为 80，并使用 IPv4/IPv6 双栈监听。
+从 `1.0.2` 开始，生产环境变量会自动列出；本次版本发布后请选择 `docker.io/tianyi920/poker-scorekeeper:1.0.6`。保留镜像自带的运行时默认值，只修改 `CHANGE_ME` 占位符、数据库账号和首次管理员信息，并保持 `PORT=80`、`PUBLIC_ORIGIN=https://pk.tianyi.wiki`、`WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki`。镜像不包含任何真实密码或随机密钥，未替换占位符时生产入口会失败关闭。`1.0.4` 起在 Buildx 构建时把全部运行文件实际写入同一个最终镜像层；`1.0.5` 修复直连 HTTP 的前端白屏；`1.0.6` 将应用默认端口改为 80，并使用 IPv4/IPv6 双栈监听。
 
 `/data/avatars`、`/data/backups`、`/data/restore` 三个数据卷会自动列出。必须分别为它们选择极空间上的持久文件夹并保持读写，不能直接接受 Docker 自动创建的匿名卷；匿名卷的位置和生命周期不便于备份、迁移与恢复。镜像内路径已经固定，不要改装载路径，只选择对应的宿主机文件夹。
 
@@ -66,7 +66,7 @@ chmod 600 .env.production
 POKER_IMAGE_VERSION=1.0.6
 ```
 
-把模板中的所有 `CHANGE_ME` 值替换为新的实际值；数据库继续使用现有的 `192.168.10.248:3306/poker_scorekeeper`，并确认 `PORT=80`、`PUBLIC_ORIGIN=http://pk.tianyi.wiki`。`SESSION_SECRET` 与 `CSRF_SECRET` 必须各自独立且随机。密码若含 `@`、`:`、`/` 等字符，填入 `DATABASE_URL` 前必须进行 URL 编码。
+把模板中的所有 `CHANGE_ME` 值替换为新的实际值；数据库继续使用现有的 `192.168.10.248:3306/poker_scorekeeper`，并确认 `PORT=80`、`PUBLIC_ORIGIN=https://pk.tianyi.wiki`、`WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki`。`SESSION_SECRET` 与 `CSRF_SECRET` 必须各自独立且随机。密码若含 `@`、`:`、`/` 等字符，填入 `DATABASE_URL` 前必须进行 URL 编码。
 
 `.env.production` 中包含数据库、会话、CSRF、管理员和备份账户凭据：不要把它传给 GitHub、Docker Hub、日志、命令参数或 NAS 截图。
 
@@ -117,13 +117,26 @@ curl --fail http://127.0.0.1:80/api/health/deployment
 
 若选择极空间“单独创建容器”，不要执行上面的 `up -d`；回到向导按开头的单独创建说明启动唯一的正式容器，并在极空间日志页和浏览器中完成同样的三个健康检查。
 
-## 4. HTTP 和 IPv6 直连
+## 4. HTTPS、WSS 与公网验收
 
-本方案不使用反向代理、HTTPS、443 或 ACME。应用直接在容器 `::` 的 TCP 80 上提供 HTTP 和 WebSocket；容器必须继续使用能获得公网 IPv6 的网络。`pk.tianyi.wiki` 的 AAAA 必须等于容器公网 IPv6，而不是旧代理容器或 NAS 宿主机的地址。
+应用容器仍可在内部 TCP 80 提供服务，但公网入口必须由 TLS 终止层以 `https://pk.tianyi.wiki` 暴露，并将 Socket.IO 的 `/socket.io` Upgrade 请求转发到同一应用。不要将明文 HTTP 作为浏览器入口，也不要公开 MariaDB `3306`。`PUBLIC_ORIGIN` 与 `WS_ALLOWED_ORIGINS` 必须和模板完全同为 `https://pk.tianyi.wiki`；应用据此在 CSP 的 `connect-src` 中生成 `wss://pk.tianyi.wiki`。
 
-在爱快 IPv6 防火墙中仅允许公网到该容器的 TCP 80，不需要 IPv4 NAT 端口转发；不要公开 MariaDB `3306`。先在容器或极空间网络页记录实际公网 IPv6，再确认 DNS AAAA 完全相同。部署后用非局域网手机访问 `http://pk.tianyi.wiki`，测试登录、头像上传和 WebSocket 实时牌局更新。
+部署后，从管理电脑的 PowerShell 运行以下精确检查（不在命令行传入或打印任何 secret）：
 
-HTTP 明文不会加密密码、Cookie 或牌局数据，链路上的运营商、公共 Wi-Fi 或中间设备可能读取或修改流量。这是本次选择直连 HTTP 的明确安全取舍；以后需要消除该风险时，再把 443/TLS 放到反向代理或应用前面。
+```powershell
+curl.exe -fsSI https://pk.tianyi.wiki/api/health/live
+curl.exe -fsS -D - -o NUL "https://pk.tianyi.wiki/socket.io/?EIO=4&transport=polling"
+```
+
+第一条必须成功；第二条必须返回 Socket.IO polling 响应头。随后在浏览器打开站点，在 DevTools 的 Network 面板确认 WebSocket 请求升级为 `101 Switching Protocols`，并检查渲染后的 `Content-Security-Policy` 的 `connect-src` 包含 `wss://pk.tianyi.wiki`，且没有 mixed-content 或 CSP 错误。
+
+上线前仅在受限 NAS 终端中将部署 secret 文件与模板做安全对照：所有模板的 `CHANGE_ME` 必须已替换，`SESSION_SECRET` 与 `CSRF_SECRET` 必须彼此不同且随机；不要输出、截图或传送其值。只可核对不含秘密的 origin 行：
+
+```sh
+grep -nE '^(PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)=' .env.production .env.extremespace.example
+```
+
+两份文件的这两行都必须为 `https://pk.tianyi.wiki`。命令输出之外的密码、数据库 URL 与 secret 仍不得提交到 Git、日志或聊天。
 
 ## 5. 升级操作卡
 

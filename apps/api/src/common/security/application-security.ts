@@ -63,7 +63,7 @@ function requestTargetLimit(req: RequestWithId, _res: Response, next: NextFuncti
   ));
 }
 
-function websocketCspSources(environment: NodeJS.ProcessEnv): string[] {
+export function websocketCspSources(environment: NodeJS.ProcessEnv): string[] {
   const candidates = [
     environment.PUBLIC_ORIGIN,
     ...(environment.WS_ALLOWED_ORIGINS?.split(',') ?? [])

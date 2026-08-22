@@ -26,6 +26,16 @@ describe('WebSocketOriginPolicy', () => {
     expect(origins.allows('https://poker.example.test/')).toBe(false);
   });
 
+  it('accepts the HTTPS browser origin for the production socket and rejects HTTP', () => {
+    const origins = policy({
+      PUBLIC_ORIGIN: 'https://pk.tianyi.wiki',
+      WS_ALLOWED_ORIGINS: ''
+    });
+
+    expect(origins.allows('https://pk.tianyi.wiki')).toBe(true);
+    expect(origins.allows('http://pk.tianyi.wiki')).toBe(false);
+  });
+
   it('rejects malformed configuration without echoing its value', () => {
     expect(() => policy({ PUBLIC_ORIGIN: 'private-malformed-value' }))
       .toThrowError('Invalid websocket origin configuration');

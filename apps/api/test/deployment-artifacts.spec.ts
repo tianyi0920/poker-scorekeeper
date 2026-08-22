@@ -343,11 +343,10 @@ function validateExtremeSpaceRunbook(content: string): void {
     "不要再执行 Compose 的 `up -d`",
     "升级单独创建的容器时",
     "回滚单独创建的容器时",
-    "http://pk.tianyi.wiki",
-    "AAAA",
-    "公网 IPv6",
-    "TCP 80",
-    "HTTP 明文",
+    "https://pk.tianyi.wiki",
+    "curl.exe -fsSI https://pk.tianyi.wiki/api/health/live",
+    'curl.exe -fsS -D - -o NUL "https://pk.tianyi.wiki/socket.io/?EIO=4&transport=polling"',
+    "101 Switching Protocols",
     "WebSocket",
     "### 3.1 立即创建并验证首次备份",
     ': "${POKER_DIR:?Repeat section 1 in this shell first}"',
@@ -538,21 +537,21 @@ function validateExtremeSpaceRunbook(content: string): void {
     throw new Error("runbook contains a mutable latest image version");
   }
 
-  const directHttpSection = content.slice(
-    content.indexOf("## 4. HTTP 和 IPv6 直连"),
+  const secureRealtimeSection = content.slice(
+    content.indexOf("## 4. HTTPS、WSS 与公网验收"),
     content.indexOf("## 5. 升级操作卡"),
   );
   for (const requirement of [
-    "http://pk.tianyi.wiki",
-    "AAAA",
-    "容器公网 IPv6",
-    "TCP 80",
+    "https://pk.tianyi.wiki",
+    "wss://pk.tianyi.wiki",
+    "curl.exe -fsSI https://pk.tianyi.wiki/api/health/live",
+    'curl.exe -fsS -D - -o NUL "https://pk.tianyi.wiki/socket.io/?EIO=4&transport=polling"',
+    "101 Switching Protocols",
     "WebSocket",
-    "HTTP 明文",
     "不要公开 MariaDB `3306`",
   ]) {
-    if (!directHttpSection.includes(requirement))
-      throw new Error("direct HTTP IPv6 instructions are incomplete");
+    if (!secureRealtimeSection.includes(requirement))
+      throw new Error("secure realtime instructions are incomplete");
   }
 
   if (
@@ -572,7 +571,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   if (
     firstPullIndex > firstBackupIndex ||
     firstBackupIndex > firstUpIndex ||
-    firstBackupIndex > content.indexOf("## 4. HTTP 和 IPv6 直连")
+    firstBackupIndex > content.indexOf("## 4. HTTPS、WSS 与公网验收")
   ) {
     throw new Error(
       "first backup verification is not before the first migration-capable startup",
@@ -765,8 +764,8 @@ describe("production deployment artifacts", () => {
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
     for (const assignment of [
-      "PUBLIC_ORIGIN=http://pk.tianyi.wiki",
-      'WS_ALLOWED_ORIGINS=""',
+      "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+      'WS_ALLOWED_ORIGINS="https://pk.tianyi.wiki"',
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
       "SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
       "CSRF_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
@@ -1101,7 +1100,8 @@ describe("production deployment artifacts", () => {
 
     expect(environment).toContain("POKER_IMAGE_VERSION=1.0.6");
     expect(environment).toContain("PORT=80");
-    expect(environment).toContain("PUBLIC_ORIGIN=http://pk.tianyi.wiki");
+    expect(environment).toContain("PUBLIC_ORIGIN=https://pk.tianyi.wiki");
+    expect(environment).toContain("WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki");
     expect(environment).toContain(
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
     );
@@ -1216,8 +1216,8 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          /### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTP 和 IPv6 直连/,
-          "## 4. HTTP 和 IPv6 直连",
+          /### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTPS、WSS 与公网验收/,
+          "## 4. HTTPS、WSS 与公网验收",
         ),
       ),
     ).toThrow(/runbook requirement/);
@@ -1356,9 +1356,9 @@ describe("production deployment artifacts", () => {
     ).toThrow(/upgrade command order/);
     expect(() =>
       validateExtremeSpaceRunbook(
-        runbook.replace("`pk.tianyi.wiki` 的 AAAA 必须等于容器公网 IPv6", ""),
+        runbook.replaceAll("wss://pk.tianyi.wiki", ""),
       ),
-    ).toThrow(/direct HTTP IPv6 instructions/);
+    ).toThrow(/secure realtime instructions/);
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(

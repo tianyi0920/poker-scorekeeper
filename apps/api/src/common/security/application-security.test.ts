@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { parse } from 'dotenv';
 import {
   hstsSetting,
-  trustProxySetting
+  trustProxySetting,
+  websocketCspSources
 } from './application-security.js';
 
 describe('application transport security', () => {
@@ -28,5 +31,20 @@ describe('application transport security', () => {
       NODE_ENV: 'development',
       PUBLIC_ORIGIN: 'https://pk.tianyi.wiki'
     })).toBe(false);
+  });
+
+  it('converts an HTTPS public origin to the matching WSS CSP source', () => {
+    expect(websocketCspSources({
+      PUBLIC_ORIGIN: 'https://pk.tianyi.wiki'
+    })).toEqual(['wss://pk.tianyi.wiki']);
+  });
+
+  it('keeps the ExtremeSpace production example on the canonical HTTPS socket origin', () => {
+    const environment = parse(readFileSync(
+      new URL('../../../../../.env.extremespace.example', import.meta.url)
+    ));
+
+    expect(environment.PUBLIC_ORIGIN).toBe('https://pk.tianyi.wiki');
+    expect(environment.WS_ALLOWED_ORIGINS).toBe('https://pk.tianyi.wiki');
   });
 });
