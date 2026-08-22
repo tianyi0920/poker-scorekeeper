@@ -506,7 +506,7 @@ describe.sequential('atomic final settlement', () => {
     }).expect(201);
     const list = await read(playerAuth, '/api/history?limit=99').expect(200);
     expect(list.body.items).toHaveLength(1);
-    expect(list.body.items[0]).toMatchObject({ gameId: fixture.game.id, final: '-613' });
+    expect(list.body.items[0]).toMatchObject({ gameId: fixture.game.id, myFinalAmount: '1190' });
     expect(list.body.nextCursor).toBeNull();
     const detail = await read(playerAuth, `/api/history/${fixture.game.id}`).expect(200);
     expect(detail.body).toMatchObject({ immutable: true, otherFeeNote: '饮料' });
