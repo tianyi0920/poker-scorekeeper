@@ -82,7 +82,7 @@ curl --fail http://127.0.0.1:3000/api/health/ready
 
 容器入口先执行固定目标只读预检，再执行 `prisma migrate deploy`，成功后才启动服务。显式 `docker compose run` 命令由入口转交执行，不再被入口忽略；除预检本身外，生产一次性命令也先经过固定目标门禁。构建把同一个 `DEPLOYMENT_ID` 固化到 OCI revision label 和只读 `/app/deployment-id`，公开的 `/api/health/deployment` 只读取该镜像文件。最终记录器必须证明 label、运行容器文件与 `PUBLIC_ORIGIN` 公开端点三者一致。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000`，不会把 3000 暴露到局域网，也不会发布 3306。
 
-在 Container Manager 图形界面中，可选择“项目 → 新增 → 创建 docker-compose.yml”，项目路径选上述目录，项目名固定为 `poker-scorekeeper`。确认预览中只有 `app` 服务且端口映射是 `127.0.0.1:3000:3000`，再构建并启动。
+在 Container Manager 图形界面中，可选择“项目 → 新增 → 创建 docker-compose.yml”，项目路径选上述目录，项目名固定为 `poker-scorekeeper`。确认预览中只有 `app` 服务且端口映射是 `127.0.0.1:3000:80`，再构建并启动。
 
 ## 4. HTTPS、WebSocket 与公网入口
 

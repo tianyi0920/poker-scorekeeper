@@ -16,7 +16,7 @@ services:
       AVATAR_ROOT: /data/avatars
       BACKUP_DIR: /data/backups
     ports:
-      - "80:80"
+      - "127.0.0.1:3000:80"
     volumes:
       - ./data/avatars:/data/avatars
       - ./data/backups:/data/backups

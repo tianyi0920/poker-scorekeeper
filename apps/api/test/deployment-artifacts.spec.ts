@@ -335,9 +335,9 @@ function validateExtremeSpaceRunbook(content: string): void {
     "运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行",
     "在管理界面复核三项权限已生效",
     "docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app",
-    "curl --fail http://127.0.0.1:80/api/health/live",
-    "curl --fail http://127.0.0.1:80/api/health/ready",
-    "curl --fail http://127.0.0.1:80/api/health/deployment",
+    "curl --fail http://127.0.0.1:3000/api/health/live",
+    "curl --fail http://127.0.0.1:3000/api/health/ready",
+    "curl --fail http://127.0.0.1:3000/api/health/deployment",
     "点击“应用”前，必须先完成第 3.1 节",
     "只选择一种正式启动方式",
     "不要再执行 Compose 的 `up -d`",
@@ -984,13 +984,13 @@ describe("production deployment artifacts", () => {
     }
   });
 
-  it("publishes the app directly on HTTP port 80 with non-root low-port binding", async () => {
-    // Break caught: the public IPv6 reaches a closed/wrong port or the non-root process cannot bind port 80.
+  it("binds the internal HTTP port to the local TLS proxy backend", async () => {
+    // Break caught: the application is published directly instead of remaining behind the local TLS proxy.
     const compose = parse(await readRepositoryFile("docker-compose.yml")) as {
       services: { app: ComposeService };
     };
     expect(Object.keys(compose.services)).toEqual(["app"]);
-    expect(compose.services.app.ports).toEqual(["80:80"]);
+    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:80"]);
     expect(compose.services.app.environment?.PORT).toBe("80");
     expect(compose.services.app.sysctls).toEqual({
       "net.ipv4.ip_unprivileged_port_start": "0",
@@ -1095,7 +1095,7 @@ describe("production deployment artifacts", () => {
     expect(compose.services.app.image).toBe(
       "docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION:?POKER_IMAGE_VERSION is required}",
     );
-    expect(compose.services.app.ports).toEqual(["80:80"]);
+    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:80"]);
     expect(compose.services.app.environment?.PORT).toBe("80");
     expect(compose.services.app.sysctls).toEqual({
       "net.ipv4.ip_unprivileged_port_start": "0",
@@ -1173,6 +1173,31 @@ describe("production deployment artifacts", () => {
         checklist.replace("TLS 终止", "没有 TLS、HSTS 或 WSS"),
       ),
     ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
+  });
+
+  it("keeps production app ports behind the OpenResty TLS loopback backend", async () => {
+    const [sourceCompose, registryCompose] = await Promise.all([
+      readRepositoryFile("docker-compose.yml"),
+      readRepositoryFile("docker-compose.registry.yml"),
+    ]);
+    const source = parse(sourceCompose) as { services: { app: ComposeService } };
+    const registry = parse(registryCompose) as { services: { app: ComposeService } };
+
+    expect(source.services.app.ports).toEqual(["127.0.0.1:3000:80"]);
+    expect(registry.services.app.ports).toEqual(["127.0.0.1:3000:80"]);
+
+    const [extremeSpace, checklist] = await Promise.all([
+      readRepositoryFile("docs/deployment/extremespace.md"),
+      readRepositoryFile("docs/deployment/production-checklist.md"),
+    ]);
+    for (const document of [extremeSpace, checklist]) {
+      expect(document).toContain("OpenResty");
+      expect(document).toContain("127.0.0.1:3000");
+      expect(document).toContain("/socket.io");
+      expect(document).toContain("Upgrade");
+    }
+    expect(extremeSpace).not.toMatch(/网络选择当前能直接给该容器分配公网 IPv6|如果界面要求端口映射，使用宿主机 `80` 到容器 `80`|端口映射为 `80:80`/);
+    expect(checklist).not.toContain("只公开应用 TCP 80");
   });
 
   it("documents source-free Extreme Space deployment with fixed image versions", async () => {

@@ -22,7 +22,7 @@
 - [ ] `DATABASE_URL` 精确指向 `192.168.10.248:3306/poker_scorekeeper`。
 - [ ] `.env.production` 中的 `DEPLOYMENT_ID` 符合 `^[a-z0-9][a-z0-9._-]{7,63}$`，且对应本轮待部署代码。
 - [ ] `MYSQL_HOST=192.168.10.248`、`MYSQL_PORT=3306`、`MYSQL_DATABASE=poker_scorekeeper`。
-- [ ] 生产 Compose 中只有 `app` 服务，设置 `PORT=80` 和 `net.ipv4.ip_unprivileged_port_start=0`；应用 TCP 80 只可由 TLS 终止层或受控私有网络访问，公网浏览器入口必须为 TLS 的 443。
+- [ ] 生产 Compose 中只有 `app` 服务，设置 `PORT=80`、`net.ipv4.ip_unprivileged_port_start=0`，且端口映射精确为 `127.0.0.1:3000:80`；应用 TCP 80 不得直接对公网或局域网发布。
 - [ ] 已在 `/volume1/docker/poker-scorekeeper` 内执行：
 
   ```sh
@@ -54,11 +54,11 @@ docker compose --file docker-compose.yml --project-name poker-scorekeeper --env-
 - [ ] 应用健康状态为 healthy，`/api/health/live` 与 `/api/health/ready` 均成功。
 - [ ] 镜像 OCI revision label、容器内 `/app/deployment-id` 与公开 `/api/health/deployment` 返回同一个 `DEPLOYMENT_ID`。
 - [ ] `_prisma_migrations` 与仓库中已提交的 migration 集合一致。
-- [ ] 只公开应用 TCP 80；没有向局域网或公网发布 3000、3306 或 8306。
+- [ ] 仅将应用容器 80 绑定到主机回环 `127.0.0.1:3000`；没有向局域网或公网发布应用端口、3306 或 8306。
 
 ## 3. HTTPS/WSS 网络边界
 
-- [ ] TLS 终止层以 `https://pk.tianyi.wiki` 对公网提供 443，并将同源 `/socket.io` 的 Upgrade 请求转发给应用；不得将应用 TCP 80、3000、3306、8306 或管理端口直接公开到公网。
+- [ ] OpenResty TLS 终止层以 `https://pk.tianyi.wiki` 对公网提供 443，并将普通请求及同源 `/socket.io` 的 Upgrade 请求代理到私有回环后端 `http://127.0.0.1:3000`；不得将应用 TCP 80、3000、3306、8306 或管理端口直接公开到公网。
 - [ ] `pk.tianyi.wiki` 的 DNS 指向 TLS 终止层；防火墙只允许公网访问该层的 HTTPS 端口，应用容器仅接受来自该层或受控私有网络的流量。
 - [ ] 从管理电脑 PowerShell 已成功执行以下 HTTPS health 与 Socket.IO polling 检查：
 

@@ -10,11 +10,11 @@
 
 ### 极空间“单独创建容器”向导
 
-从 `1.0.2` 开始，生产环境变量会自动列出；本次版本发布后请选择 `docker.io/tianyi920/poker-scorekeeper:1.0.6`。保留镜像自带的运行时默认值，只修改 `CHANGE_ME` 占位符、数据库账号和首次管理员信息，并保持 `PORT=80`、`PUBLIC_ORIGIN=https://pk.tianyi.wiki`、`WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki`。镜像不包含任何真实密码或随机密钥，未替换占位符时生产入口会失败关闭。`1.0.4` 起在 Buildx 构建时把全部运行文件实际写入同一个最终镜像层；`1.0.5` 修复直连 HTTP 的前端白屏；`1.0.6` 将应用默认端口改为 80，并使用 IPv4/IPv6 双栈监听。
+从 `1.0.2` 开始，生产环境变量会自动列出；本次版本发布后请选择 `docker.io/tianyi920/poker-scorekeeper:1.0.6`。保留镜像自带的运行时默认值，只修改 `CHANGE_ME` 占位符、数据库账号和首次管理员信息，并保持 `PORT=80`、`PUBLIC_ORIGIN=https://pk.tianyi.wiki`、`WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki`。镜像不包含任何真实密码或随机密钥，未替换占位符时生产入口会失败关闭。`1.0.4` 起在 Buildx 构建时把全部运行文件实际写入同一个最终镜像层；`1.0.5` 修复前端白屏；`1.0.6` 将应用内部监听端口改为 80，供本机 OpenResty 的回环代理使用。
 
 `/data/avatars`、`/data/backups`、`/data/restore` 三个数据卷会自动列出。必须分别为它们选择极空间上的持久文件夹并保持读写，不能直接接受 Docker 自动创建的匿名卷；匿名卷的位置和生命周期不便于备份、迁移与恢复。镜像内路径已经固定，不要改装载路径，只选择对应的宿主机文件夹。
 
-单独创建模式把容器端口设置为 `80/TCP`，不要再填写 3000；网络选择当前能直接给该容器分配公网 IPv6 的网络，并保持镜像默认入口和命令为空。如果界面要求端口映射，使用宿主机 `80` 到容器 `80`，并先确认宿主机 80 未被占用。但是此时先不要启用开机自动启动，也不要点击“应用”：点击“应用”前，必须先完成第 3.1 节，并按其要求先完成第 1、2 节。第 3.1 节的三个一次性 Compose 任务只做生产目标核对、头像核对和备份，显式绕过普通入口，不会迁移数据库，也不会留下第二个长期运行的应用容器。
+单独创建模式把容器端口设置为 `80/TCP`，但只能绑定宿主机回环 `127.0.0.1:3000` 到容器 `80`，不得选择可直接分配公网 IPv6 的网络，也不得使用宿主机 `80` 到容器 `80`。若界面不能精确配置 `127.0.0.1:3000:80`，不要用单独创建模式，改用下方 Compose。保持镜像默认入口和命令为空。但是此时先不要启用开机自动启动，也不要点击“应用”：点击“应用”前，必须先完成第 3.1 节，并按其要求先完成第 1、2 节。第 3.1 节的三个一次性 Compose 任务只做生产目标核对、头像核对和备份，显式绕过普通入口，不会迁移数据库，也不会留下第二个长期运行的应用容器。
 
 首次备份验证通过后只选择一种正式启动方式：要么回到极空间向导，确认仍是同一固定镜像、同一组环境变量和三个宿主机目录，然后启用开机自动启动并点击“应用”；要么使用第 3 节的 Compose `up -d`。选择图形界面后不要再执行 Compose 的 `up -d`，选择 Compose 后也不要再创建图形界面应用容器，否则会形成两个实例并发生端口或数据库并发冲突。若图形界面无法设置只读根文件系统、`/tmp` 临时目录、`no-new-privileges`、删除全部 capabilities 或 `net.ipv4.ip_unprivileged_port_start=0`，请只使用下面的 Compose 方式。
 
@@ -72,7 +72,7 @@ POKER_IMAGE_VERSION=1.0.6
 
 ## 3. 首次拉取、备份、启动与检查
 
-先检查展开后的配置，确认应用环境为 `PORT=80`、端口映射为 `80:80`、没有 3000/443/ACME 服务，再拉取固定版本镜像。此时不要执行 `up`、`start`、`restart` 或普通 `run`：这些操作会进入默认入口并可能先运行数据库迁移。
+先检查展开后的配置，确认应用环境为 `PORT=80`、端口映射精确为 `127.0.0.1:3000:80`，且没有任何应用公网端口映射，再拉取固定版本镜像。此时不要执行 `up`、`start`、`restart` 或普通 `run`：这些操作会进入默认入口并可能先运行数据库迁移。
 
 ```sh
 docker compose --env-file .env.production -f docker-compose.registry.yml config --quiet
@@ -108,9 +108,9 @@ sudo sh -c 'cd "$1" && sha256sum --check "$2"' sh "$POKER_DIR/data/backups" "che
 docker compose --env-file .env.production -f docker-compose.registry.yml up -d
 docker compose --env-file .env.production -f docker-compose.registry.yml ps
 docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app
-curl --fail http://127.0.0.1:80/api/health/live
-curl --fail http://127.0.0.1:80/api/health/ready
-curl --fail http://127.0.0.1:80/api/health/deployment
+curl --fail http://127.0.0.1:3000/api/health/live
+curl --fail http://127.0.0.1:3000/api/health/ready
+curl --fail http://127.0.0.1:3000/api/health/deployment
 ```
 
 这次 `up` 才会进入镜像的普通入口：入口先再次确认生产数据库目标，再运行迁移；迁移失败时服务不会启动。`live` 只表示进程存活；`ready` 还会检查数据库；`deployment` 用于记录当前镜像的部署标识。任一步失败时先查看上面的 `logs` 输出，不要通过改成可变标签或删除迁移来绕过问题。
@@ -119,7 +119,18 @@ curl --fail http://127.0.0.1:80/api/health/deployment
 
 ## 4. HTTPS、WSS 与公网验收
 
-应用容器仍可在内部 TCP 80 提供服务，但公网入口必须由 TLS 终止层以 `https://pk.tianyi.wiki` 暴露，并将 Socket.IO 的 `/socket.io` Upgrade 请求转发到同一应用。不要将明文 HTTP 作为浏览器入口，也不要公开 MariaDB `3306`。`PUBLIC_ORIGIN` 与 `WS_ALLOWED_ORIGINS` 必须和模板完全同为 `https://pk.tianyi.wiki`；应用据此在 CSP 的 `connect-src` 中生成 `wss://pk.tianyi.wiki`。
+应用容器仅在内部 TCP 80 提供服务，Compose 将它精确绑定为私有回环后端 `127.0.0.1:3000:80`。OpenResty 作为 TLS 终止层以 `https://pk.tianyi.wiki` 对公网暴露 443，并将普通请求代理到 `http://127.0.0.1:3000`；同源 `/socket.io` 必须使用 HTTP/1.1 并转发 `Upgrade` 与 `Connection` 请求头。不要将明文 HTTP 作为浏览器入口，也不要公开 MariaDB `3306`。`PUBLIC_ORIGIN` 与 `WS_ALLOWED_ORIGINS` 必须和模板完全同为 `https://pk.tianyi.wiki`；应用据此在 CSP 的 `connect-src` 中生成 `wss://pk.tianyi.wiki`。
+
+OpenResty 的站点配置必须让 `/socket.io` 走同一回环后端，例如保留等效的 Upgrade 转发：
+
+```nginx
+location /socket.io/ {
+  proxy_pass http://127.0.0.1:3000;
+  proxy_http_version 1.1;
+  proxy_set_header Upgrade $http_upgrade;
+  proxy_set_header Connection "upgrade";
+}
+```
 
 部署后，从管理电脑的 PowerShell 运行以下精确检查（不在命令行传入或打印任何 secret）：
 
@@ -156,9 +167,9 @@ POKER_IMAGE_VERSION=1.0.6
 docker compose --env-file .env.production -f docker-compose.registry.yml pull
 docker compose --env-file .env.production -f docker-compose.registry.yml up -d
 docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=200 app
-curl --fail http://127.0.0.1:80/api/health/live
-curl --fail http://127.0.0.1:80/api/health/ready
-curl --fail http://127.0.0.1:80/api/health/deployment
+curl --fail http://127.0.0.1:3000/api/health/live
+curl --fail http://127.0.0.1:3000/api/health/ready
+curl --fail http://127.0.0.1:3000/api/health/deployment
 ```
 
 ## 6. 回滚操作卡
@@ -177,7 +188,7 @@ POKER_IMAGE_VERSION=1.0.2 # previous fixed version
 docker compose --env-file .env.production -f docker-compose.registry.yml pull
 docker compose --env-file .env.production -f docker-compose.registry.yml up -d
 docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=200 app
-curl --fail http://127.0.0.1:80/api/health/ready
+curl --fail http://127.0.0.1:3000/api/health/ready
 ```
 
 数据库迁移是 forward-only；镜像回滚 does not roll back the schema。不要对活动生产库执行自动恢复或手工降级 SQL。若确实需要数据库恢复，只能从备份先恢复到隔离的新数据库，验证后在单独的停机窗口人工切换。
@@ -187,9 +198,9 @@ curl --fail http://127.0.0.1:80/api/health/ready
 ```sh
 docker compose --env-file .env.production -f docker-compose.registry.yml ps
 docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=200 app
-curl -i http://127.0.0.1:80/api/health/live
-curl -i http://127.0.0.1:80/api/health/ready
-curl -i http://127.0.0.1:80/api/health/deployment
+curl -i http://127.0.0.1:3000/api/health/live
+curl -i http://127.0.0.1:3000/api/health/ready
+curl -i http://127.0.0.1:3000/api/health/deployment
 ```
 
 日志虽然会脱敏，仍应限制可查看日志的 NAS 账户。请求支持时不要粘贴 Cookie、Authorization、数据库 URL、令牌、密码或完整 `.env.production`。
