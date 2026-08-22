@@ -12,6 +12,16 @@ export async function createAndStartGame(
 ): Promise<CreatedGame> {
   const name = `Task18 完整流程 ${Date.now().toString(36)}`;
   await page.goto('/games/new');
+  await expect(page.getByRole('button', { name: '创建并开启' })).toHaveCount(1);
+  await expect(page.getByRole('button', { name: '创建草稿' })).toHaveCount(0);
+  const startRequests: string[] = [];
+  const recordStartRequest = (request: { method(): string; url(): string }) => {
+    const url = new URL(request.url());
+    if (request.method() === 'POST' && /^\/api\/games\/[^/]+\/start$/.test(url.pathname)) {
+      startRequests.push(url.pathname);
+    }
+  };
+  page.on('request', recordStartRequest);
   await page.getByLabel('对局名称（选填）').fill(name);
   await page.getByLabel('每手金额').fill(options.handPrice);
   await page.getByLabel('启用抽成').setChecked(options.rakeEnabled);
@@ -21,15 +31,18 @@ export async function createAndStartGame(
       && url.pathname === '/api/games'
       && response.status() === 201;
   });
-  await page.getByRole('button', { name: '创建并立即开启' }).click();
-  const created = await (await createdResponse).json() as { id: string };
-  onGameCreated?.(created.id);
-  await page.getByRole('button', { name: '确认开启' }).click();
-  await expect(page.getByRole('heading', { name })).toBeVisible();
-  const match = new URL(page.url()).pathname.match(/^\/games\/([^/]+)$/);
-  expect(match, 'created game URL contains its id').not.toBeNull();
-  expect(decodeURIComponent(match![1])).toBe(created.id);
-  return { id: created.id, name };
+  try {
+    await page.getByRole('button', { name: '创建并开启' }).click();
+    const created = await (await createdResponse).json() as { id: string; status: string };
+    expect(created.status).toBe('ACTIVE');
+    onGameCreated?.(created.id);
+    await expect(page).toHaveURL(new RegExp(`/games/${created.id}$`));
+    await expect(page.getByRole('heading', { name })).toBeVisible();
+    expect(startRequests).toEqual([]);
+    return { id: created.id, name };
+  } finally {
+    page.off('request', recordStartRequest);
+  }
 }
 
 export async function buyHands(page: Page, gameId: string, hands: number): Promise<void> {

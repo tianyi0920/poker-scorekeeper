@@ -10,12 +10,20 @@ import { loginContext } from './support/auth.js';
 import { cleanupTaskGame, openTestDatabase } from './support/database.js';
 import { performOwnedSettingsUpdate } from './support/settings-ownership.js';
 
+function formatSignedMoney(value: string): string {
+  const amount = BigInt(value);
+  if (amount === 0n) return '¥0';
+  return `${amount > 0n ? '+' : '−'}¥${(amount < 0n ? -amount : amount).toLocaleString('zh-CN')}`;
+}
+
 test('completed history is immutable, participant-visible in full, outsider-hidden, and all-player aggregated', async ({ browser }) => {
   const admin = await apiLogin('admin');
   const playerA = await apiLogin('player-a');
   const playerB = await apiLogin('player-b');
   const outsider = await apiLogin('outsider');
   let gameId: string | undefined;
+  let completedGameName: string | undefined;
+  let participantFinalAmount: string | undefined;
   try {
     const completed = await completeBalancedGameApi(
       admin,
@@ -25,9 +33,21 @@ test('completed history is immutable, participant-visible in full, outsider-hidd
       (createdGameId) => { gameId = createdGameId; }
     );
     gameId = completed.game.id;
+    completedGameName = completed.game.name;
     const participantDetail = await playerA.context.get(`/api/history/${gameId}`);
     expect(participantDetail.status()).toBe(200);
     expect(await participantDetail.json()).toMatchObject({ immutable: true, players: expect.any(Array) });
+    const participantHistory = await playerA.context.get('/api/history?limit=10');
+    expect(participantHistory.status()).toBe(200);
+    const participantHistoryBody = await participantHistory.json() as {
+      items: Array<{ gameId: string; myFinalAmount: string | null }>;
+    };
+    const participantHistoryItem = participantHistoryBody.items.find((item) => item.gameId === gameId);
+    expect(participantHistoryItem?.myFinalAmount).not.toBeNull();
+    if (participantHistoryItem?.myFinalAmount === null || participantHistoryItem === undefined) {
+      throw new Error('Completed participant history item must include a final amount');
+    }
+    participantFinalAmount = participantHistoryItem.myFinalAmount;
     const outsiderDetail = await outsider.context.get(`/api/history/${gameId}`);
     expect(outsiderDetail.status()).toBe(404);
     expect((await outsiderDetail.json()).code).toBe('HISTORY_SCOPE_DENIED');
@@ -44,10 +64,18 @@ test('completed history is immutable, participant-visible in full, outsider-hidd
     await closeApiSessions(admin, playerA, playerB, outsider);
   }
 
-  if (!gameId) throw new Error('Completed Task18 game id was not captured');
+  if (!gameId || completedGameName === undefined || participantFinalAmount === undefined) {
+    throw new Error('Completed Task18 game history was not captured');
+  }
 
   const browserSession = await loginContext(browser, 'player-a');
   try {
+    await browserSession.page.goto('/history');
+    const resultRow = browserSession.page.locator('.result-row', { hasText: completedGameName });
+    await expect(resultRow).toHaveCount(1);
+    await expect(resultRow.locator('.result-amount')).toHaveText(
+      formatSignedMoney(participantFinalAmount)
+    );
     await browserSession.page.goto(`/history/${gameId}`);
     await expect(browserSession.page.getByLabel('历史结算明细')).toBeVisible();
     await expect(browserSession.page.getByRole('button', { name: /永久锁定结算/ })).toHaveCount(0);
