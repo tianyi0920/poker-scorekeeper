@@ -38,6 +38,12 @@ const invalidAssignments = [
   ["invalid PORT in Markdown bullet", "- PORT='3000'# comment"],
   ["invalid PORT in docker -e syntax", "docker run -e PORT = 3000"],
   ["invalid PORT in an entirely quoted item", "'PORT=3000'"],
+  ["suffix after an entirely single-quoted PORT word", "'PORT=80'80"],
+  ["suffix after an entirely double-quoted PORT word", '"PORT=80"80'],
+  [
+    "path suffix after an entirely quoted origin word",
+    "'PUBLIC_ORIGIN=https://safe.example'/room",
+  ],
   ["concatenated quoted PORT word", "PORT='80'80"],
   [
     "concatenated quoted origin word",
@@ -78,6 +84,11 @@ const invalidAssignments = [
 
 const unsafeComposeEnvironments = [
   ["mapping PORT", "environment:\n  PORT: 3000"],
+  ["quoted root key separated from its colon", '"environment" :\n  PORT: 3000'],
+  [
+    "dynamic root environment scalar",
+    'environment: "${ENVIRONMENT:-production variables}"',
+  ],
   ["mapping null PUBLIC_ORIGIN", "environment:\n  PUBLIC_ORIGIN:"],
   [
     "quoted flow mapping key",
@@ -92,6 +103,18 @@ const unsafeComposeEnvironments = [
   [
     "nested Compose flow environment mapping",
     "services: { app: { environment: { PORT: 3000 } } }",
+  ],
+  [
+    "multiline flow Compose environment mapping",
+    "{\n  services: {\n    app: {\n      environment: { PORT: 3000 }\n    }\n  }\n}",
+  ],
+  [
+    "document marker before a flow Compose environment mapping",
+    "--- { services: { app: { environment: { PORT: 3000 } } } }",
+  ],
+  [
+    "unsafe environment in the second YAML document",
+    "safe: true\n--- { services: { app: { environment: { PORT: 3000 } } } }",
   ],
   [
     "quoted environment and variable keys",
@@ -153,6 +176,14 @@ const unsafePortMappings = [
     "'ports':\n  - published: 3000\n    target: 80",
   ],
   [
+    "quoted root ports key separated from its colon",
+    '"ports" :\n  - published: 3000\n    target: 80\n    host_ip: 0.0.0.0',
+  ],
+  [
+    "dynamic root ports scalar",
+    'ports: "${PORT_BINDINGS:-production bindings}"',
+  ],
+  [
     "quoted ports key with reordered unsafe fields",
     "'ports':\n  - published: 3000\n    host_ip: 0.0.0.0\n    target: 80",
   ],
@@ -163,6 +194,18 @@ const unsafePortMappings = [
   [
     "nested Compose flow ports mapping",
     "services: { app: { ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }] } }",
+  ],
+  [
+    "multiline flow Compose ports mapping",
+    "{\n  services: {\n    app: {\n      ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }]\n    }\n  }\n}",
+  ],
+  [
+    "document marker before a flow Compose ports mapping",
+    "--- { services: { app: { ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }] } } }",
+  ],
+  [
+    "unsafe ports in the first YAML document",
+    "--- { services: { app: { ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }] } } }\nsafe: true",
   ],
   [
     "quoted flow ports mapping",
@@ -177,7 +220,12 @@ const validEnvironmentSyntax = [
   ["Markdown bullet with PORT", "- PORT='80'# listen internally"],
   ["docker -e with PORT", "docker run -e PORT = 80"],
   ["entirely quoted PORT", "'PORT=80'"],
+  ["PORT assembled from quoted and unquoted segments", "PORT='8'0"],
   ["dotenv HTTPS origin", "PUBLIC_ORIGIN=https://public.example"],
+  [
+    "HTTPS origin assembled from quoted and unquoted segments",
+    "PUBLIC_ORIGIN='https://'safe.example",
+  ],
   [
     "export mixed-case HTTPS origin",
     'export PUBLIC_ORIGIN = "HtTpS://public.example:8443"',
@@ -245,6 +293,21 @@ const validPortMappings = [
   ],
 ] as const;
 
+const validYamlDocuments = [
+  [
+    "safe fenced YAML documents",
+    "```yaml\nenvironment:\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\n---\nservices:\n  app:\n    ports:\n      - target: 80\n        published: 3000\n        host_ip: 127.0.0.1\n```",
+  ],
+  [
+    "ordinary Markdown ports prose",
+    "ports: production bindings are discussed below.",
+  ],
+  [
+    "ordinary Markdown environment prose",
+    "environment: production variables are discussed below.",
+  ],
+] as const;
+
 describe("secure backend deployment guide validator", () => {
   it.each(insecureUrlTokens)("rejects %s", (_label, token) => {
     expect(() => validate(token)).toThrow(
@@ -309,5 +372,9 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(validPortMappings)("accepts %s", (_label, mapping) => {
     expect(() => validate(mapping)).not.toThrow();
+  });
+
+  it.each(validYamlDocuments)("accepts %s", (_label, documents) => {
+    expect(() => validate(documents)).not.toThrow();
   });
 });
