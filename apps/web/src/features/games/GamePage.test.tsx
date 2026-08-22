@@ -389,6 +389,14 @@ it('gives an administrator a settlement recovery entry when the loaded game is a
   expect(await screen.findByRole('link', { name: '继续结算' })).toHaveAttribute('href', '/games/game-1/settlement');
 });
 
+it.each(['DRAFT', 'COMPLETED', 'VOIDED'] as const)('does not offer settlement recovery for a %s game', async (status) => {
+  // Break caught: every non-ACTIVE status was treated as SETTLING and exposed an invalid settlement route.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ status, players: players(1) }), 'ADMIN');
+  await screen.findByTestId('round-table');
+  expect(screen.queryByRole('link', { name: '继续结算' })).not.toBeInTheDocument();
+});
+
 it('keeps the end confirmation open after a failed begin-settlement request and permits retry', async () => {
   // Break caught: a transient write failure closes the only retry control or prevents the later successful replace navigation.
   let attempts = 0;

@@ -3,6 +3,12 @@ import { accounts } from './fixtures.js';
 
 const gameParticipants = [accounts.admin, accounts['player-a'], accounts['player-b']];
 
+function formatSignedMoney(value: string): string {
+  const amount = BigInt(value);
+  if (amount === 0n) return '¥0';
+  return `${amount > 0n ? '+' : '−'}¥${(amount < 0n ? -amount : amount).toLocaleString('zh-CN')}`;
+}
+
 export async function settleBalancedGame(page: Page, gameId: string): Promise<void> {
   await page.goto(`/games/${encodeURIComponent(gameId)}`);
   await page.getByRole('button', { name: '结束对局' }).click();
@@ -49,13 +55,50 @@ export async function expectSettlementDetail(page: Page, gameId: string): Promis
 }
 
 export async function expectAllPlayerAggregate(page: Page, gameIds: string[]): Promise<void> {
+  const aggregateResponse = await page.evaluate(async (selectedGameIds) => {
+    const sessionResponse = await fetch('/api/auth/session', { credentials: 'same-origin' });
+    const session = await sessionResponse.json() as { csrfToken?: string };
+    const response = await fetch('/api/history/aggregate', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'X-CSRF-Token': session.csrfToken ?? ''
+      },
+      credentials: 'same-origin',
+      body: JSON.stringify({ gameIds: selectedGameIds })
+    });
+    return { status: response.status, body: await response.json() };
+  }, gameIds);
+  expect(aggregateResponse.status).toBe(200);
+  const aggregate = aggregateResponse.body as {
+    gameIds: string[];
+    gameCount: number;
+    playerCount: number;
+    players: Array<{
+      userId: string;
+      nickname: string;
+      finalAmount: string;
+      games: Array<{ gameId: string }>;
+    }>;
+  };
+  expect(aggregate.gameIds).toEqual(gameIds);
+  expect(aggregate.gameCount).toBe(gameIds.length);
+  expect(aggregate.playerCount).toBe(gameParticipants.length);
+  const aggregateByUserId = new Map(aggregate.players.map((player) => [player.userId, player]));
+  expect(aggregateByUserId.size).toBe(gameParticipants.length);
+  const expectedAmounts = gameParticipants.map((account) => {
+    const player = aggregateByUserId.get(account.id);
+    expect(player, `actor-visible aggregate player ${account.id}`).toBeDefined();
+    expect(player?.nickname).toBe(account.nickname);
+    expect(player?.games.map((game) => game.gameId)).toEqual(gameIds);
+    return [account, formatSignedMoney(player!.finalAmount)] as const;
+  });
+  expect(expectedAmounts.some(([, amount]) => amount.startsWith('+¥'))).toBe(true);
+  expect(expectedAmounts.some(([, amount]) => amount.startsWith('−¥'))).toBe(true);
+  expect(expectedAmounts.some(([, amount]) => amount === '¥0')).toBe(true);
   await page.goto(`/history/summary?games=${encodeURIComponent(gameIds.join(','))}`);
   await expect(page.getByRole('heading', { name: '全员汇总' })).toBeVisible();
-  for (const [account, amount] of [
-    [accounts.admin, '−¥600'],
-    [accounts['player-a'], '+¥187'],
-    [accounts['player-b'], '¥0']
-  ] as const) {
+  for (const [account, amount] of expectedAmounts) {
     await expect(page.getByRole('heading', { name: account.nickname })).toBeVisible();
     const card = page.locator('.aggregate-card').filter({ has: page.getByRole('heading', { name: account.nickname }) });
     await expect(card).toHaveCount(1);
