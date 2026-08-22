@@ -1,6 +1,6 @@
 import { canonicalPublicIdSchema, historyResponseSchema, settlementDetailSchema, type HistoryResponseDto, type SettlementDetailDto } from '@poker/contracts';
 
-const prefix = 'poker-scorekeeper:history-cache:v1';
+const prefix = 'poker-scorekeeper:history-cache:v2';
 const maxListItems = 100;
 const maxDetails = 30;
 

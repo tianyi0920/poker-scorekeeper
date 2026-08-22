@@ -252,10 +252,14 @@ describe.sequential('immutable completed-game history', () => {
     expect(userList.body.items.map(({ gameId }: { gameId: string }) => gameId)).toEqual([visible]);
     expect(userList.body.items[0]).toMatchObject({
       gameId: visible,
-      settledByNickname: settledBySnapshot
+      settledByNickname: settledBySnapshot,
+      myFinalAmount: '270'
     });
     const adminList = await read(adminCookie, '/api/history').expect(200);
     expect(adminList.body.items.map(({ gameId }: { gameId: string }) => gameId)).toEqual([visible, hidden]);
+    expect(adminList.body.items.find(({ gameId }: { gameId: string }) => gameId === visible)).toMatchObject({
+      myFinalAmount: null
+    });
 
     const detail = await read(memberCookie, `/api/history/${visible}`).expect(200);
     expect(detail.body).toMatchObject({

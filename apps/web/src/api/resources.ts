@@ -28,21 +28,6 @@ import {
 import type { ZodType } from 'zod';
 import { ApiError, apiFetch, csrfTokenStore } from './http-client.js';
 
-export interface HistoryGameSummary {
-  id: string;
-  name: string;
-  startedAt: string;
-  completedAt: string;
-  durationSeconds: number;
-  playerCount: number;
-  myFinalAmount: string | null;
-}
-
-export interface HistoryListResponse {
-  games: HistoryGameSummary[];
-  nextCursor: string | null;
-}
-
 export interface PresetAvatarDto {
   id: string;
   path: string;
@@ -84,7 +69,6 @@ export const scorekeeperApi = {
   adjustLatestBuyIn: (gameId: string, playerId: string, body: AdjustLatestBuyinRequest) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(playerId)}/buyins/latest/adjust`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
-  recentHistory: (limit = 10) => apiFetch<HistoryListResponse>(`/history?limit=${limit}`),
   settlementDraft: (gameId: string, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft`, { signal }),
   saveSettlementDraft: (gameId: string, body: SaveSettlementDraftRequest, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft`, {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal

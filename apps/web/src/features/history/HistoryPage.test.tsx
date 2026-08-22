@@ -5,8 +5,8 @@ import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
 import { HistoryPage } from './HistoryPage.js';
 
-const item = { gameId: 'game-1', name: '网络牌局', completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', final: '100' };
-const listCacheKey = 'poker-scorekeeper:history-cache:v1:user-1:list';
+const item = { gameId: 'game-1', name: '网络牌局', completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', myFinalAmount: '100' };
+const listCacheKey = 'poker-scorekeeper:history-cache:v2:user-1:list';
 
 function renderHistory(response: unknown) {
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => (
@@ -33,7 +33,9 @@ it.each([
 });
 
 it('renders a valid live history response and persists only the parsed value', async () => {
-  renderHistory({ items: [item], nextCursor: null });
+  renderHistory({ items: [item, { ...item, gameId: 'game-2', name: '旁观牌局', myFinalAmount: null }], nextCursor: null });
   expect(await screen.findByText('网络牌局')).toBeInTheDocument();
-  expect(JSON.parse(localStorage.getItem(listCacheKey) ?? 'null')?.value).toEqual({ items: [item], nextCursor: null });
+  expect(screen.getByText('+¥100')).toBeInTheDocument();
+  expect(screen.getByText('查看明细')).toBeInTheDocument();
+  expect(JSON.parse(localStorage.getItem(listCacheKey) ?? 'null')?.value).toEqual({ items: [item, { ...item, gameId: 'game-2', name: '旁观牌局', myFinalAmount: null }], nextCursor: null });
 });

@@ -1,7 +1,7 @@
 import { expect, it } from 'vitest';
-import { allPlayerAggregationSchema, historyResponseSchema, settlementDetailSchema } from './history.js';
+import { allPlayerAggregationSchema, historyListItemSchema, historyResponseSchema, settlementDetailSchema } from './history.js';
 
-const item = { gameId: 'game-1', name: '牌局', completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', final: '100' };
+const item = { gameId: 'game-1', name: '牌局', completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', myFinalAmount: '100' };
 const player = {
   playerId: 'player-1', nickname: '天一', avatarKind: 'PRESET' as const, avatarValue: 'avatar', seatNo: 1,
   buyIn: '100', cashOut: '100', rawProfit: '0', roomFeeShare: '0', otherFeeShare: '0',
@@ -20,10 +20,23 @@ const aggregatePlayer = {
 };
 
 it('rejects non-MoneyJson history money and malformed/oversized cursors while allowing base64url cursors', () => {
-  expect(historyResponseSchema.safeParse({ items: [{ ...item, final: 'not-money' }], nextCursor: null }).success).toBe(false);
+  expect(historyResponseSchema.safeParse({ items: [{ ...item, myFinalAmount: 'not-money' }], nextCursor: null }).success).toBe(false);
   expect(historyResponseSchema.safeParse({ items: [item], nextCursor: 'eyJjb21wbGV0ZWRBdCI6IjIwMjYtMDgtMThUMTI6MDA6MDAuMDAwKzA4OjAwIiwiaWQiOiJnYW1lLTEifQ' }).success).toBe(true);
   expect(historyResponseSchema.safeParse({ items: [item], nextCursor: '!bad' }).success).toBe(false);
   expect(historyResponseSchema.safeParse({ items: [item], nextCursor: 'a'.repeat(513) }).success).toBe(false);
+});
+
+it('accepts a nullable personal final amount without exposing a table total', () => {
+  const personalResult = historyListItemSchema.parse({
+    gameId: 'game-1', name: '测试', completedAt: '2026-08-18T12:00:00.000+08:00',
+    settledByNickname: '管理员', myFinalAmount: '-1700'
+  });
+  expect(personalResult.myFinalAmount).toBe('-1700');
+  const unseatedResult = historyListItemSchema.parse({
+    gameId: 'game-1', name: '测试', completedAt: '2026-08-18T12:00:00.000+08:00',
+    settledByNickname: '管理员', myFinalAmount: null
+  });
+  expect(unseatedResult.myFinalAmount).toBeNull();
 });
 
 it('rejects invalid MoneyJson values in settlement detail', () => {

@@ -24,7 +24,7 @@ export const historyListItemSchema = z.object({
   name: z.string().min(1).max(128),
   completedAt: offsetDateTimeSchema,
   settledByNickname: z.string().min(1).max(64),
-  final: moneyJsonSchema
+  myFinalAmount: moneyJsonSchema.nullable()
 }).strict();
 
 export const historyResponseSchema = z.object({

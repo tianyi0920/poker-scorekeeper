@@ -57,12 +57,27 @@ export class HistoryService {
     const games = await this.prisma.game.findMany({
       where: { status: GameStatus.COMPLETED, completedAt: { not: null }, settlement: { isNot: null }, ...scope,
         ...(cursor === undefined ? {} : { OR: [{ completedAt: { lt: new Date(cursor.completedAt) } }, { completedAt: new Date(cursor.completedAt), id: { lt: cursor.id } }] }) },
-      include: { settlement: { select: { finalTotal: true, settledByNicknameSnapshot: true } } },
+      include: { settlement: { select: {
+        settledByNicknameSnapshot: true,
+        results: { select: { finalAmount: true, gamePlayer: { select: { userId: true } } } }
+      } } },
       orderBy: [{ completedAt: 'desc' }, { id: 'desc' }], take: limit + 1
     });
     const page = games.slice(0, limit);
     const final = page.at(-1);
-    return { items: page.map((game) => ({ gameId: game.id, name: game.name, completedAt: game.completedAt!.toISOString(), settledByNickname: game.settlement!.settledByNicknameSnapshot, final: formatMoney(game.settlement!.finalTotal) })), nextCursor: games.length > limit && final !== undefined ? encodeCursor({ completedAt: final.completedAt!.toISOString(), id: final.id }) : null };
+    return {
+      items: page.map((game) => {
+        const ownResult = game.settlement!.results.find(({ gamePlayer }) => gamePlayer.userId === actor.id);
+        return {
+          gameId: game.id,
+          name: game.name,
+          completedAt: game.completedAt!.toISOString(),
+          settledByNickname: game.settlement!.settledByNicknameSnapshot,
+          myFinalAmount: ownResult === undefined ? null : formatMoney(ownResult.finalAmount)
+        };
+      }),
+      nextCursor: games.length > limit && final !== undefined ? encodeCursor({ completedAt: final.completedAt!.toISOString(), id: final.id }) : null
+    };
   }
 
   async get(gameId: string, actor: AuthUser): Promise<SettlementDetailDto> {
