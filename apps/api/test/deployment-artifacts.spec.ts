@@ -659,6 +659,33 @@ function validateSecureProductionChecklist(content: string): void {
   }
 }
 
+function validateSecureBackendDeploymentGuide(content: string, name: string): void {
+  for (const requirement of [
+    "PORT=80",
+    "127.0.0.1:3000",
+    "127.0.0.1:3000:80",
+    "OpenResty",
+    "TLS",
+    "/socket.io",
+    "Upgrade",
+    "443",
+  ]) {
+    if (!content.includes(requirement)) {
+      throw new Error(`${name} is missing secure backend requirement: ${requirement}`);
+    }
+  }
+
+  if (
+    /(?:^|\n)PORT=3000(?:\r?$|\r?\n)/m.test(content) ||
+    /(?:^|[^\d])80:80(?:[^\d]|$)/.test(content) ||
+    /http:\/\/pk\.tianyi\.wiki/.test(content) ||
+    /ws:\/\/pk\.tianyi\.wiki/.test(content) ||
+    /公网 IPv6 直连/.test(content)
+  ) {
+    throw new Error(`${name} permits an insecure public application backend`);
+  }
+}
+
 describe("production deployment artifacts", () => {
   it("assembles all runtime application files atomically for NAS container runtimes", async () => {
     // Break caught: some NAS runtimes silently omit late image layers, leaving the entrypoint present but its preflight helper absent.
@@ -1198,6 +1225,38 @@ describe("production deployment artifacts", () => {
     }
     expect(extremeSpace).not.toMatch(/网络选择当前能直接给该容器分配公网 IPv6|如果界面要求端口映射，使用宿主机 `80` 到容器 `80`|端口映射为 `80:80`/);
     expect(checklist).not.toContain("只公开应用 TCP 80");
+  });
+
+  it("keeps every executable production guide on the secure backend contract", async () => {
+    const guides = await Promise.all([
+      readRepositoryFile("docs/deployment/extremespace.md"),
+      readRepositoryFile("docs/deployment/synology.md"),
+      readRepositoryFile("docs/deployment/production-checklist.md"),
+    ]);
+
+    for (const [index, guide] of guides.entries()) {
+      validateSecureBackendDeploymentGuide(guide, `guide ${index + 1}`);
+    }
+
+    const synology = guides[1]!;
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        synology.replace("127.0.0.1:3000:80", "80:80"),
+        "mutated Synology guide",
+      ),
+    ).toThrow(/insecure public application backend/);
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        synology.replaceAll("OpenResty", "application direct exposure"),
+        "mutated Synology guide",
+      ),
+    ).toThrow(/missing secure backend requirement/);
+    expect(() =>
+      validateSecureBackendDeploymentGuide(
+        synology.replace("PORT=80", "PORT=3000"),
+        "mutated Synology guide",
+      ),
+    ).toThrow(/missing secure backend requirement|insecure public application backend/);
   });
 
   it("documents source-free Extreme Space deployment with fixed image versions", async () => {

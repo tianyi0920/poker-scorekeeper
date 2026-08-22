@@ -1,6 +1,6 @@
 # 群晖 NAS 生产部署与恢复手册
 
-本手册部署一个同源容器：手机浏览器访问的 PWA、`/api`、Socket.IO 与头像文件都由同一进程提供。MySQL 不在 Compose 中发布端口；群晖反向代理只连接 NAS 回环地址 `127.0.0.1:3000`。
+本手册部署一个同源容器：手机浏览器访问的 PWA、`/api`、Socket.IO 与头像文件都由同一进程提供。MySQL 不在 Compose 中发布端口；OpenResty TLS 终止层只连接 NAS 回环地址 `127.0.0.1:3000`，再由 Compose 转发到容器内部 80。
 
 > 本项目曾通过对话传递过数据库凭据。旧密码已经暴露，禁止用它连接、建库或作为回退。上线前必须先在 MariaDB 中轮换并使旧值失效，只把新值写入 NAS 上权限为 `600` 的 `.env.production`。不要把该文件提交、复制到镜像、终端输出或截图。
 
@@ -40,7 +40,7 @@ chmod 600 .env.production
 编辑 `.env.production`，至少替换下列占位符：
 
 ```dotenv
-PORT=3000
+PORT=80
 DEPLOYMENT_ID=replace_with_git_revision_or_release_id
 PUBLIC_ORIGIN=https://poker.example.com
 WS_ALLOWED_ORIGINS=https://poker-lan.example.com
@@ -80,17 +80,17 @@ curl --fail http://127.0.0.1:3000/api/health/live
 curl --fail http://127.0.0.1:3000/api/health/ready
 ```
 
-容器入口先执行固定目标只读预检，再执行 `prisma migrate deploy`，成功后才启动服务。显式 `docker compose run` 命令由入口转交执行，不再被入口忽略；除预检本身外，生产一次性命令也先经过固定目标门禁。构建把同一个 `DEPLOYMENT_ID` 固化到 OCI revision label 和只读 `/app/deployment-id`，公开的 `/api/health/deployment` 只读取该镜像文件。最终记录器必须证明 label、运行容器文件与 `PUBLIC_ORIGIN` 公开端点三者一致。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000`，不会把 3000 暴露到局域网，也不会发布 3306。
+容器入口先执行固定目标只读预检，再执行 `prisma migrate deploy`，成功后才启动服务。显式 `docker compose run` 命令由入口转交执行，不再被入口忽略；除预检本身外，生产一次性命令也先经过固定目标门禁。构建把同一个 `DEPLOYMENT_ID` 固化到 OCI revision label 和只读 `/app/deployment-id`，公开的 `/api/health/deployment` 只读取该镜像文件。最终记录器必须证明 label、运行容器文件与 `PUBLIC_ORIGIN` 公开端点三者一致。`live` 只表示进程存活，不访问数据库；`ready` 会在短超时内查询数据库，数据库不可用时返回 HTTP 503 和稳定的 `DATABASE_UNAVAILABLE` 错误体。生产 Compose 只绑定 `127.0.0.1:3000:80`：宿主机 3000 不暴露到局域网，容器内部仍使用 `PORT=80`，也不会发布 3306。
 
 在 Container Manager 图形界面中，可选择“项目 → 新增 → 创建 docker-compose.yml”，项目路径选上述目录，项目名固定为 `poker-scorekeeper`。确认预览中只有 `app` 服务且端口映射是 `127.0.0.1:3000:80`，再构建并启动。
 
-## 4. HTTPS、WebSocket 与公网入口
+## 4. OpenResty HTTPS、WebSocket 与公网入口
 
-在 DSM“登录门户 → 高级 → 反向代理服务器”中新建规则：
+在 OpenResty（或 DSM 承载的等效 TLS 终止层）中新建规则：
 
 - 来源：`HTTPS`、公网域名、端口 `443`，使用有效证书；
-- 目的地：`HTTP`、主机 `127.0.0.1`、端口 `3000`；
-- 自定义请求头允许 WebSocket：`Upgrade: $http_upgrade`、`Connection: $connection_upgrade`；
+- 目的地：`HTTP`、主机 `127.0.0.1`、端口 `3000`；该回环后端由 Compose 的 `127.0.0.1:3000:80` 映射到容器 `PORT=80`；
+- 普通请求与同源 `/socket.io` 都代理到该回环后端；为 `/socket.io` 转发 WebSocket 请求头：`Upgrade: $http_upgrade`、`Connection: $connection_upgrade`；
 - 转发真实客户端 IP 头，并保持应用只信任群晖这一跳代理；
 - 启用 HTTP/2，并在确认所有入口均为 HTTPS 后开启 HSTS。建议先用较短 `max-age` 验证，再逐步增加；
 - 路由器只转发 TCP 443 到 NAS。不要转发容器端口 3000，也不要为 MySQL 3306 新增公网转发。
