@@ -19,7 +19,9 @@ it('uses server player order and expands exact per-game rows without Number reca
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => String(input).endsWith('/api/history/aggregate') ? jsonResponse(aggregation) : jsonResponse({ code: 'NOT_FOUND' }, 404)));
   render(<MemoryRouter initialEntries={['/history/summary?filter=RECENT_10']}><AllPlayerSummaryPage /></MemoryRouter>);
   expect(await screen.findByText('超长中文昵称十二人之一')).toBeInTheDocument();
-  expect(screen.getAllByText('9,007,199,254,740,992,500')).toHaveLength(2);
+  expect(screen.getAllByText('+¥9,007,199,254,740,992,500')).toHaveLength(2);
+  expect(screen.getByText('−¥380')).toBeInTheDocument();
+  expect(screen.getByText('−¥100')).toBeInTheDocument();
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: '展开超长中文昵称十二人之一的逐局明细' }));
   expect(screen.getByText('昨晚深夜局')).toBeInTheDocument();

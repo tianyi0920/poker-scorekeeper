@@ -7,7 +7,7 @@ import {
   closeApiSessions,
   createStartedGame
 } from './support/api.js';
-import { cleanupTaskGame, expireTask18SettlementLease } from './support/database.js';
+import { cleanupTaskGame, expireTask18SettlementLease, openTestDatabase } from './support/database.js';
 import { accounts } from './support/fixtures.js';
 import { startFreshApi } from './support/restart.js';
 
@@ -28,16 +28,29 @@ test('two-table limit, one-player lock, idempotency, and correction chain hold t
       '300',
       (createdGameId) => games.push(createdGameId)
     );
-    const thirdDraft = await apiWrite(admin, 'post', '/api/games', {
+    const database = await openTestDatabase();
+    let gamesBefore: number;
+    let auditsBefore: number;
+    try {
+      gamesBefore = Number((await database.query('SELECT COUNT(*) AS count FROM games'))[0].count);
+      auditsBefore = Number((await database.query("SELECT COUNT(*) AS count FROM audit_logs WHERE entity_type = 'GAME'"))[0].count);
+    } finally {
+      await database.end();
+    }
+    const rejectedCreate = await apiWrite(admin, 'post', '/api/games', {
       name: `Task18 第三桌 ${Date.now().toString(36)}`,
       handPrice: '300',
       rakeEnabled: true
     });
-    expect(thirdDraft.status()).toBe(201);
-    const third = await thirdDraft.json() as { id: string }; games.push(third.id);
-    const thirdStart = await apiWrite(admin, 'post', `/api/games/${third.id}/start`);
-    expect(thirdStart.status()).toBe(409);
-    expect((await thirdStart.json()).code).toBe('ACTIVE_GAME_LIMIT');
+    expect(rejectedCreate.status()).toBe(409);
+    expect((await rejectedCreate.json()).code).toBe('ACTIVE_GAME_LIMIT');
+    const afterRejectedCreate = await openTestDatabase();
+    try {
+      expect(Number((await afterRejectedCreate.query('SELECT COUNT(*) AS count FROM games'))[0].count)).toBe(gamesBefore);
+      expect(Number((await afterRejectedCreate.query("SELECT COUNT(*) AS count FROM audit_logs WHERE entity_type = 'GAME'"))[0].count)).toBe(auditsBefore);
+    } finally {
+      await afterRejectedCreate.end();
+    }
 
     const firstBuy = await apiBuyHands(playerA, first.id, 5, 'ledger-buy');
     expect(firstBuy.status()).toBe(201);

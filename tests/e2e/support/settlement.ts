@@ -28,7 +28,7 @@ export async function settleBalancedGame(page: Page, gameId: string): Promise<vo
   await expect(page.getByText('已平衡')).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('button', { name: '下一步：费用分摊' })).toBeEnabled();
   await page.getByRole('button', { name: '下一步：费用分摊' }).click();
-  await page.getByRole('button', { name: '查看结算预览' }).click();
+  await page.getByRole('button', { name: '进入核对' }).click();
   await expect(page.getByLabel('结算预览')).toBeVisible();
   const previewActions = page.locator('.settlement-wizard .inline-actions');
   await expect(previewActions.getByRole('button')).toHaveCount(2);
@@ -51,7 +51,14 @@ export async function expectSettlementDetail(page: Page, gameId: string): Promis
 export async function expectAllPlayerAggregate(page: Page, gameIds: string[]): Promise<void> {
   await page.goto(`/history/summary?games=${encodeURIComponent(gameIds.join(','))}`);
   await expect(page.getByRole('heading', { name: '全员汇总' })).toBeVisible();
-  for (const account of gameParticipants) {
+  for (const [account, amount] of [
+    [accounts.admin, '−¥600'],
+    [accounts['player-a'], '+¥187'],
+    [accounts['player-b'], '¥0']
+  ] as const) {
     await expect(page.getByRole('heading', { name: account.nickname })).toBeVisible();
+    const card = page.locator('.aggregate-card').filter({ has: page.getByRole('heading', { name: account.nickname }) });
+    await expect(card).toHaveCount(1);
+    await expect(card.locator('.aggregate-heading strong')).toHaveText(amount);
   }
 }

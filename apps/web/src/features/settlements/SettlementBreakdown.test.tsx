@@ -19,6 +19,7 @@ it('renders the agreed settlement levels with bigint-safe detail and no write co
   expect(screen.getByText('+¥1,500')).toBeInTheDocument();
   expect(screen.getByText('¥190')).toBeInTheDocument();
   expect(screen.getByText((_, element) => element?.textContent === '总买入 ¥18,014,398,509,481,986,000')).toBeInTheDocument();
+  expect(screen.getByLabelText('历史结算明细').querySelector('.settlement-breakdown-total')).toHaveTextContent('总抽成 ¥131');
   expect(screen.queryByRole('button', { name: /确认结算/ })).not.toBeInTheDocument();
 });
 

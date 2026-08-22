@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { scorekeeperApi } from '../../api/resources.js';
 import { Card } from '../../components/Card.js';
-import { Money } from '../../components/Money.js';
+import { formatSignedMoney } from '../../components/money-format.js';
 import { Toast } from '../../components/Toast.js';
 import { Button } from '../../components/Button.js';
 
@@ -20,9 +20,11 @@ function requestFromSearch(search: URLSearchParams): AggregateRequest {
   return { filter: { kind: quick } };
 }
 
+function expenseMoney(value: string): string { return formatSignedMoney((-BigInt(value)).toString()); }
+
 function PlayerAggregateCard({ player }: { player: AllPlayerAggregationPlayerDto }) {
   const [expanded, setExpanded] = useState(false);
-  return <Card className="aggregate-card"><header className="aggregate-heading"><img src={player.avatarUrl} alt="" /><div><h3>{player.nickname}</h3><span>{player.gamesPlayed} 局 · 胜 {player.wins} · 负 {player.losses}</span></div><strong><Money value={player.finalAmount} /></strong></header><dl className="settlement-metrics"><div className="settlement-metric"><dt>累计牌局盈亏</dt><dd><Money value={player.rawProfit} /></dd></div><div className="settlement-metric expense-metric"><dt>累计房费</dt><dd>−¥{new Intl.NumberFormat('zh-CN').format(BigInt(player.roomFeeShare))}</dd></div><div className="settlement-metric expense-metric"><dt>累计其他费用</dt><dd>−¥{new Intl.NumberFormat('zh-CN').format(BigInt(player.otherFeeShare))}</dd></div><div className="settlement-metric"><dt>累计费用后盈亏（抽成前）</dt><dd><Money value={player.afterFeeProfit} /></dd></div><div className="settlement-metric rake-metric"><dt>累计抽成</dt><dd>−¥{new Intl.NumberFormat('zh-CN').format(BigInt(player.rakeAmount))}</dd></div><div className="settlement-metric"><dt>累计最终金额</dt><dd><Money value={player.finalAmount} /></dd></div></dl><button type="button" className="expand-button" aria-expanded={expanded} aria-controls={`games-${player.userId}`} aria-label={`${expanded ? '收起' : '展开'}${player.nickname}的逐局明细`} onClick={() => setExpanded((value) => !value)}>{expanded ? '收起逐局明细' : '展开逐局明细'}</button>{expanded && <ul id={`games-${player.userId}`} className="game-drilldown">{player.games.map((game) => <li key={game.gameId}><span>{game.gameName}<small>{new Date(game.completedAt).toLocaleDateString('zh-CN')}</small></span><strong><Money value={game.finalAmount} /></strong></li>)}</ul>}</Card>;
+  return <Card className="aggregate-card"><header className="aggregate-heading"><img src={player.avatarUrl} alt="" /><div><h3>{player.nickname}</h3><span>{player.gamesPlayed} 局 · 胜 {player.wins} · 负 {player.losses}</span></div><strong>{formatSignedMoney(player.finalAmount)}</strong></header><dl className="settlement-metrics"><div className="settlement-metric"><dt>累计牌局盈亏</dt><dd>{formatSignedMoney(player.rawProfit)}</dd></div><div className="settlement-metric expense-metric"><dt>累计房费</dt><dd>{expenseMoney(player.roomFeeShare)}</dd></div><div className="settlement-metric expense-metric"><dt>累计其他费用</dt><dd>{expenseMoney(player.otherFeeShare)}</dd></div><div className="settlement-metric"><dt>累计费用后盈亏（抽成前）</dt><dd>{formatSignedMoney(player.afterFeeProfit)}</dd></div><div className="settlement-metric rake-metric"><dt>累计抽成</dt><dd>{expenseMoney(player.rakeAmount)}</dd></div><div className="settlement-metric"><dt>累计最终金额</dt><dd>{formatSignedMoney(player.finalAmount)}</dd></div></dl><button type="button" className="expand-button" aria-expanded={expanded} aria-controls={`games-${player.userId}`} aria-label={`${expanded ? '收起' : '展开'}${player.nickname}的逐局明细`} onClick={() => setExpanded((value) => !value)}>{expanded ? '收起逐局明细' : '展开逐局明细'}</button>{expanded && <ul id={`games-${player.userId}`} className="game-drilldown">{player.games.map((game) => <li key={game.gameId}><span>{game.gameName}<small>{new Date(game.completedAt).toLocaleDateString('zh-CN')}</small></span><strong>{formatSignedMoney(game.finalAmount)}</strong></li>)}</ul>}</Card>;
 }
 
 export function AllPlayerSummaryPage() {

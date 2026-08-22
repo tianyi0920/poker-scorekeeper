@@ -140,7 +140,8 @@ it('requires a fresh preview after SETTINGS_VERSION_CONFLICT and disables writes
   render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
-  await user.click(screen.getByRole('button', { name: '查看结算预览' }));
+  await user.click(screen.getByRole('button', { name: '进入核对' }));
+  expect(screen.getByLabelText('结算预览').querySelector('.settlement-breakdown-total')).toHaveTextContent('总抽成 ¥131');
   expect(screen.getAllByRole('button', { name: '确认结算' })).toHaveLength(1);
   expect(screen.getAllByRole('button', { name: '修改' })).toHaveLength(1);
   expect(screen.queryByRole('button', { name: '重新生成预览' })).not.toBeInTheDocument();
@@ -151,7 +152,7 @@ it('requires a fresh preview after SETTINGS_VERSION_CONFLICT and disables writes
   expect(screen.queryByRole('button', { name: '确认结算' })).not.toBeInTheDocument();
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
   await act(async () => { window.dispatchEvent(new Event('offline')); });
-  expect(screen.getByRole('button', { name: '查看结算预览' })).toBeDisabled();
+  expect(screen.getByRole('button', { name: '进入核对' })).toBeDisabled();
 });
 
 it('ignores a deferred preview from revision A after revision B clears its confirmation material', async () => {
@@ -170,7 +171,7 @@ it('ignores a deferred preview from revision A after revision B clears its confi
   render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
-  await user.click(screen.getByRole('button', { name: '查看结算预览' }));
+  await user.click(screen.getByRole('button', { name: '进入核对' }));
   fireEvent.change(screen.getByLabelText('房费（元）'), { target: { value: '500' } });
   await act(async () => { preview.resolve(jsonResponse(previewResponse())); await Promise.resolve(); });
   expect(screen.queryByRole('button', { name: '确认结算' })).not.toBeInTheDocument();
@@ -204,7 +205,7 @@ it('serializes A then B saves with the returned version and previews only saved 
   expect(secondBody).toMatchObject({ version: 4, payload: { cashOutByPlayerId: { 'player-1': '2300', 'player-2': '500' } } });
   await act(async () => { secondSave.resolve(jsonResponse(draft({ version: 5, draftVersion: 5, payload: { ...draft().payload, cashOutByPlayerId: { 'player-1': '2300', 'player-2': '500' } } }))); await Promise.resolve(); await Promise.resolve(); });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '下一步：费用分摊' })); });
-  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '查看结算预览' })); await Promise.resolve(); await Promise.resolve(); });
+  await act(async () => { fireEvent.click(screen.getByRole('button', { name: '进入核对' })); await Promise.resolve(); await Promise.resolve(); });
   const previewRequest = fetchMock.mock.calls.find(([url]) => String(url).endsWith('/settlement-preview'))!;
   expect(JSON.parse((previewRequest[1] as RequestInit).body as string)).toMatchObject({ cashOutByPlayerId: { 'player-1': '2300', 'player-2': '500' } });
 });

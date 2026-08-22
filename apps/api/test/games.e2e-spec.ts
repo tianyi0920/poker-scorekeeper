@@ -222,6 +222,19 @@ describe.sequential('game lifecycle and snapshots', () => {
     expect(await prisma.game.count()).toBe(before);
   });
 
+  it('rolls back an atomic create whose normalized open-game name is already taken', async () => {
+    await seedGame('周末 大场', GameStatus.ACTIVE);
+    const gamesBefore = await prisma.game.count();
+    const auditsBefore = await prisma.auditLog.count({ where: { action: 'GAME_CREATED_AND_STARTED' } });
+
+    await write(adminAuth, 'post', '/api/games', {
+      name: '  周末　大场  ', handPrice: '300', rakeEnabled: true
+    }).expect(409).expect(({ body }) => expect(body.code).toBe('ACTIVE_GAME_NAME_TAKEN'));
+
+    expect(await prisma.game.count()).toBe(gamesBefore);
+    expect(await prisma.auditLog.count({ where: { action: 'GAME_CREATED_AND_STARTED' } })).toBe(auditsBefore);
+  });
+
   it.each([
     ['normal user', () => write(userAuth, 'post', '/api/games', {}), 403, 'FORBIDDEN'],
     ['zero hand price', () => write(adminAuth, 'post', '/api/games', { handPrice: '0' }), 400, 'VALIDATION_ERROR'],

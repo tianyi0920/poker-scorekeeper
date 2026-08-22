@@ -1,7 +1,7 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useNavigate, useNavigationType } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
@@ -111,12 +111,16 @@ function renderGame(
       <MemoryRouter initialEntries={['/games/game-1']}>
         <Routes>
           <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
-          <Route path="/games/:id/settlement" element={<div>已进入结算页</div>} />
+          <Route path="/games/:id/settlement" element={<SettlementDestination />} />
         </Routes>
       </MemoryRouter>
     </AuthProvider>
   );
   return { fetchMock, ...view };
+}
+
+function SettlementDestination() {
+  return <div>已进入结算页 <span data-testid="settlement-navigation-type">{useNavigationType()}</span></div>;
 }
 
 function SwitchableGame({ socketFactory }: { socketFactory: () => GameSocketClient }) {
@@ -373,6 +377,63 @@ it('lets only an administrator confirm the ACTIVE to SETTLING transition and the
   await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
 
   expect(await screen.findByText('已进入结算页')).toBeInTheDocument();
+  expect(screen.getByTestId('settlement-navigation-type')).toHaveTextContent('REPLACE');
   expect(screen.queryByRole('link', { name: '进入结算' })).not.toBeInTheDocument();
   unmount();
+});
+
+it('gives an administrator a settlement recovery entry when the loaded game is already SETTLING', async () => {
+  // Break caught: reload after a successful transition strands the administrator on the table page.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ status: 'SETTLING', stoppedAt: '2026-08-17T13:00:00.000Z' }), 'ADMIN');
+  expect(await screen.findByRole('link', { name: '继续结算' })).toHaveAttribute('href', '/games/game-1/settlement');
+});
+
+it('keeps the end confirmation open after a failed begin-settlement request and permits retry', async () => {
+  // Break caught: a transient write failure closes the only retry control or prevents the later successful replace navigation.
+  let attempts = 0;
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/games/game-1/snapshot')) return jsonResponse(snapshot({ players: players(1) }));
+    if (url.endsWith('/api/games/game-1/begin-settlement')) {
+      attempts += 1;
+      return attempts === 1
+        ? jsonResponse({ code: 'TEMPORARY' }, 500)
+        : jsonResponse(snapshot({ status: 'SETTLING', version: 2, stoppedAt: '2026-08-17T13:00:00.000Z', players: players(1) }));
+    }
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes><Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} /><Route path="/games/:id/settlement" element={<SettlementDestination />} /></Routes></MemoryRouter></AuthProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '结束对局' }));
+  await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
+  expect(await screen.findByRole('dialog', { name: '确认结束对局' })).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
+  expect(await screen.findByText('已进入结算页')).toBeInTheDocument();
+  expect(screen.getByTestId('settlement-navigation-type')).toHaveTextContent('REPLACE');
+  expect(attempts).toBe(2);
+});
+
+it('recovers a SETTLING snapshot after a competing transition or lost begin-settlement response', async () => {
+  // Break caught: another committed transition followed by a lost response leaves no way to resume settlement.
+  let snapshotReads = 0;
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/games/game-1/snapshot')) {
+      snapshotReads += 1;
+      return jsonResponse(snapshot(snapshotReads === 1 ? { players: players(1) } : { status: 'SETTLING', version: 2, stoppedAt: '2026-08-17T13:00:00.000Z', players: players(1) }));
+    }
+    if (url.endsWith('/api/games/game-1/begin-settlement')) return jsonResponse({ code: 'INVALID_GAME_TRANSITION' }, 409);
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes><Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} /><Route path="/games/:id/settlement" element={<SettlementDestination />} /></Routes></MemoryRouter></AuthProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '结束对局' }));
+  await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
+  expect(await screen.findByRole('link', { name: '继续结算' })).toHaveAttribute('href', '/games/game-1/settlement');
+  expect(snapshotReads).toBeGreaterThanOrEqual(2);
 });
