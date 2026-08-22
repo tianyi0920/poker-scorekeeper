@@ -11,9 +11,30 @@ it('restores versioned history and detail after a cold start without crossing us
   writeCachedSettlementDetail('user-1', detail);
   expect(readCachedHistory('user-1')?.items[0]?.myFinalAmount).toBe('9007199254740993000');
   expect(localStorage.getItem('poker-scorekeeper:history-cache:v2:user-1:list')).not.toBeNull();
+  expect(localStorage.getItem('poker-scorekeeper:history-cache:v1:user-1:detail:game-1')).not.toBeNull();
+  expect(localStorage.getItem('poker-scorekeeper:history-cache:v1:user-1:detail-index')).not.toBeNull();
   expect(readCachedSettlementDetail('user-1', 'game-1')?.game.name).toBe('缓存牌局');
   expect(readCachedHistory('user-2')).toBeNull();
   expect(readCachedSettlementDetail('user-2', 'game-1')).toBeNull();
+});
+
+it('does not read valid-shaped list data under the legacy v1 key', () => {
+  const legacyListKey = 'poker-scorekeeper:history-cache:v1:user-1:list';
+  localStorage.setItem(legacyListKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [item], nextCursor: null } }));
+
+  expect(readCachedHistory('user-1')).toBeNull();
+});
+
+it('reads a legacy v1 detail and keeps its v1 detail index when writing another detail', () => {
+  const firstDetailKey = 'poker-scorekeeper:history-cache:v1:user-1:detail:game-1';
+  const indexKey = 'poker-scorekeeper:history-cache:v1:user-1:detail-index';
+  localStorage.setItem(firstDetailKey, JSON.stringify({ version: 1, cachedAt: 1, value: detail }));
+  localStorage.setItem(indexKey, JSON.stringify({ version: 1, cachedAt: 1, value: { version: 1, ids: ['game-1'] } }));
+
+  expect(readCachedSettlementDetail('user-1', 'game-1')?.game.name).toBe('缓存牌局');
+  expect(writeCachedSettlementDetail('user-1', { ...detail, game: { ...detail.game, id: 'game-2', name: '第二场' } })).toBe(true);
+  expect(JSON.parse(localStorage.getItem(indexKey) ?? 'null')?.value.ids).toEqual(['game-2', 'game-1']);
+  expect(readCachedSettlementDetail('user-1', 'game-1')?.game.name).toBe('缓存牌局');
 });
 
 it('fails closed for damaged cache records', () => {
@@ -22,7 +43,7 @@ it('fails closed for damaged cache records', () => {
 });
 
 it('rejects parseable invalid shapes, oversized lists, and mismatched detail ids without throwing', () => {
-  const listKey = 'poker-scorekeeper:history-cache:v2:user-1:list'; const detailKey = 'poker-scorekeeper:history-cache:v2:user-1:detail:game-1';
+  const listKey = 'poker-scorekeeper:history-cache:v2:user-1:list'; const detailKey = 'poker-scorekeeper:history-cache:v1:user-1:detail:game-1';
   localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [{ gameId: 7 }], nextCursor: null } }));
   expect(readCachedHistory('user-1')).toBeNull();
   localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: Array.from({ length: 101 }, () => item), nextCursor: null } }));
@@ -32,7 +53,7 @@ it('rejects parseable invalid shapes, oversized lists, and mismatched detail ids
 });
 
 it('fails closed for invalid money/cursors and replaces a malformed detail index without crossing user keys', () => {
-  const listKey = 'poker-scorekeeper:history-cache:v2:user-1:list'; const indexKey = 'poker-scorekeeper:history-cache:v2:user-1:detail-index';
+  const listKey = 'poker-scorekeeper:history-cache:v2:user-1:list'; const indexKey = 'poker-scorekeeper:history-cache:v1:user-1:detail-index';
   localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [{ ...item, myFinalAmount: 'not-money' }], nextCursor: null } }));
   expect(readCachedHistory('user-1')).toBeNull();
   localStorage.setItem(listKey, JSON.stringify({ version: 1, cachedAt: 1, value: { items: [item], nextCursor: '!bad cursor' } }));
@@ -40,7 +61,7 @@ it('fails closed for invalid money/cursors and replaces a malformed detail index
   localStorage.setItem(indexKey, JSON.stringify({ version: 1, cachedAt: 1, value: { version: 1, ids: ['BAD_ID', 'game-1', 'game-1'] } }));
   writeCachedSettlementDetail('user-1', detail);
   expect(localStorage.getItem(indexKey)).toContain('game-1');
-  expect(localStorage.getItem('poker-scorekeeper:history-cache:v2:user-2:detail-index')).toBeNull();
+  expect(localStorage.getItem('poker-scorekeeper:history-cache:v1:user-2:detail-index')).toBeNull();
 });
 
 it('refuses invalid values at the writer boundary without leaving persistent cache data', () => {

@@ -1,13 +1,14 @@
 import { canonicalPublicIdSchema, historyResponseSchema, settlementDetailSchema, type HistoryResponseDto, type SettlementDetailDto } from '@poker/contracts';
 
-const prefix = 'poker-scorekeeper:history-cache:v2';
+const listPrefix = 'poker-scorekeeper:history-cache:v2';
+const detailPrefix = 'poker-scorekeeper:history-cache:v1';
 const maxListItems = 100;
 const maxDetails = 30;
 
 interface CacheRecord<T> { version: 1; cachedAt: number; value: T; }
 interface DetailIndex { version: 1; ids: string[]; }
 
-function key(userId: string, suffix: string): string { return `${prefix}:${encodeURIComponent(userId)}:${suffix}`; }
+function key(prefix: string, userId: string, suffix: string): string { return `${prefix}:${encodeURIComponent(userId)}:${suffix}`; }
 function readEnvelope(storageKey: string): unknown | null {
   try {
     const parsed: unknown = JSON.parse(localStorage.getItem(storageKey) ?? 'null');
@@ -22,23 +23,23 @@ function write<T>(storageKey: string, value: T): boolean {
   } catch { return false; }
 }
 function readIndex(userId: string): DetailIndex | null {
-  const value = readEnvelope(key(userId, 'detail-index'));
+  const value = readEnvelope(key(detailPrefix, userId, 'detail-index'));
   if (typeof value !== 'object' || value === null || !('version' in value) || !('ids' in value) || value.version !== 1 || !Array.isArray(value.ids) || value.ids.length > maxDetails || value.ids.some((id) => !canonicalPublicIdSchema.safeParse(id).success) || new Set(value.ids).size !== value.ids.length) return null;
   return { version: 1, ids: [...value.ids] };
 }
 
 export function readCachedHistory(userId: string): HistoryResponseDto | null {
-  if (userId === '') return null; const parsed = historyResponseSchema.safeParse(readEnvelope(key(userId, 'list')));
+  if (userId === '') return null; const parsed = historyResponseSchema.safeParse(readEnvelope(key(listPrefix, userId, 'list')));
   return parsed.success && parsed.data.items.length <= maxListItems ? parsed.data : null;
 }
 export function writeCachedHistory(userId: string, response: unknown): boolean {
   if (userId === '') return false;
   const parsed = historyResponseSchema.safeParse(response);
   if (!parsed.success || parsed.data.items.length > maxListItems) return false;
-  return write(key(userId, 'list'), parsed.data);
+  return write(key(listPrefix, userId, 'list'), parsed.data);
 }
 export function readCachedSettlementDetail(userId: string, gameId: string): SettlementDetailDto | null {
-  if (userId === '' || gameId === '') return null; const parsed = settlementDetailSchema.safeParse(readEnvelope(key(userId, `detail:${encodeURIComponent(gameId)}`)));
+  if (userId === '' || gameId === '') return null; const parsed = settlementDetailSchema.safeParse(readEnvelope(key(detailPrefix, userId, `detail:${encodeURIComponent(gameId)}`)));
   return parsed.success && parsed.data.game.id === gameId ? parsed.data : null;
 }
 export function writeCachedSettlementDetail(userId: string, detail: unknown): boolean {
@@ -46,8 +47,8 @@ export function writeCachedSettlementDetail(userId: string, detail: unknown): bo
   const parsed = settlementDetailSchema.safeParse(detail);
   if (!parsed.success) return false;
   const value = parsed.data;
-  const indexKey = key(userId, 'detail-index'); const old = readIndex(userId); const ids = [value.game.id, ...(old?.ids ?? []).filter((id) => id !== value.game.id)].slice(0, maxDetails);
-  if (!write(key(userId, `detail:${encodeURIComponent(value.game.id)}`), value)) return false;
-  try { for (const id of (old?.ids ?? []).filter((id) => !ids.includes(id))) localStorage.removeItem(key(userId, `detail:${encodeURIComponent(id)}`)); } catch { /* cache is optional */ }
+  const indexKey = key(detailPrefix, userId, 'detail-index'); const old = readIndex(userId); const ids = [value.game.id, ...(old?.ids ?? []).filter((id) => id !== value.game.id)].slice(0, maxDetails);
+  if (!write(key(detailPrefix, userId, `detail:${encodeURIComponent(value.game.id)}`), value)) return false;
+  try { for (const id of (old?.ids ?? []).filter((id) => !ids.includes(id))) localStorage.removeItem(key(detailPrefix, userId, `detail:${encodeURIComponent(id)}`)); } catch { /* cache is optional */ }
   return write(indexKey, { version: 1, ids });
 }
