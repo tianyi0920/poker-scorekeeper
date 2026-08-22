@@ -19,8 +19,21 @@ export interface RequestWithId extends Request {
   requestId?: string;
 }
 
-export function trustProxySetting(environment: string | undefined): 1 | false {
-  return environment === 'production' ? 1 : false;
+export function trustProxySetting(): false {
+  return false;
+}
+
+export function hstsSetting(environment: NodeJS.ProcessEnv):
+  { maxAge: number; includeSubDomains: true } | false {
+  if (environment.NODE_ENV !== 'production') return false;
+
+  try {
+    if (new URL(environment.PUBLIC_ORIGIN ?? '').protocol !== 'https:') return false;
+  } catch {
+    return false;
+  }
+
+  return { maxAge: 31_536_000, includeSubDomains: true };
 }
 
 function requestIdFrom(header: string | string[] | undefined): string {
@@ -87,10 +100,9 @@ export function configureApplication(
   app: INestApplication,
   logger: StructuredLogger = new StructuredLogger()
 ): void {
-  const environment = process.env.NODE_ENV;
   const connectSources = ["'self'", ...websocketCspSources(process.env)];
   const express = app.getHttpAdapter().getInstance() as Application;
-  express.set('trust proxy', trustProxySetting(environment));
+  express.set('trust proxy', trustProxySetting());
   express.disable('x-powered-by');
 
   app.use(requestContext);
@@ -115,9 +127,7 @@ export function configureApplication(
     crossOriginResourcePolicy: { policy: 'same-origin' },
     frameguard: { action: 'deny' },
     hidePoweredBy: true,
-    hsts: environment === 'production'
-      ? { maxAge: 31_536_000, includeSubDomains: true }
-      : false,
+    hsts: hstsSetting(process.env),
     noSniff: true,
     referrerPolicy: { policy: 'no-referrer' }
   }));

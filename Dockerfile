@@ -54,7 +54,7 @@ COPY --from=build --chmod=0555 /app/prisma-schema-engine /app/prisma-schema-engi
 COPY --from=build /app/apps/api/prisma /app/apps/api/prisma
 COPY --from=build /app/apps/api/prisma.config.ts /app/apps/api/prisma.config.ts
 COPY --from=build --chmod=0444 /app/deployment-id /app/deployment-id
-COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs /app/scripts/docker/
+COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs scripts/docker/healthcheck-url.mjs /app/scripts/docker/
 COPY --chmod=0555 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/
 COPY --chmod=0555 scripts/backup/backup.sh scripts/backup/restore.sh scripts/backup/restore-input-guard.mjs /app/scripts/backup/
 
@@ -62,11 +62,11 @@ FROM node:24-bookworm-slim AS runtime
 ARG DEPLOYMENT_ID
 LABEL org.opencontainers.image.revision=$DEPLOYMENT_ID
 ENV NODE_ENV=production \
-    PORT=3000 \
+    PORT=80 \
     WEB_DIST_ROOT=/app/apps/web/dist \
     AVATAR_ROOT=/data/avatars \
     PRISMA_SCHEMA_ENGINE_BINARY=/app/prisma-schema-engine \
-    PUBLIC_ORIGIN=https://poker.example.com \
+    PUBLIC_ORIGIN=http://pk.tianyi.wiki \
     WS_ALLOWED_ORIGINS="" \
     DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper \
     SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES \
@@ -97,6 +97,7 @@ RUN set -eux; \
     test -x /app/apps/api/node_modules/.bin/prisma; \
     test -x /app/scripts/docker/entrypoint.sh; \
     test -r /app/scripts/docker/healthcheck.mjs; \
+    test -r /app/scripts/docker/healthcheck-url.mjs; \
     test -r /app/scripts/database/production-preflight.mjs; \
     test -r /app/scripts/database/create-database.mjs; \
     test -r /app/scripts/database/production-backup-target.mjs; \
@@ -106,7 +107,7 @@ RUN set -eux; \
     test -x /app/scripts/backup/restore.sh; \
     test -r /app/scripts/backup/restore-input-guard.mjs
 VOLUME ["/data/avatars", "/data/backups", "/data/restore"]
-EXPOSE 3000
+EXPOSE 80
 HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=3 \
   CMD ["node", "scripts/docker/healthcheck.mjs"]
 ENTRYPOINT ["/usr/bin/tini", "-g", "--", "/app/scripts/docker/entrypoint.sh"]

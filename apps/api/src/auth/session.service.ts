@@ -71,6 +71,19 @@ function hashToken(rawToken: string): string {
   return createHash('sha256').update(rawToken).digest('hex');
 }
 
+function shouldUseSecureCookies(
+  environment: NodeJS.ProcessEnv = process.env
+): boolean {
+  try {
+    const protocol = new URL(environment.PUBLIC_ORIGIN ?? '').protocol;
+    if (protocol === 'http:') return false;
+    if (protocol === 'https:') return true;
+  } catch {
+    // A missing or malformed production origin must not weaken cookies.
+  }
+  return environment.NODE_ENV === 'production';
+}
+
 @Injectable()
 export class SessionService {
   private readonly browserRenewals = new WeakMap<
@@ -87,7 +100,7 @@ export class SessionService {
   cookieOptions(): SessionCookieOptions {
     return {
       httpOnly: true,
-      secure: process.env.NODE_ENV === 'production',
+      secure: shouldUseSecureCookies(),
       sameSite: 'lax',
       path: '/',
       maxAge: SESSION_IDLE_MILLISECONDS

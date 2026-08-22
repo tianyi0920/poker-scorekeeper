@@ -261,17 +261,16 @@ describe('production HTTP security', () => {
     expect(response.headers['x-content-type-options']).toBe('nosniff');
   });
 
-  it('trusts one reverse-proxy hop only in production', async () => {
-    // Break caught: arbitrary forwarded chains can spoof the public client address.
-    expect(trustProxySetting('production')).toBe(1);
-    expect(trustProxySetting('development')).toBe(false);
-    expect(trustProxySetting('test')).toBe(false);
+  it('ignores forwarded client addresses when accessed directly', async () => {
+    // Break caught: direct clients can spoof their public address through forwarded headers.
+    expect(trustProxySetting()).toBe(false);
 
     const response = await request(app.getHttpServer())
       .get('/api/request-info')
       .set('X-Forwarded-For', '198.51.100.50, 10.0.0.9')
       .expect(200);
-    expect(response.body.ip).toBe('10.0.0.9');
+    expect(response.body.ip).not.toBe('198.51.100.50');
+    expect(response.body.ip).not.toBe('10.0.0.9');
   });
 
   it.each([
@@ -380,7 +379,8 @@ describe('production HTTP security', () => {
     const deadlockLog = logLines
       .map((line) => JSON.parse(line) as { message: { requestId?: string; sourceIp?: string } })
       .find((entry) => entry.message.requestId === 'deadlock-request');
-    expect(deadlockLog?.message.sourceIp).toBe('10.0.0.9');
+    expect(deadlockLog?.message.sourceIp).not.toBe('198.51.100.50');
+    expect(deadlockLog?.message.sourceIp).not.toBe('10.0.0.9');
   });
 
   it('maps a closed Prisma transaction to a retryable stable response', async () => {

@@ -16,12 +16,23 @@ export async function createApp(): Promise<INestApplication> {
 }
 
 export function getPort(): string | number {
-  return process.env.PORT || 3000;
+  return process.env.PORT || 80;
+}
+
+export function getListenOptions(): {
+  port: string | number;
+  host: '::';
+} {
+  return {
+    port: getPort(),
+    host: '::'
+  };
 }
 
 export async function bootstrap(): Promise<void> {
   const app = await createApp();
-  await app.listen(getPort(), '0.0.0.0');
+  const listenOptions = getListenOptions();
+  await app.listen(listenOptions.port, listenOptions.host);
 }
 
 if (

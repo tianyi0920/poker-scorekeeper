@@ -1,8 +1,10 @@
+import { getHealthcheckUrl } from './healthcheck-url.mjs';
+
 const controller = new AbortController();
 const timeout = setTimeout(() => controller.abort(), 4_000);
 
 try {
-  const response = await fetch('http://127.0.0.1:3000/api/health/ready', {
+  const response = await fetch(getHealthcheckUrl(), {
     signal: controller.signal
   });
   if (!response.ok) process.exitCode = 1;

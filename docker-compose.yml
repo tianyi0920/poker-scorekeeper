@@ -11,12 +11,12 @@ services:
       - .env.production
     environment:
       NODE_ENV: production
-      PORT: "3000"
+      PORT: "80"
       WEB_DIST_ROOT: /app/apps/web/dist
       AVATAR_ROOT: /data/avatars
       BACKUP_DIR: /data/backups
     ports:
-      - "127.0.0.1:3000:3000"
+      - "80:80"
     volumes:
       - ./data/avatars:/data/avatars
       - ./data/backups:/data/backups
@@ -28,6 +28,8 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
     healthcheck:
       test: ["CMD", "node", "scripts/docker/healthcheck.mjs"]
       interval: 30s

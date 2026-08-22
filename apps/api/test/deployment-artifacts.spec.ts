@@ -18,6 +18,7 @@ interface ComposeService {
   healthcheck?: unknown;
   security_opt?: string[];
   cap_drop?: string[];
+  sysctls?: Record<string, string> | string[];
   environment?: Record<string, string>;
   entrypoint?: unknown;
   command?: unknown;
@@ -252,7 +253,7 @@ const approvedEnvironmentKeys = [
 
 const approvedEnvironmentComments = new Set([
   "# Fixed public image version pulled by docker-compose.registry.yml.",
-  "# Optional comma-separated exact origins for additional trusted reverse-proxy entry points.",
+  "# Optional comma-separated exact origins for additional trusted browser entry points.",
   "# Backup jobs reuse container environment so passwords never appear in command arguments.",
 ]);
 
@@ -334,15 +335,19 @@ function validateExtremeSpaceRunbook(content: string): void {
     "运行镜像最终以 UID/GID `1000:1000` 的 `node` 用户运行",
     "在管理界面复核三项权限已生效",
     "docker compose --env-file .env.production -f docker-compose.registry.yml logs --tail=100 app",
-    "curl --fail http://127.0.0.1:3000/api/health/live",
-    "curl --fail http://127.0.0.1:3000/api/health/ready",
-    "curl --fail http://127.0.0.1:3000/api/health/deployment",
+    "curl --fail http://127.0.0.1:80/api/health/live",
+    "curl --fail http://127.0.0.1:80/api/health/ready",
+    "curl --fail http://127.0.0.1:80/api/health/deployment",
     "点击“应用”前，必须先完成第 3.1 节",
     "只选择一种正式启动方式",
     "不要再执行 Compose 的 `up -d`",
     "升级单独创建的容器时",
     "回滚单独创建的容器时",
-    "HTTPS",
+    "http://pk.tianyi.wiki",
+    "AAAA",
+    "公网 IPv6",
+    "TCP 80",
+    "HTTP 明文",
     "WebSocket",
     "### 3.1 立即创建并验证首次备份",
     ': "${POKER_DIR:?Repeat section 1 in this shell first}"',
@@ -533,20 +538,21 @@ function validateExtremeSpaceRunbook(content: string): void {
     throw new Error("runbook contains a mutable latest image version");
   }
 
-  const proxySection = content.slice(
-    content.indexOf("## 4. HTTPS 和 WebSocket 反向代理"),
+  const directHttpSection = content.slice(
+    content.indexOf("## 4. HTTP 和 IPv6 直连"),
     content.indexOf("## 5. 升级操作卡"),
   );
   for (const requirement of [
-    "公网 HTTPS 入口",
-    "http://127.0.0.1:3000",
-    "Upgrade",
-    "Connection",
-    "不要公开容器 `3000` 端口",
-    "MariaDB `3306` 的公网转发",
+    "http://pk.tianyi.wiki",
+    "AAAA",
+    "容器公网 IPv6",
+    "TCP 80",
+    "WebSocket",
+    "HTTP 明文",
+    "不要公开 MariaDB `3306`",
   ]) {
-    if (!proxySection.includes(requirement))
-      throw new Error("reverse proxy instructions are incomplete");
+    if (!directHttpSection.includes(requirement))
+      throw new Error("direct HTTP IPv6 instructions are incomplete");
   }
 
   if (
@@ -566,7 +572,7 @@ function validateExtremeSpaceRunbook(content: string): void {
   if (
     firstPullIndex > firstBackupIndex ||
     firstBackupIndex > firstUpIndex ||
-    firstBackupIndex > content.indexOf("## 4. HTTPS 和 WebSocket 反向代理")
+    firstBackupIndex > content.indexOf("## 4. HTTP 和 IPv6 直连")
   ) {
     throw new Error(
       "first backup verification is not before the first migration-capable startup",
@@ -578,14 +584,14 @@ function validateExtremeSpaceRunbook(content: string): void {
   );
   if (
     !upgradeSection.includes("第 3.1 节的备份验证块") ||
-    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.5")
+    !upgradeSection.includes("POKER_IMAGE_VERSION=1.0.6")
   ) {
     throw new Error(
       "upgrade instructions do not require a fresh verified backup and fixed version",
     );
   }
   if (
-    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.5") >
+    upgradeSection.indexOf("POKER_IMAGE_VERSION=1.0.6") >
       upgradeSection.indexOf(
         "docker compose --env-file .env.production -f docker-compose.registry.yml pull",
       ) ||
@@ -644,7 +650,7 @@ describe("production deployment artifacts", () => {
       /^FROM production-dependencies AS runtime-bundle$/m,
     );
     expect(bundle).toContain(
-      "COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs /app/scripts/docker/",
+      "COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs scripts/docker/healthcheck-url.mjs /app/scripts/docker/",
     );
     expect(bundle).toContain(
       "COPY --chmod=0555 scripts/database/production-preflight.mjs scripts/database/create-database.mjs scripts/database/production-backup-target.mjs scripts/database/assert-production-avatar-files.mjs scripts/database/production-migration-evidence.mjs /app/scripts/database/",
@@ -701,6 +707,9 @@ describe("production deployment artifacts", () => {
     );
     expect(dockerfile).toContain("/app/deployment-id /app/deployment-id");
     expect(dockerfile).toMatch(/^USER node$/m);
+    expect(dockerfile).toMatch(/^\s*PORT=80 \\/m);
+    expect(dockerfile).toMatch(/^EXPOSE 80$/m);
+    expect(dockerfile).not.toMatch(/^EXPOSE 3000$/m);
     expect(dockerfile).toContain('ENTRYPOINT ["/usr/bin/tini", "-g", "--"');
     expect(dockerfile).not.toMatch(/FROM .*:latest/);
   });
@@ -756,7 +765,7 @@ describe("production deployment artifacts", () => {
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
     for (const assignment of [
-      "PUBLIC_ORIGIN=https://poker.example.com",
+      "PUBLIC_ORIGIN=http://pk.tianyi.wiki",
       'WS_ALLOWED_ORIGINS=""',
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
       "SESSION_SECRET=CHANGE_ME_AT_LEAST_32_RANDOM_BYTES",
@@ -950,13 +959,17 @@ describe("production deployment artifacts", () => {
     }
   });
 
-  it("publishes only the app on loopback and persists controlled application data", async () => {
-    // Break caught: MySQL or the app is accidentally exposed to the LAN/WAN without the Synology proxy.
+  it("publishes the app directly on HTTP port 80 with non-root low-port binding", async () => {
+    // Break caught: the public IPv6 reaches a closed/wrong port or the non-root process cannot bind port 80.
     const compose = parse(await readRepositoryFile("docker-compose.yml")) as {
       services: { app: ComposeService };
     };
     expect(Object.keys(compose.services)).toEqual(["app"]);
-    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:3000"]);
+    expect(compose.services.app.ports).toEqual(["80:80"]);
+    expect(compose.services.app.environment?.PORT).toBe("80");
+    expect(compose.services.app.sysctls).toEqual({
+      "net.ipv4.ip_unprivileged_port_start": "0",
+    });
     expect(compose.services.app.env_file).toEqual([".env.production"]);
     expect(compose.services.app.build?.args?.DEPLOYMENT_ID).toBe(
       "${DEPLOYMENT_ID:?DEPLOYMENT_ID is required}",
@@ -1057,7 +1070,11 @@ describe("production deployment artifacts", () => {
     expect(compose.services.app.image).toBe(
       "docker.io/tianyi920/poker-scorekeeper:${POKER_IMAGE_VERSION:?POKER_IMAGE_VERSION is required}",
     );
-    expect(compose.services.app.ports).toEqual(["127.0.0.1:3000:3000"]);
+    expect(compose.services.app.ports).toEqual(["80:80"]);
+    expect(compose.services.app.environment?.PORT).toBe("80");
+    expect(compose.services.app.sysctls).toEqual({
+      "net.ipv4.ip_unprivileged_port_start": "0",
+    });
     expect(compose.services.app.env_file).toEqual([".env.production"]);
     expect(compose.services.app.volumes).toEqual(
       expect.arrayContaining([
@@ -1082,8 +1099,9 @@ describe("production deployment artifacts", () => {
     const environment = await readRepositoryFile(".env.extremespace.example");
     const values = validateExtremeSpaceEnvironmentTemplate(environment);
 
-    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.5");
-    expect(environment).toContain("PUBLIC_ORIGIN=https://poker.example.com");
+    expect(environment).toContain("POKER_IMAGE_VERSION=1.0.6");
+    expect(environment).toContain("PORT=80");
+    expect(environment).toContain("PUBLIC_ORIGIN=http://pk.tianyi.wiki");
     expect(environment).toContain(
       "DATABASE_URL=mysql://poker_user:CHANGE_ME@192.168.10.248:3306/poker_scorekeeper",
     );
@@ -1118,7 +1136,7 @@ describe("production deployment artifacts", () => {
 
     for (const required of [
       "github.com/tianyi0920/poker-scorekeeper",
-      "docker.io/tianyi920/poker-scorekeeper:1.0.5",
+      "docker.io/tianyi920/poker-scorekeeper:1.0.6",
       "docker-compose.registry.yml",
       ".env.extremespace.example",
       "cp .env.extremespace.example .env.production",
@@ -1198,8 +1216,8 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          /### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTPS 和 WebSocket 反向代理/,
-          "## 4. HTTPS 和 WebSocket 反向代理",
+          /### 3\.1 立即创建并验证首次备份[\s\S]*?## 4\. HTTP 和 IPv6 直连/,
+          "## 4. HTTP 和 IPv6 直连",
         ),
       ),
     ).toThrow(/runbook requirement/);
@@ -1246,7 +1264,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.5",
+          "POKER_IMAGE_VERSION=1.0.6",
           'POKER_IMAGE_VERSION="latest"',
         ),
       ),
@@ -1254,7 +1272,7 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          "POKER_IMAGE_VERSION=1.0.5",
+          "POKER_IMAGE_VERSION=1.0.6",
           "export POKER_IMAGE_VERSION='latest'",
         ),
       ),
@@ -1331,16 +1349,16 @@ describe("production deployment artifacts", () => {
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
-          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.5/,
-          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.5",
+          /(## 5\. 升级操作卡[\s\S]*?)POKER_IMAGE_VERSION=1\.0\.6/,
+          "$1docker compose --env-file .env.production -f docker-compose.registry.yml pull\nPOKER_IMAGE_VERSION=1.0.6",
         ),
       ),
     ).toThrow(/upgrade command order/);
     expect(() =>
       validateExtremeSpaceRunbook(
-        runbook.replace("以及到 `http://127.0.0.1:3000` 的上游", ""),
+        runbook.replace("`pk.tianyi.wiki` 的 AAAA 必须等于容器公网 IPv6", ""),
       ),
-    ).toThrow(/reverse proxy instructions/);
+    ).toThrow(/direct HTTP IPv6 instructions/);
     expect(() =>
       validateExtremeSpaceRunbook(
         runbook.replace(
