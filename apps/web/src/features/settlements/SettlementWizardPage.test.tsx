@@ -141,10 +141,14 @@ it('requires a fresh preview after SETTINGS_VERSION_CONFLICT and disables writes
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
   await user.click(screen.getByRole('button', { name: '查看结算预览' }));
-  await user.click(screen.getByRole('button', { name: '打开永久确认' }));
-  await user.click(screen.getByRole('button', { name: '确认并永久锁定结算' }));
+  expect(screen.getAllByRole('button', { name: '确认结算' })).toHaveLength(1);
+  expect(screen.getAllByRole('button', { name: '修改' })).toHaveLength(1);
+  expect(screen.queryByRole('button', { name: '重新生成预览' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '打开永久确认' })).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '确认结算' }));
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   expect((await screen.findAllByText('抽成规则已变化，请重新核对')).length).toBeGreaterThan(0);
-  expect(screen.queryByRole('button', { name: '确认并永久锁定结算' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '确认结算' })).not.toBeInTheDocument();
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
   await act(async () => { window.dispatchEvent(new Event('offline')); });
   expect(screen.getByRole('button', { name: '查看结算预览' })).toBeDisabled();
@@ -169,7 +173,7 @@ it('ignores a deferred preview from revision A after revision B clears its confi
   await user.click(screen.getByRole('button', { name: '查看结算预览' }));
   fireEvent.change(screen.getByLabelText('房费（元）'), { target: { value: '500' } });
   await act(async () => { preview.resolve(jsonResponse(previewResponse())); await Promise.resolve(); });
-  expect(screen.queryByRole('button', { name: '打开永久确认' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '确认结算' })).not.toBeInTheDocument();
   expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/settlement-finalize'))).toHaveLength(0);
 });
 

@@ -4,7 +4,6 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError } from '../../api/http-client.js';
 import { scorekeeperApi } from '../../api/resources.js';
 import { Button } from '../../components/Button.js';
-import { Modal } from '../../components/Modal.js';
 import { Toast } from '../../components/Toast.js';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus.js';
 import { CashOutStep } from './CashOutStep.js';
@@ -37,10 +36,10 @@ function sameBinding(left: PreviewBinding | null, right: PreviewBinding | null):
 export function SettlementWizardPage() {
   const { id: gameId = '' } = useParams(); const navigate = useNavigate(); const online = useOnlineStatus();
   const [draft, setDraft] = useState<SettlementDraftDto | null>(null); const [preview, setPreview] = useState<SettlementPreviewDto | null>(null); const [step, setStep] = useState<Step>('cashout'); const [saveState, setSaveState] = useState<SaveState>('saved');
-  const [conflictMessage, setConflictMessage] = useState<string | null>(null); const [loadError, setLoadError] = useState<string | null>(null); const [previewError, setPreviewError] = useState<string | null>(null); const [confirmOpen, setConfirmOpen] = useState(false); const [settingsConflict, setSettingsConflict] = useState(false); const [finalizing, setFinalizing] = useState(false);
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null); const [loadError, setLoadError] = useState<string | null>(null); const [previewError, setPreviewError] = useState<string | null>(null); const [settingsConflict, setSettingsConflict] = useState(false); const [finalizing, setFinalizing] = useState(false);
   const sessionRef = useRef<WizardSession>(createSession(0, ''));
   const current = useCallback((context: OperationContext) => sessionRef.current.gameId === context.gameId && sessionRef.current.generation === context.generation, []);
-  const clearPreview = useCallback(() => { const session = sessionRef.current; session.previewAbort?.abort(); session.previewAbort = null; session.binding = null; setPreview(null); setConfirmOpen(false); setSettingsConflict(false); }, []);
+  const clearPreview = useCallback(() => { const session = sessionRef.current; session.previewAbort?.abort(); session.previewAbort = null; session.binding = null; setPreview(null); setSettingsConflict(false); }, []);
 
   const runSaveQueue = useCallback((context: OperationContext): Promise<void> => {
     const session = sessionRef.current;
@@ -80,7 +79,7 @@ export function SettlementWizardPage() {
   useEffect(() => {
     const previous = sessionRef.current; if (previous.timer !== undefined) window.clearTimeout(previous.timer); previous.saveAbort?.abort(); previous.previewAbort?.abort(); previous.finalizeAbort?.abort();
     const session = createSession(previous.generation + 1, gameId); sessionRef.current = session; const context = { gameId, generation: session.generation };
-    setDraft(null); setPreview(null); setStep('cashout'); setLoadError(null); setConflictMessage(null); setPreviewError(null); setConfirmOpen(false); setSettingsConflict(false); setFinalizing(false);
+    setDraft(null); setPreview(null); setStep('cashout'); setLoadError(null); setConflictMessage(null); setPreviewError(null); setSettingsConflict(false); setFinalizing(false);
     if (gameId === '') { setLoadError('对局不存在'); return; }
     const controller = new AbortController();
     void scorekeeperApi.settlementDraft(gameId, controller.signal).then((next) => { if (!current(context) || controller.signal.aborted) return; session.draft = next; session.saved = next; setDraft(next); setPreview(next); setSaveState('saved'); }).catch(() => { if (current(context) && !controller.signal.aborted) setLoadError('结算草稿暂时无法加载，请稍后重试'); });
@@ -134,7 +133,7 @@ export function SettlementWizardPage() {
     {conflictMessage !== null && <Toast tone="error" message={conflictMessage} />}{saveState === 'conflict' && session.pending !== null && <Button variant="secondary" unsafe disabled={!online} onClick={retrySave}>重试保存草稿</Button>}{!draft.canEdit && <Toast tone="info" message={`当前由${draft.editorNickname}编辑。${draft.canTakeOver ? '租约已到期，可接管。' : '请等待对方完成或租约到期。'}`} />}{draft.canTakeOver && <Button variant="secondary" unsafe onClick={() => void takeOver()}>接管结算草稿</Button>}{previewError !== null && <Toast tone="error" message={previewError} />}
     {step === 'cashout' && <><CashOutStep draft={draft} onChange={(playerId, value) => updatePayload({ ...draft.payload, cashOutByPlayerId: { ...draft.payload.cashOutByPlayerId, [playerId]: value } })} /><Button disabled={!previewReady || !writeAllowed} onClick={() => setStep('expense')}>下一步：费用分摊</Button></>}
     {step === 'expense' && <><ExpenseStep draft={draft} onChange={updatePayload} /><div className="inline-actions"><Button variant="ghost" onClick={() => setStep('cashout')}>返回带走金额</Button><Button unsafe disabled={!writeAllowed} onClick={() => void requestPreview()}>查看结算预览</Button></div></>}
-    {step === 'preview' && preview !== null && <><SettlementBreakdown breakdown={preview} mode="preview" onConfirm={previewCanConfirm ? () => setConfirmOpen(true) : undefined} /><div className="inline-actions"><Button variant="ghost" onClick={() => setStep('expense')}>修改费用</Button><Button unsafe disabled={!writeAllowed} onClick={() => void requestPreview()}>重新生成预览</Button></div></>}
-    <Link className="secondary-link" to={`/games/${gameId}`}>返回牌桌</Link>{confirmOpen && <Modal title="确认永久结算" onClose={() => { if (!finalizing) setConfirmOpen(false); }}><div className="modal-body"><Toast tone="error" message="此操作不可逆。请再次确认所有玩家的最终金额。" /><Button variant="danger" unsafe disabled={finalizing || !previewCanConfirm} onClick={() => void finalize()}>确认并永久锁定结算</Button><Button variant="ghost" disabled={finalizing} onClick={() => setConfirmOpen(false)}>返回核对</Button></div></Modal>}
+    {step === 'preview' && preview !== null && <><SettlementBreakdown breakdown={preview} mode="preview" /><p className="irreversible-note">确认后本局结算将永久锁定，无法在页面中修改。</p><div className="inline-actions"><Button variant="ghost" disabled={finalizing} onClick={() => setStep('expense')}>修改</Button><Button variant="danger" unsafe disabled={!previewCanConfirm || finalizing} onClick={() => void finalize()}>{finalizing ? '正在结算…' : '确认结算'}</Button></div></>}
+    <Link className="secondary-link" to={`/games/${gameId}`}>返回牌桌</Link>
   </section>;
 }
