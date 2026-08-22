@@ -109,7 +109,10 @@ function renderGame(
   const view = render(
     <AuthProvider>
       <MemoryRouter initialEntries={['/games/game-1']}>
-        <Routes><Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} /></Routes>
+        <Routes>
+          <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
+          <Route path="/games/:id/settlement" element={<div>已进入结算页</div>} />
+        </Routes>
       </MemoryRouter>
     </AuthProvider>
   );
@@ -353,8 +356,8 @@ it('resets snapshot version state before loading a different game route', async 
   await waitFor(() => expect(sockets.at(-1)?.joined.at(-1)).toEqual({ gameId: 'game-2', knownVersion: 1 }));
 });
 
-it('lets only an administrator confirm the ACTIVE to SETTLING transition', async () => {
-  // Break caught: a normal user can end the table, or an administrator ends it without the required confirmation.
+it('lets only an administrator confirm the ACTIVE to SETTLING transition and then enters settlement', async () => {
+  // Break caught: a normal user can end the table, or an administrator needs a second navigation action after confirmation.
   const userSocket = new FakeGameSocket();
   const userView = renderGame(userSocket, snapshot({ players: players(1) }), 'USER');
   await screen.findByTestId('round-table');
@@ -369,7 +372,7 @@ it('lets only an administrator confirm the ACTIVE to SETTLING transition', async
   expect(screen.getByRole('dialog', { name: '确认结束对局' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
 
-  expect(await screen.findByText('结算中')).toBeInTheDocument();
-  expect(screen.queryByRole('button', { name: '购买筹码' })).not.toBeInTheDocument();
+  expect(await screen.findByText('已进入结算页')).toBeInTheDocument();
+  expect(screen.queryByRole('link', { name: '进入结算' })).not.toBeInTheDocument();
   unmount();
 });

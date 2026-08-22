@@ -10,7 +10,7 @@ import {
   type GameSnapshotDto
 } from '@poker/contracts';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { createGameSocket, type GameSocketClient, type GameSocketListener } from '../../api/game-socket.js';
 import { mutationMessage, scorekeeperApi } from '../../api/resources.js';
 import { useAuth } from '../../auth/AuthProvider.js';
@@ -33,6 +33,7 @@ function totalBuyIn(snapshot: GameSnapshotDto): bigint {
 
 export function GamePage({ socketFactory = createGameSocket }: { socketFactory?: SocketFactory }) {
   const { id: gameId = '' } = useParams();
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [snapshot, setSnapshot] = useState<GameSnapshotDto | null>(null);
   const snapshotRef = useRef<GameSnapshotDto | null>(null);
@@ -289,6 +290,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       const next = await scorekeeperApi.beginSettlement(snapshot.id);
       if (!applySnapshot(next)) throw new Error('Invalid game snapshot');
       setEndOpen(false);
+      navigate(`/games/${encodeURIComponent(snapshot.id)}/settlement`, { replace: true });
     } catch (reason) {
       setEndError(mutationMessage(reason, '暂时无法结束对局，请刷新后重试'));
     } finally {
@@ -303,7 +305,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         <div className="game-heading-actions">
           <span className={active ? 'live-pill' : 'status-pill status-pill--settling'}>{active ? '进行中' : '结算中'}</span>
           {active && canManage && <Button variant="ghost" unsafe onClick={() => setEndOpen(true)}>结束对局</Button>}
-          {!active && canManage && <Link className="compact-link" to={`/games/${snapshot.id}/settlement`}>进入结算</Link>}
         </div>
       </header>
 
