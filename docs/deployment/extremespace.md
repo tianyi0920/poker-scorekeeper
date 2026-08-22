@@ -3,7 +3,7 @@
 ## 先回答三个容易混淆的问题
 
 - 源码仓库是私有的：`github.com/tianyi0920/poker-scorekeeper`。极空间不需要登录 GitHub，也不需要完整源码树。
-- 镜像仓库是公开的：`docker.io/tianyi920/poker-scorekeeper`；本次直连 HTTP/IPv6 版本发布后使用 `docker.io/tianyi920/poker-scorekeeper:1.0.6`。NAS 只拉取已经发布的固定版本镜像。
+- 镜像仓库是公开的：`docker.io/tianyi920/poker-scorekeeper`；本次 HTTPS/WSS 部署方案使用 `docker.io/tianyi920/poker-scorekeeper:1.0.6`。NAS 只拉取已经发布的固定版本镜像。
 - NAS 项目目录只需要仓库根目录的 `docker-compose.registry.yml` 和 `.env.extremespace.example`，再加上本机生成的 `.env.production` 与 `data` 持久目录。
 
 不要在 NAS 上执行源码构建，也不要把私有仓库的完整工作树复制到 NAS。请从可信的发布包或管理电脑取得上述两个不含秘密的模板文件；真实 `.env.production` 只保留在 NAS，绝不提交、截图或发送到聊天中。

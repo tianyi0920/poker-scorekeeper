@@ -633,6 +633,32 @@ function validateExtremeSpaceRunbook(content: string): void {
   }
 }
 
+function validateSecureProductionChecklist(content: string): void {
+  for (const requirement of [
+    "PUBLIC_ORIGIN` 精确为无用户名、密码、路径、查询串或片段的 `https://pk.tianyi.wiki`",
+    "WS_ALLOWED_ORIGINS` 精确为 `https://pk.tianyi.wiki`",
+    "TLS 终止",
+    "wss://pk.tianyi.wiki",
+    "curl.exe -fsSI https://pk.tianyi.wiki/api/health/live",
+    'curl.exe -fsS -D - -o NUL "https://pk.tianyi.wiki/socket.io/?EIO=4&transport=polling"',
+    "101 Switching Protocols",
+    "真实手机关闭 Wi-Fi 后通过公网 HTTPS 登录",
+    "WSS 出现在观战者列表",
+  ]) {
+    if (!content.includes(requirement)) {
+      throw new Error(`missing secure production checklist requirement: ${requirement}`);
+    }
+  }
+
+  if (
+    content.includes("http://pk.tianyi.wiki") ||
+    content.includes("ws://pk.tianyi.wiki") ||
+    /(?:本次)?没有 TLS[、,，HSTS 或]*WSS|(?:已明确接受|允许) HTTP\/WS 明文|公网 HTTP 登录/.test(content)
+  ) {
+    throw new Error("production checklist permits insecure public realtime transport");
+  }
+}
+
 describe("production deployment artifacts", () => {
   it("assembles all runtime application files atomically for NAS container runtimes", async () => {
     // Break caught: some NAS runtimes silently omit late image layers, leaving the entrypoint present but its preflight helper absent.
@@ -1126,6 +1152,27 @@ describe("production deployment artifacts", () => {
       BOOTSTRAP_ADMIN_PASSWORD: "CHANGE_ME_UNIQUE_STRONG_PASSWORD",
       MYSQL_PASSWORD: "CHANGE_ME",
     });
+  });
+
+  it("requires HTTPS/WSS production verification and rejects insecure public transport", async () => {
+    const checklist = await readRepositoryFile("docs/deployment/production-checklist.md");
+
+    expect(() => validateSecureProductionChecklist(checklist)).not.toThrow();
+    expect(() =>
+      validateSecureProductionChecklist(
+        checklist.replace("https://pk.tianyi.wiki", "http://pk.tianyi.wiki"),
+      ),
+    ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
+    expect(() =>
+      validateSecureProductionChecklist(
+        checklist.replace("wss://pk.tianyi.wiki", "ws://pk.tianyi.wiki"),
+      ),
+    ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
+    expect(() =>
+      validateSecureProductionChecklist(
+        checklist.replace("TLS 终止", "没有 TLS、HSTS 或 WSS"),
+      ),
+    ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
   });
 
   it("documents source-free Extreme Space deployment with fixed image versions", async () => {
