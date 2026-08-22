@@ -155,15 +155,42 @@ function readShellAssignmentWord(
   content: string,
   cursor: number,
   wrapperQuote: string | undefined,
-  markdownCodeWrapper: boolean,
+  markdownCodeDelimiterLength: number,
   key: GuideEnvironmentKey,
   name: string,
 ): string {
   let value = "";
+  let activeQuote = wrapperQuote;
   let wrapperClosed = wrapperQuote === undefined;
 
   while (cursor < content.length) {
     const character = content[cursor]!;
+
+    if (activeQuote !== undefined) {
+      if (character === activeQuote) {
+        if (activeQuote === wrapperQuote && !wrapperClosed) {
+          wrapperClosed = true;
+        }
+        activeQuote = undefined;
+        cursor += 1;
+        continue;
+      }
+      if (activeQuote === '"' && character === "\\") {
+        const escaped = content[cursor + 1];
+        if (escaped === undefined || escaped === "\n") {
+          rejectInsecureBackendGuide(name, `unterminated ${key} assignment`);
+        }
+        if (/[$`"\\]/u.test(escaped)) {
+          value += escaped;
+          cursor += 2;
+          continue;
+        }
+      }
+      value += character;
+      cursor += 1;
+      continue;
+    }
+
     if (
       /[\s，。；：！？、]/u.test(character) ||
       (character === "#" && key === "PORT")
@@ -172,31 +199,30 @@ function readShellAssignmentWord(
     }
 
     if (character === "`") {
-      const followingCharacter = content[cursor + 1];
-      if (
-        markdownCodeWrapper &&
-        (followingCharacter === undefined ||
-          /[\s.,;:!?)\]}，。；：！？、）】》」』]/u.test(followingCharacter))
-      ) {
+      let delimiterEnd = cursor;
+      while (content[delimiterEnd] === "`") delimiterEnd += 1;
+      if (delimiterEnd - cursor === markdownCodeDelimiterLength) {
         break;
       }
       rejectInsecureBackendGuide(name, `dynamic ${key} assignment`);
     }
 
-    if (!wrapperClosed && character === wrapperQuote) {
-      wrapperClosed = true;
+    if (character === '"' || character === "'") {
+      activeQuote = character;
       cursor += 1;
       continue;
     }
 
-    if (character === '"' || character === "'") {
-      const lineEnd = content.indexOf("\n", cursor + 1);
-      const closingQuote = content.indexOf(character, cursor + 1);
-      if (closingQuote < 0 || (lineEnd >= 0 && closingQuote > lineEnd)) {
+    if (character === "\\") {
+      const escaped = content[cursor + 1];
+      if (escaped === undefined || escaped === "\n") {
         rejectInsecureBackendGuide(name, `unterminated ${key} assignment`);
       }
-      value += content.slice(cursor + 1, closingQuote);
-      cursor = closingQuote + 1;
+      if (key !== "PORT") {
+        rejectInsecureBackendGuide(name, `${key} must use a literal origin`);
+      }
+      value += escaped;
+      cursor += 2;
       continue;
     }
 
@@ -204,7 +230,7 @@ function readShellAssignmentWord(
     cursor += 1;
   }
 
-  if (!wrapperClosed) {
+  if (!wrapperClosed || activeQuote !== undefined) {
     rejectInsecureBackendGuide(name, `unterminated ${key} assignment`);
   }
 
@@ -228,12 +254,19 @@ function readGuideEnvironmentAssignments(
       precedingCharacter === '"' || precedingCharacter === "'"
         ? precedingCharacter
         : undefined;
-    const markdownCodeWrapper = precedingCharacter === "`";
+    let markdownCodeDelimiterLength = 0;
+    for (
+      let index = matchIndex - 1;
+      index >= 0 && content[index] === "`";
+      index -= 1
+    ) {
+      markdownCodeDelimiterLength += 1;
+    }
     const value = readShellAssignmentWord(
       content,
       cursor,
       wrapperQuote,
-      markdownCodeWrapper,
+      markdownCodeDelimiterLength,
       key,
       name,
     );
@@ -267,6 +300,52 @@ const yamlFenceLanguages = new Set([
   "docker-compose",
 ]);
 
+interface MarkdownFence {
+  character: "`" | "~";
+  length: number;
+  indentation: number;
+  language: string;
+}
+
+function readMarkdownFenceOpening(line: string): MarkdownFence | undefined {
+  const opening = /^( {0,3})(`{3,}|~{3,})(.*)$/u.exec(line);
+  if (!opening) return undefined;
+
+  const marker = opening[2]!;
+  const info = opening[3]!;
+  if (marker[0] === "`" && info.includes("`")) return undefined;
+
+  return {
+    character: marker[0] as "`" | "~",
+    length: marker.length,
+    indentation: opening[1]!.length,
+    language: info.trim().split(/[ \t]/u, 1)[0]!.toLowerCase(),
+  };
+}
+
+function isMarkdownFenceClosing(line: string, fence: MarkdownFence): boolean {
+  const indentation = /^( {0,3})/u.exec(line)?.[0].length ?? 0;
+  let cursor = indentation;
+  while (line[cursor] === fence.character) cursor += 1;
+  return (
+    cursor - indentation >= fence.length && line.slice(cursor).trim() === ""
+  );
+}
+
+function stripFenceIndentation(line: string, indentation: number): string {
+  let cursor = 0;
+  while (cursor < indentation && line[cursor] === " ") cursor += 1;
+  return line.slice(cursor);
+}
+
+function isIndentedCodeLine(line: string): boolean {
+  return line.startsWith("\t") || line.startsWith("    ");
+}
+
+function stripIndentedCodePrefix(line: string): string {
+  return line.startsWith("\t") ? line.slice(1) : line.slice(4);
+}
+
 function findYamlSnippets(content: string): YamlSnippet[] {
   const normalizedContent = content.replace(/\r\n?/g, "\n");
   const lines = normalizedContent.split("\n");
@@ -280,21 +359,65 @@ function findYamlSnippets(content: string): YamlSnippet[] {
   const snippets: YamlSnippet[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {
-    const fence = /^```([^\s`]*)/u.exec(lines[index]!);
+    const fence = readMarkdownFenceOpening(lines[index]!);
     if (!fence) continue;
 
-    const language = fence[1]!.toLowerCase();
     let end = index + 1;
-    while (end < lines.length && !/^```\s*$/u.test(lines[end]!)) end += 1;
-    if (yamlFenceLanguages.has(language)) {
+    while (end < lines.length && !isMarkdownFenceClosing(lines[end]!, fence)) {
+      end += 1;
+    }
+    const isClosed = end < lines.length;
+    const isYamlFence = yamlFenceLanguages.has(fence.language);
+    const isUnlabelledFence = fence.language === "";
+    if (isYamlFence || isUnlabelledFence) {
       snippets.push({
-        content: lines.slice(index + 1, end).join("\n"),
-        failClosed: true,
+        content: lines
+          .slice(index + 1, end)
+          .map((line) => stripFenceIndentation(line, fence.indentation))
+          .join("\n"),
+        failClosed: isYamlFence,
         allowTopLevelProse: false,
       });
+      outsideFence.fill("", index, Math.min(end + 1, lines.length));
+      index = end;
+      continue;
     }
-    outsideFence.fill("", index, Math.min(end + 1, lines.length));
-    index = end;
+    if (isClosed) {
+      outsideFence.fill("", index, end + 1);
+      index = end;
+    } else {
+      outsideFence[index] = "";
+    }
+  }
+
+  for (let index = 0; index < outsideFence.length; index += 1) {
+    if (
+      !isIndentedCodeLine(outsideFence[index]!) ||
+      (index > 0 && outsideFence[index - 1]!.trim() !== "")
+    ) {
+      continue;
+    }
+
+    let end = index;
+    while (
+      end < outsideFence.length &&
+      (outsideFence[end]!.trim() === "" ||
+        isIndentedCodeLine(outsideFence[end]!))
+    ) {
+      end += 1;
+    }
+    snippets.push({
+      content: outsideFence
+        .slice(index, end)
+        .map((line) =>
+          line.trim() === "" ? "" : stripIndentedCodePrefix(line),
+        )
+        .join("\n"),
+      failClosed: false,
+      allowTopLevelProse: false,
+    });
+    outsideFence.fill("", index, end);
+    index = end - 1;
   }
 
   for (let index = 0; index < outsideFence.length; index += 1) {
@@ -473,13 +596,13 @@ function isMarkdownLabelBeforeParagraph(
   return /\n[ \t]*\n/u.test(between);
 }
 
-function isTopLevelMarkdownProseSection(
+function isMarkdownProseSection(
   map: { items: Array<{ key: unknown; value: unknown }> },
   index: number,
   snippet: YamlSnippet,
-  depth: number,
+  markdownProseContainer: boolean,
 ): boolean {
-  if (!snippet.allowTopLevelProse || depth !== 0) return false;
+  if (!snippet.allowTopLevelProse || !markdownProseContainer) return false;
   const pair = map.items[index]!;
   if (
     !isScalar(pair.key) ||
@@ -499,6 +622,7 @@ function collectComposeSections(
   snippet: YamlSnippet,
   sections: ParsedComposeSection[],
   depth = 0,
+  rootListItem = false,
 ): void {
   if (isMap(node)) {
     for (const [index, pair] of node.items.entries()) {
@@ -507,23 +631,23 @@ function collectComposeSections(
         sections.push({
           key,
           value: pair.value,
-          markdownProse: isTopLevelMarkdownProseSection(
+          markdownProse: isMarkdownProseSection(
             node,
             index,
             snippet,
-            depth,
+            depth === 0 || rootListItem,
           ),
         });
         continue;
       }
-      collectComposeSections(pair.value, snippet, sections, depth + 1);
+      collectComposeSections(pair.value, snippet, sections, depth + 1, false);
     }
     return;
   }
 
   if (isSeq(node)) {
     for (const item of node.items) {
-      collectComposeSections(item, snippet, sections, depth + 1);
+      collectComposeSections(item, snippet, sections, depth + 1, depth === 0);
     }
   }
 }

@@ -52,6 +52,7 @@ const invalidAssignments = [
     "'PUBLIC_ORIGIN=https://safe.example'/room",
   ],
   ["PORT with command substitution suffix", "PORT=80`printf 80`"],
+  ["dangerous escaped PORT suffix", "PORT=80\\80"],
   [
     "origin with command substitution suffix",
     "PUBLIC_ORIGIN=https://safe.example`printf /room`",
@@ -117,6 +118,10 @@ const unsafeComposeEnvironments = [
   [
     "nested Compose flow environment mapping",
     "services: { app: { environment: { PORT: 3000 } } }",
+  ],
+  [
+    "root list cannot turn a nested Compose environment into prose",
+    "- services:\n    app:\n      environment: production variables are discussed below.",
   ],
   [
     "multiline flow Compose environment mapping",
@@ -214,6 +219,10 @@ const unsafePortMappings = [
     "services: { app: { ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }] } }",
   ],
   [
+    "root list cannot turn nested Compose ports into prose",
+    "- services:\n    app:\n      ports: production bindings are discussed below.",
+  ],
+  [
     "multiline flow Compose ports mapping",
     "{\n  services: {\n    app: {\n      ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }]\n    }\n  }\n}",
   ],
@@ -251,6 +260,27 @@ const unsafeIndentedYamlRoots = [
   ],
 ] as const;
 
+const unsafeMarkdownYamlBlocks = [
+  [
+    "four-space indented environment code block",
+    "\n    services:\n      app:\n        environment:\n          PORT: 3000",
+  ],
+  [
+    "tab-indented long ports code block",
+    "\n\tservices:\n\t  app:\n\t    ports:\n\t      - published: 3000\n\t        target: 80\n\t        host_ip: 0.0.0.0",
+  ],
+  ["four-backtick YAML fence", "````yaml\nenvironment:\n  PORT: 3000\n````"],
+  [
+    "unlabelled backtick fence",
+    "```\nports:\n  - published: 3000\n    target: 80\n    host_ip: 0.0.0.0\n```",
+  ],
+  ["unclosed unlabelled backtick fence", "```\nenvironment:\n  PORT: 3000"],
+  [
+    "tilde Compose fence",
+    "~~~compose\nports:\n  - published: 3000\n    target: 80\n    host_ip: 0.0.0.0\n~~~",
+  ],
+] as const;
+
 const validEnvironmentSyntax = [
   ["dotenv PORT", "PORT=80"],
   ["export with quoted PORT", 'export PORT = "80" # listen internally'],
@@ -258,6 +288,8 @@ const validEnvironmentSyntax = [
   ["docker -e with PORT", "docker run -e PORT = 80"],
   ["entirely quoted PORT", "'PORT=80'"],
   ["PORT inside Markdown inline code", "`PORT=80`"],
+  ["PORT inside double-backtick code span", "``PORT=80``"],
+  ["PORT assembled with a shell backslash", "PORT=8\\0"],
   ["PORT assembled from quoted and unquoted segments", "PORT='8'0"],
   ["dotenv HTTPS origin", "PUBLIC_ORIGIN=https://public.example"],
   [
@@ -356,6 +388,26 @@ const validYamlDocuments = [
     "ordinary Markdown environment label before a paragraph",
     "environment:\n\nProduction variables are discussed below.",
   ],
+  [
+    "ordinary Markdown list environment prose",
+    "- environment: production variables are discussed below.",
+  ],
+  [
+    "ordinary Markdown list ports prose",
+    "- ports: production bindings are discussed below.",
+  ],
+  [
+    "safe four-backtick YAML fence",
+    "````yaml\nenvironment:\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\n````",
+  ],
+  [
+    "safe unlabelled YAML fence",
+    "```\nports:\n  - published: 3000\n    target: 80\n    host_ip: 127.0.0.1\n```",
+  ],
+  [
+    "safe tilde YAML fence",
+    "~~~yaml\nenvironment:\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\n~~~",
+  ],
 ] as const;
 
 describe("secure backend deployment guide validator", () => {
@@ -385,6 +437,12 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(unsafeIndentedYamlRoots)("rejects %s", (_label, yaml) => {
     expect(() => validateAtDocumentStart(yaml)).toThrow(
+      /permits an insecure public application backend/,
+    );
+  });
+
+  it.each(unsafeMarkdownYamlBlocks)("rejects %s", (_label, yaml) => {
+    expect(() => validate(yaml)).toThrow(
       /permits an insecure public application backend/,
     );
   });
