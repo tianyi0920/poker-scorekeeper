@@ -6,6 +6,7 @@ import { useAuth } from '../../auth/AuthProvider.js';
 import { Button } from '../../components/Button.js';
 import { Card } from '../../components/Card.js';
 import { Toast } from '../../components/Toast.js';
+import { DEFAULT_TEMPORARY_PASSWORD } from './default-temporary-password.js';
 import { ResetPasswordDialog } from './ResetPasswordDialog.js';
 
 const roleLabels: Record<AuthRole, string> = {
@@ -19,7 +20,7 @@ export function UserFormPage({ mode }: { mode: 'create' | 'edit' }) {
   const [target, setTarget] = useState<UserResponse | null>(null);
   const [username, setUsername] = useState('');
   const [nickname, setNickname] = useState('');
-  const [initialPassword, setInitialPassword] = useState('');
+  const [initialPassword, setInitialPassword] = useState(DEFAULT_TEMPORARY_PASSWORD);
   const [role, setRole] = useState<AuthRole>('USER');
   const [rakeEnabled, setRakeEnabled] = useState(true);
   const [isActive, setIsActive] = useState(true);

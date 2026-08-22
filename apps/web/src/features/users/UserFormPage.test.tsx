@@ -38,6 +38,19 @@ it('constructs all three role choices for a super administrator', async () => {
   expect(role).toHaveTextContent('超级管理员');
 });
 
+it('prefills an editable agreed temporary password when creating a user', async () => {
+  // Break caught: creating a user no longer starts with the agreed password or locks the operator out of changing it.
+  mockSession('ADMIN');
+  const user = userEvent.setup();
+  renderAt('/users/new', <App />);
+
+  const password = await screen.findByLabelText('初始密码');
+  expect(password).toHaveValue('12345678');
+  await user.clear(password);
+  await user.type(password, 'changed-password');
+  expect(password).toHaveValue('changed-password');
+});
+
 it('rejects a normal user who navigates directly to an administration URL', async () => {
   // Break caught: hiding navigation is the only permission control and direct URLs still render admin forms.
   mockSession('USER');

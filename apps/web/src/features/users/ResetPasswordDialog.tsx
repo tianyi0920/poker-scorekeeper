@@ -3,9 +3,10 @@ import { mutationMessage, scorekeeperApi } from '../../api/resources.js';
 import { Button } from '../../components/Button.js';
 import { Modal } from '../../components/Modal.js';
 import { Toast } from '../../components/Toast.js';
+import { DEFAULT_TEMPORARY_PASSWORD } from './default-temporary-password.js';
 
 export function ResetPasswordDialog({ userId, nickname, onClose }: { userId: string; nickname: string; onClose: () => void }) {
-  const [password, setPassword] = useState('');
+  const [password, setPassword] = useState(DEFAULT_TEMPORARY_PASSWORD);
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState(false);
   const [submitting, setSubmitting] = useState(false);
