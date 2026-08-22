@@ -1,4 +1,12 @@
-import { parseAllDocuments } from "yaml";
+import {
+  isMap,
+  isNode,
+  isScalar,
+  isSeq,
+  parseAllDocuments,
+  Scalar,
+  type Document,
+} from "yaml";
 
 const requiredGuideSnippets = [
   "PORT=80",
@@ -147,6 +155,7 @@ function readShellAssignmentWord(
   content: string,
   cursor: number,
   wrapperQuote: string | undefined,
+  markdownCodeWrapper: boolean,
   key: GuideEnvironmentKey,
   name: string,
 ): string {
@@ -156,10 +165,22 @@ function readShellAssignmentWord(
   while (cursor < content.length) {
     const character = content[cursor]!;
     if (
-      /[\s`，。；：！？、]/u.test(character) ||
+      /[\s，。；：！？、]/u.test(character) ||
       (character === "#" && key === "PORT")
     ) {
       break;
+    }
+
+    if (character === "`") {
+      const followingCharacter = content[cursor + 1];
+      if (
+        markdownCodeWrapper &&
+        (followingCharacter === undefined ||
+          /[\s.,;:!?)\]}，。；：！？、）】》」』]/u.test(followingCharacter))
+      ) {
+        break;
+      }
+      rejectInsecureBackendGuide(name, `dynamic ${key} assignment`);
     }
 
     if (!wrapperClosed && character === wrapperQuote) {
@@ -207,10 +228,12 @@ function readGuideEnvironmentAssignments(
       precedingCharacter === '"' || precedingCharacter === "'"
         ? precedingCharacter
         : undefined;
+    const markdownCodeWrapper = precedingCharacter === "`";
     const value = readShellAssignmentWord(
       content,
       cursor,
       wrapperQuote,
+      markdownCodeWrapper,
       key,
       name,
     );
@@ -234,6 +257,7 @@ interface YamlSnippet {
   content: string;
   failClosed: boolean;
   allowTopLevelProse: boolean;
+  startOffset?: number;
 }
 
 const yamlFenceLanguages = new Set([
@@ -243,19 +267,15 @@ const yamlFenceLanguages = new Set([
   "docker-compose",
 ]);
 
-function yamlCandidateBlockEnd(lines: string[], start: number): number {
-  let end = start + 1;
-  while (
-    end < lines.length &&
-    (lines[end]!.trim() === "" || /^[ \t]+/u.test(lines[end]!))
-  ) {
-    end += 1;
-  }
-  return end;
-}
-
 function findYamlSnippets(content: string): YamlSnippet[] {
-  const lines = content.replace(/\r\n?/g, "\n").split("\n");
+  const normalizedContent = content.replace(/\r\n?/g, "\n");
+  const lines = normalizedContent.split("\n");
+  const lineOffsets: number[] = [];
+  let nextLineOffset = 0;
+  for (const line of lines) {
+    lineOffsets.push(nextLineOffset);
+    nextLineOffset += line.length + 1;
+  }
   const outsideFence = [...lines];
   const snippets: YamlSnippet[] = [];
 
@@ -279,21 +299,17 @@ function findYamlSnippets(content: string): YamlSnippet[] {
 
   for (let index = 0; index < outsideFence.length; index += 1) {
     const line = outsideFence[index]!;
-    if (line.trim() === "" || /^[ \t]/u.test(line)) continue;
+    const indentation = /^ */u.exec(line)?.[0].length ?? 0;
+    if (line.trim() === "" || line.startsWith("\t") || indentation > 3) {
+      continue;
+    }
 
-    const blockEnd = yamlCandidateBlockEnd(outsideFence, index);
     snippets.push({
-      content: outsideFence.slice(index, blockEnd).join("\n"),
+      content: outsideFence.slice(index).join("\n"),
       failClosed: false,
       allowTopLevelProse: true,
+      startOffset: lineOffsets[index],
     });
-    if (blockEnd < outsideFence.length) {
-      snippets.push({
-        content: outsideFence.slice(index).join("\n"),
-        failClosed: false,
-        allowTopLevelProse: true,
-      });
-    }
   }
 
   return snippets;
@@ -395,73 +411,163 @@ function validateComposePorts(ports: unknown, name: string): void {
   }
 }
 
-function isTopLevelMarkdownProse(
-  value: unknown,
-  allowTopLevelProse: boolean,
-  depth: number,
-): value is string {
+type ComposeSectionKey = "environment" | "ports";
+
+interface ParsedComposeSection {
+  key: ComposeSectionKey;
+  value: unknown;
+  markdownProse: boolean;
+}
+
+function composeSectionKey(value: unknown): ComposeSectionKey | undefined {
+  if (!isScalar(value)) return undefined;
+  return value.value === "environment" || value.value === "ports"
+    ? value.value
+    : undefined;
+}
+
+function isStaticPlainMarkdownText(value: unknown): boolean {
   return (
-    allowTopLevelProse &&
-    depth === 0 &&
-    typeof value === "string" &&
-    /\s/u.test(value) &&
-    !/\$(?:[A-Za-z_{(])|\{\{|\}\}|<%|%>/u.test(value)
+    isScalar(value) &&
+    value.type === Scalar.PLAIN &&
+    value.tag === undefined &&
+    typeof value.value === "string" &&
+    /\s/u.test(value.value) &&
+    !/\$(?:[A-Za-z_{(])|\{\{|\}\}|<%|%>/u.test(value.value)
   );
 }
 
-function validateComposeStructure(
-  value: unknown,
-  name: string,
-  allowTopLevelProse: boolean,
-  visited = new WeakSet<object>(),
+function isMarkdownLabelBeforeParagraph(
+  map: { items: Array<{ key: unknown; value: unknown }> },
+  index: number,
+  snippet: YamlSnippet,
+): boolean {
+  const pair = map.items[index]!;
+  const nextPair = map.items[index + 1];
+  if (
+    !nextPair ||
+    !isScalar(pair.key) ||
+    pair.key.type !== Scalar.PLAIN ||
+    pair.key.tag !== undefined ||
+    !isScalar(pair.value) ||
+    pair.value.type !== Scalar.PLAIN ||
+    pair.value.tag !== undefined ||
+    pair.value.value !== null ||
+    !isScalar(nextPair.key) ||
+    nextPair.key.type !== Scalar.PLAIN ||
+    nextPair.key.tag !== undefined ||
+    !isStaticPlainMarkdownText(nextPair.key) ||
+    nextPair.value !== null ||
+    pair.value.range === undefined ||
+    pair.value.range === null ||
+    nextPair.key.range === undefined ||
+    nextPair.key.range === null
+  ) {
+    return false;
+  }
+
+  const between = snippet.content.slice(
+    pair.value.range[2],
+    nextPair.key.range[0],
+  );
+  return /\n[ \t]*\n/u.test(between);
+}
+
+function isTopLevelMarkdownProseSection(
+  map: { items: Array<{ key: unknown; value: unknown }> },
+  index: number,
+  snippet: YamlSnippet,
+  depth: number,
+): boolean {
+  if (!snippet.allowTopLevelProse || depth !== 0) return false;
+  const pair = map.items[index]!;
+  if (
+    !isScalar(pair.key) ||
+    pair.key.type !== Scalar.PLAIN ||
+    pair.key.tag !== undefined
+  ) {
+    return false;
+  }
+  return (
+    isStaticPlainMarkdownText(pair.value) ||
+    isMarkdownLabelBeforeParagraph(map, index, snippet)
+  );
+}
+
+function collectComposeSections(
+  node: unknown,
+  snippet: YamlSnippet,
+  sections: ParsedComposeSection[],
   depth = 0,
 ): void {
-  if (value === null || typeof value !== "object") return;
-  if (visited.has(value)) return;
-  visited.add(value);
-
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      validateComposeStructure(
-        entry,
-        name,
-        allowTopLevelProse,
-        visited,
-        depth + 1,
-      );
+  if (isMap(node)) {
+    for (const [index, pair] of node.items.entries()) {
+      const key = composeSectionKey(pair.key);
+      if (key !== undefined) {
+        sections.push({
+          key,
+          value: pair.value,
+          markdownProse: isTopLevelMarkdownProseSection(
+            node,
+            index,
+            snippet,
+            depth,
+          ),
+        });
+        continue;
+      }
+      collectComposeSections(pair.value, snippet, sections, depth + 1);
     }
     return;
   }
 
-  for (const [key, nestedValue] of Object.entries(
-    value as Record<string, unknown>,
-  )) {
-    if (key === "environment") {
-      if (isTopLevelMarkdownProse(nestedValue, allowTopLevelProse, depth)) {
-        continue;
-      }
-      validateComposeEnvironment(nestedValue, name);
-      continue;
+  if (isSeq(node)) {
+    for (const item of node.items) {
+      collectComposeSections(item, snippet, sections, depth + 1);
     }
-    if (key === "ports") {
-      if (isTopLevelMarkdownProse(nestedValue, allowTopLevelProse, depth)) {
-        continue;
-      }
-      validateComposePorts(nestedValue, name);
-      continue;
-    }
-    validateComposeStructure(
-      nestedValue,
+  }
+}
+
+function yamlNodeToJs(
+  value: unknown,
+  document: Document.Parsed,
+  name: string,
+): unknown {
+  if (value === null || !isNode(value)) {
+    rejectInsecureBackendGuide(name, "invalid YAML deployment structure");
+  }
+  try {
+    return value.toJS(document);
+  } catch {
+    return rejectInsecureBackendGuide(
       name,
-      allowTopLevelProse,
-      visited,
-      depth + 1,
+      "invalid YAML deployment structure",
     );
   }
 }
 
+function hasSingleLineYamlRoot(
+  document: Document.Parsed,
+  snippet: YamlSnippet,
+): boolean {
+  const contents = document.contents;
+  if (isSeq(contents)) return true;
+  if (!isMap(contents)) return false;
+  const firstKey = contents.items[0]?.key;
+  if (!isNode(firstKey) || firstKey.range === undefined) return false;
+  const rawKey = snippet.content.slice(firstKey.range[0], firstKey.range[2]);
+  return !/[\r\n]/u.test(rawKey);
+}
+
 function validateYamlComposeStructures(content: string, name: string): void {
+  let validatedOutsideThrough = -1;
   for (const snippet of findYamlSnippets(content)) {
+    if (
+      snippet.startOffset !== undefined &&
+      snippet.startOffset <= validatedOutsideThrough
+    ) {
+      continue;
+    }
     let documents;
     try {
       documents = parseAllDocuments(snippet.content, { merge: true });
@@ -478,16 +584,40 @@ function validateYamlComposeStructures(content: string, name: string): void {
       rejectInsecureBackendGuide(name, "invalid fenced YAML block");
     }
     for (const document of documents) {
-      let value: unknown;
-      try {
-        value = document.toJS();
-      } catch {
-        if (snippet.failClosed) {
-          rejectInsecureBackendGuide(name, "invalid fenced YAML block");
-        }
+      if (
+        !snippet.failClosed &&
+        document.errors.length > 0 &&
+        !hasSingleLineYamlRoot(document, snippet)
+      ) {
         continue;
       }
-      validateComposeStructure(value, name, snippet.allowTopLevelProse);
+      const sections: ParsedComposeSection[] = [];
+      collectComposeSections(document.contents, snippet, sections);
+      const securitySections = sections.filter(
+        (section) => !section.markdownProse,
+      );
+      if (document.errors.length > 0 && securitySections.length > 0) {
+        rejectInsecureBackendGuide(name, "invalid YAML deployment structure");
+      }
+      for (const section of securitySections) {
+        const value = yamlNodeToJs(section.value, document, name);
+        if (section.key === "environment") {
+          validateComposeEnvironment(value, name);
+        } else {
+          validateComposePorts(value, name);
+        }
+      }
+      if (
+        snippet.startOffset !== undefined &&
+        document.errors.length === 0 &&
+        sections.length > 0 &&
+        document.range !== undefined
+      ) {
+        validatedOutsideThrough = Math.max(
+          validatedOutsideThrough,
+          snippet.startOffset + document.range[2] - 1,
+        );
+      }
     }
   }
 }

@@ -20,6 +20,13 @@ function validate(extra = ""): void {
   );
 }
 
+function validateAtDocumentStart(extra: string): void {
+  validateSecureBackendDeploymentGuide(
+    `${extra}\n${secureGuide}`,
+    "validator fixture",
+  );
+}
+
 const insecureUrlTokens = [
   ["uppercase HTTP in Markdown emphasis", "_HTTP://public.example_"],
   ["mixed-case HTTP", "hTtP://public.example/path"],
@@ -43,6 +50,11 @@ const invalidAssignments = [
   [
     "path suffix after an entirely quoted origin word",
     "'PUBLIC_ORIGIN=https://safe.example'/room",
+  ],
+  ["PORT with command substitution suffix", "PORT=80`printf 80`"],
+  [
+    "origin with command substitution suffix",
+    "PUBLIC_ORIGIN=https://safe.example`printf /room`",
   ],
   ["concatenated quoted PORT word", "PORT='80'80"],
   [
@@ -89,6 +101,8 @@ const unsafeComposeEnvironments = [
     "dynamic root environment scalar",
     'environment: "${ENVIRONMENT:-production variables}"',
   ],
+  ["block scalar environment", "environment: |\n  PORT: 3000"],
+  ["explicit string tag environment", 'environment: !!str "PORT: 3000"'],
   ["mapping null PUBLIC_ORIGIN", "environment:\n  PUBLIC_ORIGIN:"],
   [
     "quoted flow mapping key",
@@ -184,6 +198,10 @@ const unsafePortMappings = [
     'ports: "${PORT_BINDINGS:-production bindings}"',
   ],
   [
+    "duplicate nested ports key cannot hide the unsafe first value",
+    "services:\n  app:\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 127.0.0.1",
+  ],
+  [
     "quoted ports key with reordered unsafe fields",
     "'ports':\n  - published: 3000\n    host_ip: 0.0.0.0\n    target: 80",
   ],
@@ -214,14 +232,38 @@ const unsafePortMappings = [
   ["UDP loopback short mapping", 'ports: ["127.0.0.1:3000:80/udp"]'],
 ] as const;
 
+const unsafeIndentedYamlRoots = [
+  [
+    "one-space indented Compose environment root at document start",
+    " services:\n   app:\n     environment:\n       PORT: 3000",
+  ],
+  [
+    "three-space indented Compose environment root at document start",
+    "   services:\n     app:\n       environment:\n         PORT: 3000",
+  ],
+  [
+    "one-space indented Compose ports root at document start",
+    " services:\n   app:\n     ports:\n       - published: 3000\n         target: 80\n         host_ip: 0.0.0.0",
+  ],
+  [
+    "three-space indented Compose ports root at document start",
+    "   services:\n     app:\n       ports:\n         - published: 3000\n           target: 80\n           host_ip: 0.0.0.0",
+  ],
+] as const;
+
 const validEnvironmentSyntax = [
   ["dotenv PORT", "PORT=80"],
   ["export with quoted PORT", 'export PORT = "80" # listen internally'],
   ["Markdown bullet with PORT", "- PORT='80'# listen internally"],
   ["docker -e with PORT", "docker run -e PORT = 80"],
   ["entirely quoted PORT", "'PORT=80'"],
+  ["PORT inside Markdown inline code", "`PORT=80`"],
   ["PORT assembled from quoted and unquoted segments", "PORT='8'0"],
   ["dotenv HTTPS origin", "PUBLIC_ORIGIN=https://public.example"],
+  [
+    "HTTPS origin inside Markdown inline code",
+    "`PUBLIC_ORIGIN=https://safe.example`",
+  ],
   [
     "HTTPS origin assembled from quoted and unquoted segments",
     "PUBLIC_ORIGIN='https://'safe.example",
@@ -306,6 +348,14 @@ const validYamlDocuments = [
     "ordinary Markdown environment prose",
     "environment: production variables are discussed below.",
   ],
+  [
+    "ordinary Markdown ports label before a paragraph",
+    "ports:\n\nProduction bindings are discussed below.",
+  ],
+  [
+    "ordinary Markdown environment label before a paragraph",
+    "environment:\n\nProduction variables are discussed below.",
+  ],
 ] as const;
 
 describe("secure backend deployment guide validator", () => {
@@ -329,6 +379,12 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(unsafePortMappings)("rejects %s", (_label, mapping) => {
     expect(() => validate(mapping)).toThrow(
+      /permits an insecure public application backend/,
+    );
+  });
+
+  it.each(unsafeIndentedYamlRoots)("rejects %s", (_label, yaml) => {
+    expect(() => validateAtDocumentStart(yaml)).toThrow(
       /permits an insecure public application backend/,
     );
   });
