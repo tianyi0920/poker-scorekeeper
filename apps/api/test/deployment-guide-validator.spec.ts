@@ -38,6 +38,11 @@ const invalidAssignments = [
   ["invalid PORT in Markdown bullet", "- PORT='3000'# comment"],
   ["invalid PORT in docker -e syntax", "docker run -e PORT = 3000"],
   ["invalid PORT in an entirely quoted item", "'PORT=3000'"],
+  ["concatenated quoted PORT word", "PORT='80'80"],
+  [
+    "concatenated quoted origin word",
+    "PUBLIC_ORIGIN='https://safe.example'/room",
+  ],
   ["empty unquoted PUBLIC_ORIGIN", "PUBLIC_ORIGIN="],
   ["empty quoted PUBLIC_ORIGIN", 'PUBLIC_ORIGIN=""'],
   ["empty quoted WS_ALLOWED_ORIGINS", "WS_ALLOWED_ORIGINS=''"],
@@ -62,7 +67,40 @@ const invalidAssignments = [
   ["origin with another raw dot segment", "PUBLIC_ORIGIN=https://a.example/./"],
   ["origin with a raw backslash path", "PUBLIC_ORIGIN=https://a.example\\room"],
   ["origin with an empty port", "PUBLIC_ORIGIN=https://a.example:"],
+  [
+    "origin with an explicit default HTTPS port",
+    "PUBLIC_ORIGIN=https://a.example:443",
+  ],
+  ["origin with shorthand IPv4", "PUBLIC_ORIGIN=https://127.1"],
+  ["origin with non-canonical host case", "PUBLIC_ORIGIN=https://A.example"],
   ["origin without an authority", 'PUBLIC_ORIGIN="https://"'],
+] as const;
+
+const unsafeComposeEnvironments = [
+  ["mapping PORT", "environment:\n  PORT: 3000"],
+  ["mapping null PUBLIC_ORIGIN", "environment:\n  PUBLIC_ORIGIN:"],
+  [
+    "quoted flow mapping key",
+    "environment: { 'PORT': '3000', PUBLIC_ORIGIN: https://safe.example }",
+  ],
+  ["inherited sequence PORT", "environment:\n  - PORT"],
+  ["inherited flow sequence PORT", "environment: [PORT]"],
+  [
+    "nested Compose environment mapping",
+    "services:\n  app:\n    environment:\n      PORT: 3000",
+  ],
+  [
+    "nested Compose flow environment mapping",
+    "services: { app: { environment: { PORT: 3000 } } }",
+  ],
+  [
+    "quoted environment and variable keys",
+    "'environment':\n  'WS_ALLOWED_ORIGINS': null",
+  ],
+  [
+    "merged inherited environment mapping",
+    "x-environment: &unsafe_environment\n  PORT: 3000\nservices:\n  app:\n    environment:\n      <<: *unsafe_environment",
+  ],
 ] as const;
 
 const unsafePortMappings = [
@@ -110,6 +148,27 @@ const unsafePortMappings = [
     "first ports block cannot borrow fields from a later block",
     "ports:\n  - target: 80\nnext: true\nports:\n  - host_ip: 127.0.0.1\n    published: 3000\n    target: 80",
   ],
+  [
+    "quoted ports key with a missing host_ip",
+    "'ports':\n  - published: 3000\n    target: 80",
+  ],
+  [
+    "quoted ports key with reordered unsafe fields",
+    "'ports':\n  - published: 3000\n    host_ip: 0.0.0.0\n    target: 80",
+  ],
+  [
+    "nested Compose quoted ports key",
+    "services:\n  app:\n    'ports':\n      - target: 80\n        published: 3000",
+  ],
+  [
+    "nested Compose flow ports mapping",
+    "services: { app: { ports: [{ published: 3000, target: 80, host_ip: 0.0.0.0 }] } }",
+  ],
+  [
+    "quoted flow ports mapping",
+    "{ 'ports': [{ target: 80, host_ip: 0.0.0.0, published: 3000 }] }",
+  ],
+  ["UDP loopback short mapping", 'ports: ["127.0.0.1:3000:80/udp"]'],
 ] as const;
 
 const validEnvironmentSyntax = [
@@ -137,9 +196,29 @@ const validEnvironmentSyntax = [
   ],
 ] as const;
 
+const validComposeEnvironments = [
+  [
+    "environment mapping",
+    "environment:\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\n  WS_ALLOWED_ORIGINS: https://safe.example",
+  ],
+  [
+    "environment sequence",
+    "environment:\n  - PORT=80\n  - PUBLIC_ORIGIN=https://safe.example\n  - WS_ALLOWED_ORIGINS=https://safe.example",
+  ],
+  [
+    "nested flow environment with quoted keys",
+    "services: { app: { 'environment': { 'PORT': '80', PUBLIC_ORIGIN: 'HTTPS://safe.example', WS_ALLOWED_ORIGINS: 'https://[2001:db8::40]' } } }",
+  ],
+  [
+    "merged inherited safe environment mapping",
+    "x-environment: &safe_environment\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\nservices:\n  app:\n    environment:\n      <<: *safe_environment\n      WS_ALLOWED_ORIGINS: https://safe.example",
+  ],
+] as const;
+
 const validPortMappings = [
   ["quoted short mapping", 'ports:\n  - "127.0.0.1:3000:80"'],
   ["unquoted short mapping", "ports:\n  - 127.0.0.1:3000:80"],
+  ["explicit TCP short mapping", 'ports:\n  - "127.0.0.1:3000:80/tcp"'],
   [
     "reordered long mapping",
     "ports:\n  - published: 3000\n    host_ip: 127.0.0.1\n    target: 80",
@@ -156,6 +235,14 @@ const validPortMappings = [
     "multiple safe mappings",
     'ports:\n  - "127.0.0.1:3000:80"\n  - target: 80\n    published: 3000\n    host_ip: 127.0.0.1',
   ],
+  [
+    "nested Compose quoted ports key",
+    "services:\n  app:\n    'ports':\n      - published: '3000'\n        host_ip: '127.0.0.1'\n        target: '80'",
+  ],
+  [
+    "nested Compose flow ports mapping",
+    "services: { app: { ports: [{ host_ip: 127.0.0.1, target: 80, published: 3000 }] } }",
+  ],
 ] as const;
 
 describe("secure backend deployment guide validator", () => {
@@ -167,6 +254,12 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(invalidAssignments)("rejects %s", (_label, assignment) => {
     expect(() => validate(assignment)).toThrow(
+      /permits an insecure public application backend/,
+    );
+  });
+
+  it.each(unsafeComposeEnvironments)("rejects %s", (_label, environment) => {
+    expect(() => validate(environment)).toThrow(
       /permits an insecure public application backend/,
     );
   });
@@ -208,6 +301,10 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(validEnvironmentSyntax)("accepts %s", (_label, assignment) => {
     expect(() => validate(assignment)).not.toThrow();
+  });
+
+  it.each(validComposeEnvironments)("accepts %s", (_label, environment) => {
+    expect(() => validate(environment)).not.toThrow();
   });
 
   it.each(validPortMappings)("accepts %s", (_label, mapping) => {

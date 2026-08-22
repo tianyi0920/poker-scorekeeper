@@ -17,7 +17,10 @@ const secureLoopbackHttpOrigins = new Set([
   "http://[::1]:3000",
 ]);
 
-const safeShortPortMapping = "127.0.0.1:3000:80";
+const safeShortPortMappings = new Set([
+  "127.0.0.1:3000:80",
+  "127.0.0.1:3000:80/tcp",
+]);
 
 type GuideEnvironmentKey = "PORT" | "PUBLIC_ORIGIN" | "WS_ALLOWED_ORIGINS";
 
@@ -90,17 +93,11 @@ function validateGuideOrigin(
   key: Exclude<GuideEnvironmentKey, "PORT">,
   name: string,
 ): void {
-  const origin = value.trim();
-  const rawOrigin = /^([a-z][a-z0-9+.-]*):\/\/(.+)$/iu.exec(origin);
-  const rawProtocol = rawOrigin?.[1]?.toLowerCase();
-  const rawAuthority = rawOrigin?.[2];
+  const scheme = /^([a-z][a-z0-9+.-]*):\/\//iu.exec(value);
   if (
-    origin === "" ||
-    rawProtocol !== "https" ||
-    rawAuthority === undefined ||
-    rawAuthority === "" ||
-    rawAuthority.endsWith(":") ||
-    /[\\/?#]/u.test(rawAuthority)
+    value === "" ||
+    value !== value.trim() ||
+    scheme?.[1]?.toLowerCase() !== "https"
   ) {
     rejectInsecureBackendGuide(
       name,
@@ -108,19 +105,79 @@ function validateGuideOrigin(
     );
   }
 
-  const url = parseGuideUrl(origin, name);
+  const schemeNormalizedOrigin = `https://${value.slice(scheme[0].length)}`;
+  const url = parseGuideUrl(schemeNormalizedOrigin, name);
   if (
     url.protocol.toLowerCase() !== "https:" ||
     url.username !== "" ||
     url.password !== "" ||
     url.hostname === "" ||
-    url.origin === "null"
+    url.origin === "null" ||
+    schemeNormalizedOrigin !== url.origin
   ) {
     rejectInsecureBackendGuide(
       name,
       `${key} must contain a complete HTTPS origin`,
     );
   }
+}
+
+function validateGuideEnvironmentValue(
+  key: GuideEnvironmentKey,
+  value: string,
+  name: string,
+): void {
+  if (key === "PORT") {
+    if (value !== "80") {
+      rejectInsecureBackendGuide(name, `PORT must be 80, received ${value}`);
+    }
+    return;
+  }
+
+  const origins = value.split(",");
+  if (value === "" || origins.some((origin) => origin === "")) {
+    rejectInsecureBackendGuide(name, `${key} must not be empty`);
+  }
+  for (const origin of origins) {
+    validateGuideOrigin(origin, key, name);
+  }
+}
+
+function readShellAssignmentWord(
+  content: string,
+  cursor: number,
+  wrapperQuote: string | undefined,
+  key: GuideEnvironmentKey,
+  name: string,
+): string {
+  let value = "";
+
+  while (cursor < content.length) {
+    const character = content[cursor]!;
+    if (
+      /[\s`，。；：！？、]/u.test(character) ||
+      (character === "#" && key === "PORT") ||
+      character === wrapperQuote
+    ) {
+      break;
+    }
+
+    if (character === '"' || character === "'") {
+      const lineEnd = content.indexOf("\n", cursor + 1);
+      const closingQuote = content.indexOf(character, cursor + 1);
+      if (closingQuote < 0 || (lineEnd >= 0 && closingQuote > lineEnd)) {
+        rejectInsecureBackendGuide(name, `unterminated ${key} assignment`);
+      }
+      value += content.slice(cursor + 1, closingQuote);
+      cursor = closingQuote + 1;
+      continue;
+    }
+
+    value += character;
+    cursor += 1;
+  }
+
+  return value;
 }
 
 function readGuideEnvironmentAssignments(
@@ -133,28 +190,20 @@ function readGuideEnvironmentAssignments(
 
   for (const match of content.matchAll(assignmentStart)) {
     const key = match[1] as GuideEnvironmentKey;
-    let cursor = (match.index ?? 0) + match[0].length;
-    const quote = content[cursor] ?? "";
-    let value = "";
-
-    if (quote === '"' || quote === "'") {
-      const valueStart = cursor + 1;
-      const lineEnd = content.indexOf("\n", valueStart);
-      const closingQuote = content.indexOf(quote, valueStart);
-      if (closingQuote < 0 || (lineEnd >= 0 && closingQuote > lineEnd)) {
-        rejectInsecureBackendGuide(name, `unterminated ${key} assignment`);
-      }
-      value = content.slice(valueStart, closingQuote);
-    } else {
-      const valueStart = cursor;
-      while (
-        cursor < content.length &&
-        !/[\s`'"，。；：！？、]/u.test(content[cursor]!)
-      ) {
-        cursor += 1;
-      }
-      value = content.slice(valueStart, cursor);
-    }
+    const matchIndex = match.index ?? 0;
+    const cursor = matchIndex + match[0].length;
+    const precedingCharacter = content[matchIndex - 1];
+    const wrapperQuote =
+      precedingCharacter === '"' || precedingCharacter === "'"
+        ? precedingCharacter
+        : undefined;
+    const value = readShellAssignmentWord(
+      content,
+      cursor,
+      wrapperQuote,
+      key,
+      name,
+    );
 
     assignments.push({ key, value });
   }
@@ -167,69 +216,153 @@ function validateGuideEnvironmentAssignments(
   name: string,
 ): void {
   for (const assignment of readGuideEnvironmentAssignments(content, name)) {
-    const value = assignment.value.trim();
-    if (assignment.key === "PORT") {
-      const port = value.split("#", 1)[0]!.trim();
-      if (port !== "80") {
-        rejectInsecureBackendGuide(name, `PORT must be 80, received ${port}`);
-      }
-      continue;
-    }
-
-    const origins = value.split(",");
-    if (value === "" || origins.some((origin) => origin.trim() === "")) {
-      rejectInsecureBackendGuide(name, `${assignment.key} must not be empty`);
-    }
-    for (const origin of origins) {
-      validateGuideOrigin(origin, assignment.key, name);
-    }
+    validateGuideEnvironmentValue(assignment.key, assignment.value, name);
   }
 }
 
-function indentationWidth(line: string): number {
-  return line.match(/^ */u)?.[0].length ?? 0;
+interface YamlSnippet {
+  content: string;
+  failClosed: boolean;
 }
 
-function findYamlPortBlocks(content: string): string[] {
+const yamlFenceLanguages = new Set([
+  "yaml",
+  "yml",
+  "compose",
+  "docker-compose",
+]);
+
+function isYamlRootStart(line: string): boolean {
+  return (
+    /^(?:[A-Za-z_][A-Za-z0-9_.-]*|'[^']+'|"[^"]+"):(?:[ \t]|$)/u.test(line) ||
+    /^\{.*\}$/u.test(line)
+  );
+}
+
+function yamlRootBlockEnd(lines: string[], start: number): number {
+  let end = start + 1;
+  while (
+    end < lines.length &&
+    (lines[end]!.trim() === "" || /^[ \t]+/u.test(lines[end]!))
+  ) {
+    end += 1;
+  }
+  return end;
+}
+
+function findYamlSnippets(content: string): YamlSnippet[] {
   const lines = content.replace(/\r\n?/g, "\n").split("\n");
-  const blocks: string[] = [];
+  const outsideFence = [...lines];
+  const snippets: YamlSnippet[] = [];
 
   for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index]!;
-    const start = /^( *)ports\s*:\s*(.*)$/u.exec(line);
-    if (!start) continue;
+    const fence = /^```([^\s`]*)/u.exec(lines[index]!);
+    if (!fence) continue;
 
-    const baseIndent = start[1]!.length;
-    const block = [line.slice(baseIndent)];
-    let nextIndex = index + 1;
-    while (nextIndex < lines.length) {
-      const nextLine = lines[nextIndex]!;
-      if (nextLine.trim() !== "" && indentationWidth(nextLine) <= baseIndent) {
-        break;
-      }
-      block.push(
-        nextLine.slice(Math.min(baseIndent, indentationWidth(nextLine))),
-      );
-      nextIndex += 1;
+    const language = fence[1]!.toLowerCase();
+    let end = index + 1;
+    while (end < lines.length && !/^```\s*$/u.test(lines[end]!)) end += 1;
+    if (yamlFenceLanguages.has(language)) {
+      snippets.push({
+        content: lines.slice(index + 1, end).join("\n"),
+        failClosed: true,
+      });
     }
-
-    blocks.push(block.join("\n"));
-    index = nextIndex - 1;
+    outsideFence.fill("", index, Math.min(end + 1, lines.length));
+    index = end;
   }
 
-  return blocks;
+  for (let index = 0; index < outsideFence.length; index += 1) {
+    if (!isYamlRootStart(outsideFence[index]!)) continue;
+
+    const blockEnd = yamlRootBlockEnd(outsideFence, index);
+    snippets.push({
+      content: outsideFence.slice(index, blockEnd).join("\n"),
+      failClosed: false,
+    });
+
+    let groupEnd = blockEnd;
+    while (groupEnd < outsideFence.length) {
+      while (
+        groupEnd < outsideFence.length &&
+        outsideFence[groupEnd]!.trim() === ""
+      ) {
+        groupEnd += 1;
+      }
+      if (!isYamlRootStart(outsideFence[groupEnd] ?? "")) break;
+      groupEnd = yamlRootBlockEnd(outsideFence, groupEnd);
+    }
+    if (groupEnd > blockEnd) {
+      snippets.push({
+        content: outsideFence.slice(index, groupEnd).join("\n"),
+        failClosed: false,
+      });
+    }
+  }
+
+  return snippets;
 }
 
 function scalarText(value: unknown): string | undefined {
-  return typeof value === "string" || typeof value === "number"
+  return typeof value === "string" ||
+    typeof value === "number" ||
+    typeof value === "boolean"
     ? String(value)
     : undefined;
+}
+
+function isGuideEnvironmentKey(key: string): key is GuideEnvironmentKey {
+  return (
+    key === "PORT" || key === "PUBLIC_ORIGIN" || key === "WS_ALLOWED_ORIGINS"
+  );
+}
+
+function validateComposeEnvironment(environment: unknown, name: string): void {
+  if (Array.isArray(environment)) {
+    for (const entry of environment) {
+      if (typeof entry !== "string") {
+        rejectInsecureBackendGuide(name, "invalid Compose environment entry");
+      }
+      const inherited = /^(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)$/u.exec(
+        entry,
+      );
+      if (inherited) {
+        rejectInsecureBackendGuide(
+          name,
+          `${inherited[1]} must not inherit a host value`,
+        );
+      }
+      for (const assignment of readGuideEnvironmentAssignments(entry, name)) {
+        validateGuideEnvironmentValue(assignment.key, assignment.value, name);
+      }
+    }
+    return;
+  }
+
+  if (
+    environment === null ||
+    typeof environment !== "object" ||
+    Array.isArray(environment)
+  ) {
+    rejectInsecureBackendGuide(name, "invalid Compose environment mapping");
+  }
+
+  for (const [key, rawValue] of Object.entries(
+    environment as Record<string, unknown>,
+  )) {
+    if (!isGuideEnvironmentKey(key)) continue;
+    const value = scalarText(rawValue);
+    if (value === undefined) {
+      rejectInsecureBackendGuide(name, `${key} must not inherit a host value`);
+    }
+    validateGuideEnvironmentValue(key, value, name);
+  }
 }
 
 function validateParsedPortMapping(mapping: unknown, name: string): void {
   if (typeof mapping === "string" || typeof mapping === "number") {
     const shortMapping = String(mapping);
-    if (shortMapping !== safeShortPortMapping) {
+    if (!safeShortPortMappings.has(shortMapping)) {
       rejectInsecureBackendGuide(
         name,
         `unsafe short port mapping ${shortMapping}`,
@@ -250,31 +383,63 @@ function validateParsedPortMapping(mapping: unknown, name: string): void {
   if (
     scalarText(fields.target) !== "80" ||
     scalarText(fields.published) !== "3000" ||
-    scalarText(fields.host_ip) !== "127.0.0.1"
+    scalarText(fields.host_ip) !== "127.0.0.1" ||
+    (fields.protocol !== undefined && scalarText(fields.protocol) !== "tcp")
   ) {
     rejectInsecureBackendGuide(name, "unsafe long-form port mapping");
   }
 }
 
-function validateYamlPortBlocks(content: string, name: string): void {
-  for (const block of findYamlPortBlocks(content)) {
+function validateComposePorts(ports: unknown, name: string): void {
+  if (!Array.isArray(ports)) {
+    rejectInsecureBackendGuide(name, "ports must be a YAML sequence");
+  }
+  for (const mapping of ports) {
+    validateParsedPortMapping(mapping, name);
+  }
+}
+
+function validateComposeStructure(
+  value: unknown,
+  name: string,
+  visited = new WeakSet<object>(),
+): void {
+  if (value === null || typeof value !== "object") return;
+  if (visited.has(value)) return;
+  visited.add(value);
+
+  if (Array.isArray(value)) {
+    for (const entry of value) validateComposeStructure(entry, name, visited);
+    return;
+  }
+
+  for (const [key, nestedValue] of Object.entries(
+    value as Record<string, unknown>,
+  )) {
+    if (key === "environment") {
+      validateComposeEnvironment(nestedValue, name);
+      continue;
+    }
+    if (key === "ports") {
+      validateComposePorts(nestedValue, name);
+      continue;
+    }
+    validateComposeStructure(nestedValue, name, visited);
+  }
+}
+
+function validateYamlComposeStructures(content: string, name: string): void {
+  for (const snippet of findYamlSnippets(content)) {
     let document: unknown;
     try {
-      document = parse(block);
+      document = parse(snippet.content, { merge: true });
     } catch {
-      rejectInsecureBackendGuide(name, "invalid YAML ports block");
+      if (snippet.failClosed) {
+        rejectInsecureBackendGuide(name, "invalid fenced YAML block");
+      }
+      continue;
     }
-
-    if (document === null || typeof document !== "object") {
-      rejectInsecureBackendGuide(name, "invalid YAML ports block");
-    }
-    const ports = (document as Record<string, unknown>).ports;
-    if (!Array.isArray(ports)) {
-      rejectInsecureBackendGuide(name, "ports must be a YAML sequence");
-    }
-    for (const mapping of ports) {
-      validateParsedPortMapping(mapping, name);
-    }
+    validateComposeStructure(document, name);
   }
 }
 
@@ -286,7 +451,7 @@ function validateInlineShortPortMappings(content: string, name: string): void {
 
   for (const pattern of hostMappings) {
     for (const match of content.matchAll(pattern)) {
-      if (match[0] !== safeShortPortMapping) {
+      if (!safeShortPortMappings.has(match[0])) {
         rejectInsecureBackendGuide(
           name,
           `unsafe short port mapping ${match[0]}`,
@@ -305,7 +470,7 @@ function validateInlineShortPortMappings(content: string, name: string): void {
 }
 
 function validateGuidePortMappings(content: string, name: string): void {
-  validateYamlPortBlocks(content, name);
+  validateYamlComposeStructures(content, name);
   validateInlineShortPortMappings(content, name);
 }
 
