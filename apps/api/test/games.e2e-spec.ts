@@ -176,11 +176,12 @@ describe.sequential('game lifecycle and snapshots', () => {
       .expect(({ body }) => expect(body.code).toBe('UNAUTHENTICATED'));
   });
 
-  it('uses defaults and generates an editable Shanghai session name', async () => {
+  it('creates and starts one game atomically', async () => {
+    const draftsBefore = await prisma.game.count({ where: { status: GameStatus.DRAFT } });
     const generated = await write(adminAuth, 'post', '/api/games', {})
       .expect(201);
     expect(generated.body).toMatchObject({
-      status: 'DRAFT',
+      status: 'ACTIVE',
       version: 1,
       handPrice: '300',
       rakeEnabled: true,
@@ -188,7 +189,14 @@ describe.sequential('game lifecycle and snapshots', () => {
       purchases: [],
       spectators: []
     });
+    expect(generated.body.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect(generated.body.name).toMatch(/^\d{1,2}月\d{1,2}日(?:早场|午场|晚场)$/);
+    expect((await prisma.game.findUniqueOrThrow({ where: { id: generated.body.id } })).status)
+      .toBe(GameStatus.ACTIVE);
+    expect(await prisma.game.count({ where: { status: GameStatus.DRAFT } })).toBe(draftsBefore);
+    expect(await prisma.auditLog.count({
+      where: { action: 'GAME_CREATED_AND_STARTED', entityId: generated.body.id }
+    })).toBe(1);
 
     const edited = await write(superAuth, 'post', '/api/games', {
       name: '  中文自定义场  ',
@@ -200,6 +208,18 @@ describe.sequential('game lifecycle and snapshots', () => {
       handPrice: '500',
       rakeEnabled: false
     });
+  });
+
+  it('leaves no game when atomic create exceeds the open-table limit', async () => {
+    await seedGame(`${prefix}-open-a`, GameStatus.ACTIVE);
+    await seedGame(`${prefix}-open-b`, GameStatus.SETTLING, { stoppedAt: new Date() });
+    const before = await prisma.game.count();
+
+    await write(adminAuth, 'post', '/api/games', { name: `${prefix}-rejected` })
+      .expect(409)
+      .expect(({ body }) => expect(body.code).toBe('ACTIVE_GAME_LIMIT'));
+
+    expect(await prisma.game.count()).toBe(before);
   });
 
   it.each([

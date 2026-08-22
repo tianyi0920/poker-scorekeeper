@@ -21,10 +21,10 @@ import {
   defaultShanghaiGameName,
   normalizeGameName
 } from './game-policy.js';
+import { lockGameLifecycleCoordinator } from './game-lifecycle-coordinator.js';
 import { lockGameForUpdate } from './game-lock.js';
 import { mapGameSnapshot, type SnapshotGameRecord } from './game-snapshot.mapper.js';
 
-const SETTINGS_ID = 'singleton';
 const OPEN_STATUSES = [GameStatus.ACTIVE, GameStatus.SETTLING] as const;
 
 const snapshotInclude = {
@@ -59,19 +59,38 @@ export class GamesService {
 
   async create(actor: AuthUser, input: CreateGameRequest): Promise<GameSnapshotDto> {
     const snapshot = await this.prisma.$transaction(async (transaction) => {
+      await lockGameLifecycleCoordinator(transaction);
       const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
+      const openCount = await transaction.game.count({
+        where: { status: { in: [...OPEN_STATUSES] } }
+      });
+      if (openCount >= 2) throw conflict('ACTIVE_GAME_LIMIT');
+
       const now = new Date();
+      const name = input.name ?? defaultShanghaiGameName(now);
+      const openNames = await transaction.game.findMany({
+        where: { status: { in: [...OPEN_STATUSES] } },
+        select: { name: true }
+      });
+      if (openNames.some(({ name: openName }) => (
+        normalizeGameName(openName) === normalizeGameName(name)
+      ))) {
+        throw conflict('ACTIVE_GAME_NAME_TAKEN');
+      }
+
       const created = await transaction.game.create({
         data: {
-          name: input.name ?? defaultShanghaiGameName(now),
+          name,
           handPrice: BigInt(input.handPrice),
           rakeEnabled: input.rakeEnabled,
+          status: GameStatus.ACTIVE,
+          startedAt: now,
           createdById: currentActor.id
         }
       });
       await this.audit.record(transaction, {
         actorUserId: currentActor.id,
-        action: 'GAME_CREATED',
+        action: 'GAME_CREATED_AND_STARTED',
         entityType: 'GAME',
         entityId: created.id,
         before: null,
@@ -85,7 +104,7 @@ export class GamesService {
 
   async start(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
     const snapshot = await this.prisma.$transaction(async (transaction) => {
-      await this.lockLifecycleCoordinator(transaction);
+      await lockGameLifecycleCoordinator(transaction);
       const before = await lockGameForUpdate(transaction, id);
       const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
       assertGameTransition(before.status, GameStatus.ACTIVE);
@@ -252,12 +271,6 @@ export class GamesService {
 
   private async publishSafely(gameId: string): Promise<void> {
     await this.events.publishCommittedGame(gameId).catch(() => undefined);
-  }
-
-  private async lockLifecycleCoordinator(transaction: Prisma.TransactionClient): Promise<void> {
-    await transaction.$queryRaw<Array<{ id: string }>>`
-      SELECT id FROM system_settings WHERE id = ${SETTINGS_ID} FOR UPDATE
-    `;
   }
 
   private async lockAndAuthorizeActor(

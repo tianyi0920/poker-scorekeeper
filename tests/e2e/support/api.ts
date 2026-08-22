@@ -52,11 +52,10 @@ export async function createStartedGame(
     handPrice,
     rakeEnabled: true
   });
-  expect(created.status(), `create ${suffix}`).toBe(201);
-  const game = await created.json() as { id: string; name: string };
+  expect(created.status(), `create and start ${suffix}`).toBe(201);
+  const game = await created.json() as { id: string; name: string; status: string };
+  expect(game.status).toBe('ACTIVE');
   onGameCreated?.(game.id);
-  const started = await apiWrite(session, 'post', `/api/games/${encodeURIComponent(game.id)}/start`);
-  expect(started.status(), `start ${suffix}`).toBe(200);
   return game;
 }
 
