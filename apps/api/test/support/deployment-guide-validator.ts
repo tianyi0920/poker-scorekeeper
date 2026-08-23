@@ -309,13 +309,27 @@ function readProductionTemplateEnvironmentAssignments(
 ): ProductionTemplateEnvironmentAssignment[] {
   const values = parseDotenv(content);
   const assignmentLines = new Map<GuideEnvironmentKey, string[]>();
-  const assignmentLine =
-    /^\s*(?:export\s+)?(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)\s*=/u;
+  const assignmentLine = /^\s*(?:export\s+)?([\w.-]+)\s*(?:=|:\s+)/u;
+  const quotedCriticalKeyLine =
+    /^\s*(?:export\s+)?(['"`])(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)\1\s*(?:=|:\s+)/u;
 
   for (const line of content.split(/\r\n?|\n/)) {
-    const key = assignmentLine.exec(line)?.[1] as
-      GuideEnvironmentKey | undefined;
-    if (key !== undefined) {
+    const quotedKey = quotedCriticalKeyLine.exec(line)?.[2];
+    if (quotedKey !== undefined) {
+      rejectInsecureBackendGuide(
+        name,
+        `production template must not quote critical key ${quotedKey}`,
+      );
+    }
+
+    const unquotedKey = assignmentLine.exec(line)?.[1];
+    if (
+      unquotedKey !== undefined &&
+      productionTemplateEnvironmentKeys.includes(
+        unquotedKey as GuideEnvironmentKey,
+      )
+    ) {
+      const key = unquotedKey as GuideEnvironmentKey;
       assignmentLines.set(key, [...(assignmentLines.get(key) ?? []), line]);
     }
   }

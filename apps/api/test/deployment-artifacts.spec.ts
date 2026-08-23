@@ -1192,6 +1192,68 @@ describe("production deployment artifacts", () => {
         "commented secure template",
       ),
     ).not.toThrow();
+    expect(() =>
+      validateSecureProductionEnvironmentTemplate(
+        `UNRELATED_DEPLOYMENT_NOTE=kept\n${secureTemplate}`,
+        "unrelated secure template setting",
+      ),
+    ).not.toThrow();
+
+    const criticalKeyUnsafeValues = [
+      ["PORT", "3000"],
+      ["PUBLIC_ORIGIN", "${EVIL}"],
+      ["WS_ALLOWED_ORIGINS", "https://evil.example"],
+    ] as const;
+    for (const [lineEndingLabel, lineEnding] of [
+      ["LF", "\n"],
+      ["CRLF", "\r\n"],
+      ["bare CR", "\r"],
+    ] as const) {
+      for (const [key, unsafeValue] of criticalKeyUnsafeValues) {
+        expect(
+          () =>
+            validateSecureProductionEnvironmentTemplate(
+              `${key}: ${unsafeValue}${lineEnding}${secureTemplate}`,
+              `${key} colon assignment with ${lineEndingLabel}`,
+            ),
+          `production template must audit ${key}: values with ${lineEndingLabel}`,
+        ).toThrow();
+      }
+    }
+    for (const [lineEndingLabel, lineEnding] of [
+      ["LF", "\n"],
+      ["CRLF", "\r\n"],
+      ["bare CR", "\r"],
+    ] as const) {
+      for (const [key, unsafeValue] of criticalKeyUnsafeValues) {
+        expect(
+          () =>
+            validateSecureProductionEnvironmentTemplate(
+              `${key}=${unsafeValue}${lineEnding}${secureTemplate}`,
+              `${key} duplicate equals assignment with ${lineEndingLabel}`,
+            ),
+          `production template must audit duplicate ${key}= values with ${lineEndingLabel}`,
+        ).toThrow();
+      }
+    }
+
+    for (const [key, unsafeValue] of criticalKeyUnsafeValues) {
+      for (const quote of ["'", '"', "`"] as const) {
+        for (const [operator, separator] of [
+          ["=", ""],
+          [":", " "],
+        ] as const) {
+          expect(
+            () =>
+              validateSecureProductionEnvironmentTemplate(
+                `${quote}${key}${quote}${operator}${separator}${unsafeValue}\n${secureTemplate}`,
+                `${quote}${key}${quote}${operator} ambiguous assignment`,
+              ),
+            `production template must reject quoted ${key}${operator} assignment`,
+          ).toThrow();
+        }
+      }
+    }
 
     const unsafeVariants = [
       [
