@@ -150,6 +150,30 @@ it('keeps avatar writes locked until a stale preset failure settles', async () =
   expect(screen.getByLabelText('上传自定义头像')).toBeEnabled();
 });
 
+it('ignores a delayed preset success after the picker unmounts', async () => {
+  // Break caught: a preset response from an unmounted picker calls its stale session callback.
+  let resolveSelection!: (response: Response) => void;
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((resolve) => { resolveSelection = resolve; });
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  const { onChanged, unmount } = renderPicker();
+
+  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
+  await user.click(screen.getByRole('button', { name: '保存头像' }));
+  unmount();
+
+  await act(async () => { resolveSelection(avatarResponse('preset-14')); });
+
+  expect(onChanged).not.toHaveBeenCalled();
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
 it('clears saved feedback when an external session avatar replaces it', async () => {
   // Break caught: a success message remains after another session update has superseded it.
   const fetchMock = vi.fn(async (input: string | URL | Request) => {

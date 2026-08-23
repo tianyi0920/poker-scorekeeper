@@ -65,6 +65,14 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
       setSuccess(null);
     }
   }, [currentAvatar?.kind, currentAvatar?.value]);
+  useLayoutEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      presetSaveVersionRef.current += 1;
+      activePresetSaveRef.current = null;
+    };
+  }, []);
   useEffect(() => {
     let active = true;
     void scorekeeperApi.getPresetAvatars().then(({ presets: response }) => active && setPresets(response))
@@ -73,7 +81,6 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   }, []);
 
   useEffect(() => () => {
-    mountedRef.current = false;
     uploadAbortRef.current?.abort();
     if (sourceUrlRef.current !== null) URL.revokeObjectURL(sourceUrlRef.current);
     sourceUrlRef.current = null;
@@ -104,6 +111,9 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   const savedPreset = savedAvatar?.kind === 'PRESET' ? savedAvatar.value : null;
   const selectedPreset = pendingPreset ?? savedPreset;
   const hasPendingPreset = pendingPreset !== null && pendingPreset !== savedPreset;
+  const isCurrentPresetSave = (saveVersion: number) => mountedRef.current
+    && activePresetSaveRef.current === saveVersion
+    && presetSaveVersionRef.current === saveVersion;
 
   function choosePreset(id: string) {
     if (isSaving || !online) return;
@@ -127,12 +137,12 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     setSuccess(null);
     try {
       const response = await scorekeeperApi.selectPresetAvatar({ presetId: pendingPreset as SelectablePresetAvatarId });
-      if (activePresetSaveRef.current !== saveVersion || presetSaveVersionRef.current !== saveVersion) return;
+      if (!isCurrentPresetSave(saveVersion)) return;
       applyServerAvatar(response);
     } catch (reason) {
-      if (activePresetSaveRef.current === saveVersion && presetSaveVersionRef.current === saveVersion) setError(mutationMessage(reason, '头像保存失败'));
+      if (isCurrentPresetSave(saveVersion)) setError(mutationMessage(reason, '头像保存失败'));
     } finally {
-      if (activePresetSaveRef.current === saveVersion) {
+      if (mountedRef.current && activePresetSaveRef.current === saveVersion) {
         activePresetSaveRef.current = null;
         setIsSaving(false);
       }
