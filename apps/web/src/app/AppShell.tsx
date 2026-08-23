@@ -9,7 +9,7 @@ export function OfflineBanner() {
 }
 
 function isReservedGameRoute(pathname: string) {
-  return /^\/games\/new(?:\/|$)/.test(pathname);
+  return /^\/games\/(?:new|manage)(?:\/|$)/.test(pathname);
 }
 
 export function isFocusedGameRoute(pathname: string) {

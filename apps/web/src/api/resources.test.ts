@@ -22,6 +22,49 @@ const detail = {
 
 afterEach(() => vi.unstubAllGlobals());
 
+it('encodes managed-game pagination and hard-delete identifiers at the API boundary', async () => {
+  // Break caught: opaque cursors or public IDs containing reserved URL characters alter the request path.
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({ items: [], nextCursor: null }))
+    .mockResolvedValueOnce(jsonResponse({ deletedGameId: 'game-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await scorekeeperApi.managedGames(50, 'cursor/value');
+  await scorekeeperApi.hardDeleteGame('game/1');
+
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    '/api/games/manage?limit=50&cursor=cursor%2Fvalue',
+    expect.objectContaining({ credentials: 'same-origin' })
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    2,
+    '/api/games/game%2F1',
+    expect.objectContaining({ method: 'DELETE', credentials: 'same-origin' })
+  );
+});
+
+it.each([
+  ['managed games', () => scorekeeperApi.managedGames(), {
+    items: [{
+      id: 'game-1', name: '测试局', status: 'ACTIVE',
+      createdAt: '2026-08-24T10:00:00.000+08:00', startedAt: null,
+      completedAt: null, playerCount: 13
+    }],
+    nextCursor: null
+  }],
+  ['hard deletion', () => scorekeeperApi.hardDeleteGame('game-1'), {
+    deletedGameId: 'game-2', extra: true
+  }]
+])('rejects malformed %s responses as a controlled API error', async (_case, request, malformed) => {
+  // Break caught: management resources trust malformed server payloads instead of shared contracts.
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(malformed)));
+
+  await expect(request()).rejects.toMatchObject({
+    name: 'ApiError', status: 502, code: 'HTTP_ERROR', message: '服务器返回了无效结果'
+  });
+});
+
 it.each([
   ['draft read', () => scorekeeperApi.settlementDraft('game-1'), { ...draft, totals: { ...draft.totals, buyIn: 'not-money' } }],
   ['draft save', () => scorekeeperApi.saveSettlementDraft('game-1', { version: 1, payload }), { ...draft, gameId: 'game-2' }],

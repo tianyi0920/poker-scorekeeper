@@ -87,6 +87,8 @@ it.each([
   ['/games/new/settlement', false],
   ['/games/new/settlement/', false],
   ['/games/new/another-segment', false],
+  ['/games/manage', false],
+  ['/games/manage/', false],
   ['/games/newish/settlement/', true],
   ['/games/game-1/extra', false],
   ['/history/game-1', false],

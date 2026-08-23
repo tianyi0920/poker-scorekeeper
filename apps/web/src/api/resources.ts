@@ -2,6 +2,8 @@ import {
   allPlayerAggregationSchema,
   avatarMutationResponseSchema,
   historyResponseSchema,
+  hardDeleteGameResponseSchema,
+  managedGamesResponseSchema,
   selectablePresetAvatarCatalogResponseSchema,
   settlementDetailSchema,
   settlementDraftResponseSchema,
@@ -17,6 +19,8 @@ import {
   type FinalizeSettlementRequest,
   type GameSnapshotDto,
   type HistoryResponseDto,
+  type HardDeleteGameResponseDto,
+  type ManagedGamesResponseDto,
   type RakeSettingsDto,
   type SaveSettlementDraftRequest,
   type SelectablePresetAvatarCatalogResponse,
@@ -84,6 +88,15 @@ export const scorekeeperApi = {
   }),
   startGame: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/start`, { method: 'POST' }),
   beginSettlement: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/begin-settlement`, { method: 'POST' }),
+  managedGames: (limit = 50, cursor?: string): Promise<ManagedGamesResponseDto> => validatedApiFetch(
+    managedGamesResponseSchema,
+    `/games/manage?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`
+  ),
+  hardDeleteGame: (id: string): Promise<HardDeleteGameResponseDto> => validatedApiFetch(
+    hardDeleteGameResponseSchema,
+    `/games/${encodeURIComponent(id)}`,
+    { method: 'DELETE' }
+  ),
   listUsers: () => apiFetch<{ users: UserResponse[] }>('/users'),
   createUser: (body: CreateUserRequest) => apiFetch<UserResponse>('/users', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)

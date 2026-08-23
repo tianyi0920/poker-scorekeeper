@@ -6,6 +6,7 @@ import { ProfilePage } from './ProfilePage.js';
 
 const refreshSession = vi.fn(async () => null);
 let avatarChanged: ((avatar: { kind: 'PRESET' | 'UPLOAD'; value: string }) => Promise<void> | void) | undefined;
+let currentRole: 'SUPER_ADMIN' | 'ADMIN' | 'USER' = 'USER';
 
 vi.mock('../../auth/AuthProvider.js', () => ({
   useAuth: () => ({
@@ -13,7 +14,7 @@ vi.mock('../../auth/AuthProvider.js', () => ({
       id: 'user-1',
       username: 'avatar-user',
       nickname: '头像用户',
-      role: 'USER',
+      role: currentRole,
       mustChangePassword: false,
       avatarKind: 'UPLOAD',
       avatarValue: 'saved-avatar.webp'
@@ -41,6 +42,21 @@ vi.mock('./AvatarPicker.js', () => ({
 afterEach(() => {
   refreshSession.mockClear();
   avatarChanged = undefined;
+  currentRole = 'USER';
+});
+
+it.each([
+  ['SUPER_ADMIN', true],
+  ['ADMIN', false],
+  ['USER', false]
+] as const)('shows the game-management entry for %s only', (role, visible) => {
+  // Break caught: ordinary administrators or users discover a SUPER_ADMIN-only destructive screen.
+  currentRole = role;
+  render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+
+  const link = screen.queryByRole('link', { name: /对局管理/ });
+  if (visible) expect(link).toHaveAttribute('href', '/games/manage');
+  else expect(link).not.toBeInTheDocument();
 });
 
 it('initializes the picker from the authenticated avatar and refreshes the session after a save', async () => {

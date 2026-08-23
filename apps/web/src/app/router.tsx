@@ -5,6 +5,7 @@ import { ChangePasswordPage } from '../features/auth/ChangePasswordPage.js';
 import { LoginPage } from '../features/auth/LoginPage.js';
 import { CreateGamePage } from '../features/games/CreateGamePage.js';
 import { GamePage } from '../features/games/GamePage.js';
+import { GameManagementPage } from '../features/games/GameManagementPage.js';
 import { HomePage } from '../features/home/HomePage.js';
 import { ProfilePage } from '../features/profile/ProfilePage.js';
 import { RakeSettingsPage } from '../features/settings/RakeSettingsPage.js';
@@ -33,6 +34,7 @@ export function AppRouter() {
       <Route path="history/:id" element={<SettlementDetailPage />} />
       <Route path="profile" element={<ProfilePage />} />
       <Route path="games/new" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><CreateGamePage /></RoleGate>} />
+      <Route path="games/manage" element={<RoleGate roles={['SUPER_ADMIN']}><GameManagementPage /></RoleGate>} />
       <Route path="games/:id" element={<GamePage />} />
       <Route path="games/:id/settlement" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><SettlementWizardPage /></RoleGate>} />
       <Route path="users" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserListPage /></RoleGate>} />
