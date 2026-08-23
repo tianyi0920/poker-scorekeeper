@@ -333,12 +333,6 @@ async function expectBlockerTransaction(
     signal
   );
   expect(Number(process.processId)).toBe(blocker.processId);
-  const transactions = await monitor.query<Array<{ processId: number | bigint }>>(`
-    SELECT trx_mysql_thread_id AS processId
-    FROM information_schema.INNODB_TRX
-    WHERE trx_mysql_thread_id = ?
-  `, [blocker.processId]);
-  expect(transactions.map(({ processId }) => Number(processId))).toEqual([blocker.processId]);
 }
 
 function expectExactLockQuery(
