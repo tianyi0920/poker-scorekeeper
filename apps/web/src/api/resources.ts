@@ -61,11 +61,11 @@ async function validatedSettlementDraft(gameId: string, path: string, init?: Req
 export const scorekeeperApi = {
   currentGames: () => apiFetch<CurrentGamesResponse>('/games/current'),
   gameSnapshot: (id: string, signal?: AbortSignal) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`, { signal }),
-  buyIn: (gameId: string, body: BuyHandsRequest) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/buyins`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  buyIn: (gameId: string, body: BuyHandsRequest, signal?: AbortSignal) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/buyins`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }),
-  adjustLatestBuyIn: (gameId: string, playerId: string, body: AdjustLatestBuyinRequest) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(playerId)}/buyins/latest/adjust`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+  adjustLatestBuyIn: (gameId: string, playerId: string, body: AdjustLatestBuyinRequest, signal?: AbortSignal) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/players/${encodeURIComponent(playerId)}/buyins/latest/adjust`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }),
   settlementDraft: (gameId: string, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft`, { signal }),
   saveSettlementDraft: (gameId: string, body: SaveSettlementDraftRequest, signal?: AbortSignal): Promise<SettlementDraftDto> => validatedSettlementDraft(gameId, `/games/${encodeURIComponent(gameId)}/settlement-draft`, {

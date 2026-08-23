@@ -123,7 +123,7 @@ export function SettlementWizardPage({ socketFactory }: { socketFactory?: GameDe
     navigate('/', { replace: true, state: { notice: GAME_DELETED_NOTICE } });
   }, [gameId, navigate]);
 
-  useGameDeletedSubscription(gameId, exitDeletedGame, socketFactory);
+  useGameDeletedSubscription(gameId, exitDeletedGame, socketFactory, draft?.gameId === gameId);
 
   useEffect(() => {
     const previous = sessionRef.current;

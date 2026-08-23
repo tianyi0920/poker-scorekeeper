@@ -6,6 +6,7 @@ import { useGameDeletedSubscription } from './useGameDeletedSubscription.js';
 class FakeGameSocket implements GameSocketClient {
   connected = false;
   readonly emitted: Array<{ event: string; payload: unknown }> = [];
+  joinAcknowledgement: unknown = { ok: true, gameId: 'game-1', version: 1, snapshotSent: false };
   connectCalls = 0;
   disconnectCalls = 0;
   private readonly listeners = new Map<string, Set<GameSocketListener>>();
@@ -22,8 +23,9 @@ class FakeGameSocket implements GameSocketClient {
     return this;
   }
 
-  emit(event: string, payload?: unknown): this {
+  emit(event: string, payload?: unknown, acknowledgement?: (value: unknown) => void): this {
     this.emitted.push({ event, payload });
+    if (event === 'game.join' && acknowledgement !== undefined) acknowledgement(this.joinAcknowledgement);
     return this;
   }
 
@@ -107,4 +109,61 @@ it('cleans the old listener and creates one fresh socket when the settlement rou
   unmount();
   expect(second.listenerCount()).toBe(0);
   expect(second.disconnectCalls).toBe(1);
+});
+
+it.each(['join acknowledgement', 'server error'] as const)(
+  'uses confirmed existence to recover a missed deletion from NOT_FOUND %s',
+  (source) => {
+    // Break caught: a settlement socket misses game.deleted while offline and never exits after the deleted room rejects rejoin.
+    const socket = new FakeGameSocket();
+    const onDeleted = vi.fn();
+    const { unmount } = renderHook(() => useGameDeletedSubscription('game-1', onDeleted, () => socket, false));
+    expect(onDeleted).not.toHaveBeenCalled();
+
+    if (source === 'join acknowledgement') {
+      socket.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+      act(() => socket.fire('connect'));
+    } else {
+      act(() => socket.fire('server.error', { code: 'NOT_FOUND' }));
+    }
+
+    expect(onDeleted).toHaveBeenCalledTimes(1);
+    unmount();
+    expect(socket.listenerCount()).toBe(0);
+  }
+);
+
+it('holds an early strict NOT_FOUND until a later draft proves the game existed', () => {
+  // Break caught: NOT_FOUND arrives first, is discarded, and no later socket event remains to exit after the draft succeeds.
+  const socket = new FakeGameSocket();
+  socket.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+  const onDeleted = vi.fn();
+  const socketFactory = () => socket;
+  const { rerender } = renderHook(
+    ({ knownGameExists }) => useGameDeletedSubscription('game-1', onDeleted, socketFactory, knownGameExists),
+    { initialProps: { knownGameExists: false } }
+  );
+  expect(onDeleted).not.toHaveBeenCalled();
+
+  rerender({ knownGameExists: true });
+
+  expect(onDeleted).toHaveBeenCalledTimes(1);
+});
+
+it('does not turn an initially missing game or malformed protocol data into a deletion', () => {
+  // Break caught: an arbitrary bad route receives the privileged deletion notice without any evidence of prior existence.
+  const socket = new FakeGameSocket();
+  socket.joinAcknowledgement = { ok: true, gameId: 'game-1' };
+  const onDeleted = vi.fn();
+  const { unmount } = renderHook(() => useGameDeletedSubscription('game-1', onDeleted, () => socket, false));
+
+  act(() => {
+    socket.fire('server.error', { code: 'NOT_FOUND', extra: true });
+    socket.fire('server.error', { code: 'FORBIDDEN' });
+    socket.fire('server.error', { code: 'NOT_FOUND' });
+  });
+
+  expect(onDeleted).not.toHaveBeenCalled();
+  unmount();
+  expect(socket.listenerCount()).toBe(0);
 });

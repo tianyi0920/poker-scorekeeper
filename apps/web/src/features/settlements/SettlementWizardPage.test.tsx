@@ -10,11 +10,16 @@ import { SettlementWizardPage } from './SettlementWizardPage.js';
 class FakeGameSocket implements GameSocketClient {
   connected = false;
   readonly emitted: Array<{ event: string; payload: unknown }> = [];
+  joinAcknowledgement: unknown = { ok: true, gameId: 'game-1', version: 1, snapshotSent: false };
   disconnectCalls = 0;
   private readonly listeners = new Map<string, Set<GameSocketListener>>();
   on(event: string, listener: GameSocketListener): this { const set = this.listeners.get(event) ?? new Set<GameSocketListener>(); set.add(listener); this.listeners.set(event, set); return this; }
   off(event: string, listener: GameSocketListener): this { this.listeners.get(event)?.delete(listener); return this; }
-  emit(event: string, payload?: unknown): this { this.emitted.push({ event, payload }); return this; }
+  emit(event: string, payload?: unknown, acknowledgement?: (value: unknown) => void): this {
+    this.emitted.push({ event, payload });
+    if (event === 'game.join' && acknowledgement !== undefined) acknowledgement(this.joinAcknowledgement);
+    return this;
+  }
   connect(): this { this.connected = true; this.fire('connect'); return this; }
   disconnect(): this { this.disconnectCalls += 1; this.connected = false; return this; }
   fire(event: string, value?: unknown): void { for (const listener of this.listeners.get(event) ?? []) listener(value); }
@@ -336,6 +341,74 @@ it('aborts initial loading and redirects once only for a matching deletion event
 
   await act(async () => { loading.resolve(jsonResponse(draft())); await Promise.resolve(); });
   expect(screen.queryByText('结算向导')).not.toBeInTheDocument();
+});
+
+it('exits after a confirmed settlement reconnect receives a strict NOT_FOUND acknowledgement', async () => {
+  // Break caught: settlement misses the one-time broadcast while disconnected and remains on a deleted draft forever.
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(draft());
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  renderDeletionWizard(socket);
+  await screen.findByLabelText('天一的带走金额');
+  socket.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+    socket.connected = true;
+    socket.fire('connect');
+  });
+
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.getByTestId('deleted-navigation-state')).toHaveTextContent('{"notice":"该对局已由超级管理员删除"}');
+  expect(socket.listenerCount()).toBe(0);
+});
+
+it('consumes an early NOT_FOUND only after the earlier draft response proves existence', async () => {
+  // Break caught: the hook permanently drops NOT_FOUND when its proof arrives later from an already-started draft read.
+  const socket = new FakeGameSocket();
+  socket.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+  const loading = deferred<Response>();
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return loading.promise;
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  renderDeletionWizard(socket);
+  await act(async () => { await Promise.resolve(); });
+  expect(screen.queryByText('已返回首页')).not.toBeInTheDocument();
+
+  await act(async () => { loading.resolve(jsonResponse(draft())); await Promise.resolve(); });
+
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(socket.listenerCount()).toBe(0);
+});
+
+it('keeps an initially missing settlement as a load error without a deletion notice', async () => {
+  // Break caught: draft 404 plus first-join NOT_FOUND mislabels an arbitrary missing URL as an administrator deletion.
+  const socket = new FakeGameSocket();
+  socket.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/games/missing-game/settlement-draft')) return jsonResponse({ code: 'NOT_FOUND' }, 404);
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  const view = render(<AuthProvider><MemoryRouter initialEntries={['/games/missing-game/settlement']}><Routes>
+    <Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={() => socket} />} />
+    <Route path="/" element={<DeletedGameDestination />} />
+  </Routes></MemoryRouter></AuthProvider>);
+
+  expect(await screen.findByText('结算草稿暂时无法加载，请稍后重试')).toBeInTheDocument();
+  act(() => socket.fire('server.error', { code: 'NOT_FOUND' }));
+  expect(screen.queryByText('已返回首页')).not.toBeInTheDocument();
+  view.unmount();
+  expect(socket.listenerCount()).toBe(0);
 });
 
 it('invalidates pending draft state and aborts an in-flight save before redirecting', async () => {

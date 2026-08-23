@@ -24,6 +24,7 @@ export function BuyInSheet({
   handPrice,
   open,
   canWrite,
+  signal,
   onClose,
   onSuccess
 }: {
@@ -31,6 +32,7 @@ export function BuyInSheet({
   handPrice: string;
   open: boolean;
   canWrite: boolean;
+  signal?: AbortSignal;
   onClose: () => void;
   onSuccess: (result: BuyinEventResponse) => void;
 }) {
@@ -57,7 +59,7 @@ export function BuyInSheet({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (busy || !canWrite) return;
+    if (busy || !canWrite || signal?.aborted) return;
     const hands = pending?.hands ?? validHands(handsInput);
     if (hands === null) {
       setError('请输入 1–99 手');
@@ -71,12 +73,14 @@ export function BuyInSheet({
     setBusy(true);
     setError(null);
     try {
-      const result = await scorekeeperApi.buyIn(gameId, request);
+      const result = await scorekeeperApi.buyIn(gameId, request, signal);
+      if (signal?.aborted) return;
       setPending(null);
       setUncertain(false);
       onSuccess(result);
       onClose();
     } catch (reason) {
+      if (signal?.aborted) return;
       if (isDefinitiveMutationRejection(reason)) {
         setPending(null);
         setUncertain(false);
@@ -86,7 +90,7 @@ export function BuyInSheet({
         setError('服务器结果未知，请使用相同请求重试，避免重复购买。');
       }
     } finally {
-      setBusy(false);
+      if (!signal?.aborted) setBusy(false);
     }
   };
 

@@ -155,8 +155,9 @@ function SettlementDestination() {
   return <div>已进入结算页 <span data-testid="settlement-navigation-type">{useNavigationType()}</span></div>;
 }
 
-function DeletedGameDestination() {
+function DeletedGameDestination({ onRender }: { onRender?: () => void }) {
   const location = useLocation();
+  onRender?.();
   return <div>
     已返回首页
     <span data-testid="deleted-navigation-type">{useNavigationType()}</span>
@@ -533,6 +534,64 @@ it.each([
   expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
 });
 
+it.each(['join acknowledgement', 'server error'] as const)(
+  'exits a confirmed game when reconnect reports NOT_FOUND by %s',
+  async (source) => {
+    // Break caught: a client that missed the one-time deletion broadcast polls forever after the deleted room disappears.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    const socket = new FakeGameSocket();
+    const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+    await screen.findByTestId('round-table');
+    await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+    act(() => {
+      socket.connected = false;
+      socket.fire('disconnect');
+    });
+    if (source === 'join acknowledgement') {
+      socket.joinAcknowledgement = () => ({ ok: false, code: 'NOT_FOUND' });
+      act(() => {
+        socket.connected = true;
+        socket.fire('connect');
+      });
+    } else {
+      socket.joinAcknowledgement = () => undefined;
+      act(() => {
+        socket.connected = true;
+        socket.fire('connect');
+        socket.fire('server.error', { code: 'NOT_FOUND' });
+      });
+    }
+
+    expect(screen.getByText('已返回首页')).toBeInTheDocument();
+    expect(screen.getByTestId('deleted-navigation-state')).toHaveTextContent('{"notice":"该对局已由超级管理员删除"}');
+    expect(socket.listenerCount()).toBe(0);
+    fetchMock.mockClear();
+    await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+    expect(fetchMock).not.toHaveBeenCalled();
+  }
+);
+
+it('does not claim an initially missing game was hard deleted', async () => {
+  // Break caught: a plain bad URL is converted into the privileged hard-delete notice without evidence the game existed.
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session());
+    if (url.endsWith('/api/games/missing-game/snapshot')) return jsonResponse({ code: 'NOT_FOUND' }, 404);
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/missing-game']}><Routes>
+    <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
+    <Route path="/" element={<DeletedGameDestination />} />
+  </Routes></MemoryRouter></AuthProvider>);
+
+  expect(await screen.findByText('对局暂时无法加载，请稍后重试')).toBeInTheDocument();
+  expect(screen.queryByText('已返回首页')).not.toBeInTheDocument();
+  expect(socket.joined).toHaveLength(0);
+  expect(socket.listenerCount()).toBe(0);
+});
+
 it('cleans fallback timeout and polling interval on unmount', async () => {
   // Break caught: navigation leaves fallback timers alive, causing refreshes after the page is gone.
   vi.useFakeTimers({ shouldAdvanceTime: true });
@@ -720,6 +779,99 @@ it('aborts an in-flight fallback load and end request before deletion navigation
   expect(screen.getAllByText('已返回首页')).toHaveLength(1);
 });
 
+it('aborts an in-flight purchase before deletion navigation and ignores its late success', async () => {
+  // Break caught: a hard-deleted page lets a late buy-in success refresh the removed game after navigation.
+  const purchase = deferred<Response>();
+  let purchaseCalls = 0;
+  let purchaseSignal: AbortSignal | undefined;
+  let snapshotReads = 0;
+  const exitOrder: string[] = [];
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('USER')));
+    if (url.endsWith('/api/games/game-1/snapshot')) { snapshotReads += 1; return Promise.resolve(jsonResponse(snapshot({ players: players(1) }))); }
+    if (url.endsWith('/api/games/game-1/buyins')) {
+      purchaseCalls += 1;
+      purchaseSignal = init?.signal ?? undefined;
+      return purchase.promise;
+    }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes>
+    <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
+    <Route path="/games/:id/settlement" element={<SettlementDestination />} />
+    <Route path="/" element={<DeletedGameDestination onRender={() => exitOrder.push('navigate')} />} />
+  </Routes></MemoryRouter></AuthProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '购买筹码' }));
+  await user.click(screen.getByRole('button', { name: '确认购买 1 手' }));
+  await waitFor(() => expect(purchaseCalls).toBe(1));
+  expect(purchaseSignal).toBeDefined();
+  purchaseSignal?.addEventListener('abort', () => exitOrder.push('abort'), { once: true });
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+
+  expect(purchaseSignal?.aborted).toBe(true);
+  expect(exitOrder.slice(0, 2)).toEqual(['abort', 'navigate']);
+  expect(socket.listenerCount()).toBe(0);
+  await act(async () => {
+    purchase.resolve(jsonResponse({ eventId: 'buy-late', gameId: 'game-1', playerId: 'player-self', gameVersion: 2 }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(snapshotReads).toBe(1);
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.queryByText('已进入结算页')).not.toBeInTheDocument();
+});
+
+it('aborts an in-flight adjustment before deletion navigation and ignores its late success', async () => {
+  // Break caught: a hard-deleted page lets a late adjustment callback issue another snapshot read.
+  const adjustment = deferred<Response>();
+  let adjustmentCalls = 0;
+  let adjustmentSignal: AbortSignal | undefined;
+  let snapshotReads = 0;
+  const exitOrder: string[] = [];
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('USER')));
+    if (url.endsWith('/api/games/game-1/snapshot')) { snapshotReads += 1; return Promise.resolve(jsonResponse(snapshot({ players: players(1) }))); }
+    if (url.endsWith('/api/games/game-1/players/player-self/buyins/latest/adjust')) {
+      adjustmentCalls += 1;
+      adjustmentSignal = init?.signal ?? undefined;
+      return adjustment.promise;
+    }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes>
+    <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
+    <Route path="/games/:id/settlement" element={<SettlementDestination />} />
+    <Route path="/" element={<DeletedGameDestination onRender={() => exitOrder.push('navigate')} />} />
+  </Routes></MemoryRouter></AuthProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /^购买记录/ }));
+  await user.click(screen.getByRole('button', { name: '更正我的最后一笔购买' }));
+  await user.click(screen.getByRole('button', { name: '确认更正为 1 手' }));
+  await waitFor(() => expect(adjustmentCalls).toBe(1));
+  expect(adjustmentSignal).toBeDefined();
+  adjustmentSignal?.addEventListener('abort', () => exitOrder.push('abort'), { once: true });
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+
+  expect(adjustmentSignal?.aborted).toBe(true);
+  expect(exitOrder.slice(0, 2)).toEqual(['abort', 'navigate']);
+  expect(socket.listenerCount()).toBe(0);
+  await act(async () => {
+    adjustment.resolve(jsonResponse({ eventId: 'adjust-late', gameId: 'game-1', playerId: 'player-self', gameVersion: 2 }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(snapshotReads).toBe(1);
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.queryByText('已进入结算页')).not.toBeInTheDocument();
+});
+
 it('keeps write controls out of settling games', async () => {
   // Break caught: the UI allows a buy or adjustment after the server has entered SETTLING.
   const socket = new FakeGameSocket();
@@ -756,6 +908,55 @@ it('closes an open adjustment dialog immediately when a realtime snapshot starts
 
   act(() => { socket.fire('game.updated', snapshot({ status: 'SETTLING', version: 2, players: players(1) })); });
   expect(screen.queryByRole('dialog', { name: '更正最后一笔购买' })).not.toBeInTheDocument();
+});
+
+it('aborts an in-flight purchase when the game route changes and ignores its late success', async () => {
+  // Break caught: route cleanup leaves the old table mutation alive and lets its callback refresh the new table.
+  const purchase = deferred<Response>();
+  const sockets: FakeGameSocket[] = [];
+  let purchaseSignal: AbortSignal | undefined;
+  let gameOneReads = 0;
+  const gameOne = snapshot({ id: 'game-1', name: '第一桌', players: players(1) });
+  const gameTwo = snapshot({ id: 'game-2', name: '第二桌', players: [{ ...players(1)[0]!, id: 'player-game-2' }] });
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session()));
+    if (url.endsWith('/api/games/game-1/snapshot')) { gameOneReads += 1; return Promise.resolve(jsonResponse(gameOne)); }
+    if (url.endsWith('/api/games/game-2/snapshot')) return Promise.resolve(jsonResponse(gameTwo));
+    if (url.endsWith('/api/games/game-1/buyins')) {
+      purchaseSignal = init?.signal ?? undefined;
+      return purchase.promise;
+    }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={['/games/game-1']}>
+        <Routes><Route path="/games/:id" element={<SwitchableGame socketFactory={() => {
+          const socket = new FakeGameSocket();
+          sockets.push(socket);
+          return socket;
+        }} />} /></Routes>
+      </MemoryRouter>
+    </AuthProvider>
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '购买筹码' }));
+  await user.click(screen.getByRole('button', { name: '确认购买 1 手' }));
+  await waitFor(() => expect(purchaseSignal).toBeDefined());
+
+  await user.click(screen.getByRole('button', { name: '切换到第二桌' }));
+
+  expect(purchaseSignal?.aborted).toBe(true);
+  expect(await screen.findByRole('heading', { name: '第二桌' })).toBeInTheDocument();
+  expect(sockets[0]?.listenerCount()).toBe(0);
+  await act(async () => {
+    purchase.resolve(jsonResponse({ eventId: 'buy-late', gameId: 'game-1', playerId: 'player-self', gameVersion: 2 }));
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(gameOneReads).toBe(1);
+  expect(screen.getByRole('heading', { name: '第二桌' })).toBeInTheDocument();
 });
 
 it('resets snapshot version state before loading a different game route', async () => {

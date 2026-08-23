@@ -23,6 +23,7 @@ export function AdjustBuyInDialog({
   currentHands,
   open,
   canWrite,
+  signal,
   onClose,
   onSuccess
 }: {
@@ -31,6 +32,7 @@ export function AdjustBuyInDialog({
   currentHands: number;
   open: boolean;
   canWrite: boolean;
+  signal?: AbortSignal;
   onClose: () => void;
   onSuccess: (result: BuyinEventResponse) => void;
 }) {
@@ -56,7 +58,7 @@ export function AdjustBuyInDialog({
 
   const submit = async (event: FormEvent) => {
     event.preventDefault();
-    if (busy || !canWrite) return;
+    if (busy || !canWrite || signal?.aborted) return;
     const newHands = pending?.newHands ?? validHands(handsInput);
     if (newHands === null) {
       setError('请输入 0–99 手');
@@ -70,12 +72,14 @@ export function AdjustBuyInDialog({
     setBusy(true);
     setError(null);
     try {
-      const result = await scorekeeperApi.adjustLatestBuyIn(gameId, playerId, request);
+      const result = await scorekeeperApi.adjustLatestBuyIn(gameId, playerId, request, signal);
+      if (signal?.aborted) return;
       setPending(null);
       setUncertain(false);
       onSuccess(result);
       onClose();
     } catch (reason) {
+      if (signal?.aborted) return;
       if (isDefinitiveMutationRejection(reason)) {
         setPending(null);
         setUncertain(false);
@@ -85,7 +89,7 @@ export function AdjustBuyInDialog({
         setError('服务器结果未知，请使用相同请求重试，避免重复更正。');
       }
     } finally {
-      setBusy(false);
+      if (!signal?.aborted) setBusy(false);
     }
   };
 

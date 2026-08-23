@@ -62,6 +62,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const requestGenerationRef = useRef(0);
   const loadAbortControllersRef = useRef(new Set<AbortController>());
   const endAbortRef = useRef<AbortController | null>(null);
+  const writeAbortRef = useRef(new AbortController());
   const deletedRef = useRef(false);
   const hasSnapshot = snapshot?.id === gameId;
 
@@ -70,6 +71,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     loadAbortControllersRef.current.clear();
     endAbortRef.current?.abort();
     endAbortRef.current = null;
+    writeAbortRef.current.abort();
   }, []);
 
   const applySnapshot = useCallback((candidate: unknown): boolean => {
@@ -122,9 +124,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setRoomSynchronized(false);
   }, [stopFallback]);
 
-  const receiveDeletedGame = useCallback((value: unknown) => {
-    const parsed = gameDeletedEventSchema.safeParse(value);
-    if (!parsed.success || parsed.data.gameId !== activeGameIdRef.current || deletedRef.current) return;
+  const exitDeletedGame = useCallback(() => {
+    if (deletedRef.current) return;
     deletedRef.current = true;
     requestGenerationRef.current += 1;
     abortPageRequests();
@@ -142,6 +143,12 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     navigate('/', { replace: true, state: { notice: GAME_DELETED_NOTICE } });
   }, [abortPageRequests, navigate, stopFallback]);
 
+  const receiveDeletedGame = useCallback((value: unknown) => {
+    const parsed = gameDeletedEventSchema.safeParse(value);
+    if (!parsed.success || parsed.data.gameId !== activeGameIdRef.current) return;
+    exitDeletedGame();
+  }, [exitDeletedGame]);
+
   const ensureFallbackGrace = useCallback(() => {
     if (fallbackTimeoutRef.current !== undefined || pollingIntervalRef.current !== undefined) return;
     startFallbackGrace();
@@ -149,6 +156,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
 
   useEffect(() => {
     abortPageRequests();
+    writeAbortRef.current = new AbortController();
     requestGenerationRef.current += 1;
     deletedRef.current = false;
     snapshotRef.current = null;
@@ -253,9 +261,19 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       }, (value) => {
         if (disposed || activeJoin !== attempt || generation !== joinGeneration || !socket.connected || attempt.acknowledged) return;
         const acknowledgement = gameJoinAckSchema.safeParse(value);
-        if (!acknowledgement.success
-          || !acknowledgement.data.ok
-          || acknowledgement.data.gameId !== gameId) {
+        if (!acknowledgement.success) {
+          failJoin(attempt);
+          return;
+        }
+        if (!acknowledgement.data.ok) {
+          if (acknowledgement.data.code === 'NOT_FOUND') {
+            exitDeletedGame();
+            return;
+          }
+          failJoin(attempt);
+          return;
+        }
+        if (acknowledgement.data.gameId !== gameId) {
           failJoin(attempt);
           return;
         }
@@ -302,9 +320,13 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       failCurrentJoin();
     };
     const receiveServerError = (value: unknown) => {
-      if (serverErrorEventSchema.safeParse(value).success) {
-        failCurrentJoin();
+      const parsed = serverErrorEventSchema.safeParse(value);
+      if (!parsed.success) return;
+      if (parsed.data.code === 'NOT_FOUND') {
+        exitDeletedGame();
+        return;
       }
+      failCurrentJoin();
     };
 
     const listeners: Array<[string, GameSocketListener]> = [
@@ -332,7 +354,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setSocketReady(false);
       setRoomSynchronized(false);
     };
-  }, [applySnapshot, ensureFallbackGrace, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, startFallbackGrace, stopFallback]);
+  }, [applySnapshot, ensureFallbackGrace, exitDeletedGame, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, startFallbackGrace, stopFallback]);
 
   useEffect(() => {
     if (!socketReady || roomSynchronized) {
@@ -484,6 +506,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         handPrice={snapshot.handPrice}
         open={buyOpen}
         canWrite={active}
+        signal={writeAbortRef.current.signal}
         onClose={() => setBuyOpen(false)}
         onSuccess={refreshAfterWrite}
       />
@@ -494,6 +517,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
           currentHands={adjustment.currentHands}
           open
           canWrite={active}
+          signal={writeAbortRef.current.signal}
           onClose={() => setAdjustment(null)}
           onSuccess={refreshAfterWrite}
         />
