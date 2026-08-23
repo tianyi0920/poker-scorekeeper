@@ -53,26 +53,48 @@ function createTransaction() {
   };
 }
 
-function createService(options: { transactionFailure?: Error; publishFailure?: Error } = {}) {
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((complete) => {
+    resolve = complete;
+  });
+  return { promise, resolve };
+}
+
+function createService(options: {
+  transactionFailure?: Error;
+  commitFailure?: Error;
+  deferCommit?: boolean;
+  publishFailure?: Error;
+} = {}) {
   const transaction = createTransaction();
-  let transactionResolved = false;
+  const callbackFinished = deferred();
+  const commitGate = deferred();
   const prisma = {
     $transaction: vi.fn(async (operation: (client: typeof transaction) => Promise<unknown>) => {
       if (options.transactionFailure !== undefined) throw options.transactionFailure;
       const result = await operation(transaction);
-      transactionResolved = true;
+      callbackFinished.resolve();
+      if (options.deferCommit) await commitGate.promise;
+      if (options.commitFailure !== undefined) throw options.commitFailure;
       return result;
     })
   } as unknown as PrismaService;
   const audit = { record: vi.fn(async () => undefined) } as unknown as AuditService;
   const events = {
     publishDeletedGame: vi.fn(async () => {
-      expect(transactionResolved).toBe(true);
       if (options.publishFailure !== undefined) throw options.publishFailure;
     })
   } as unknown as GameEventsService;
   const service = Reflect.construct(GameManagementService, [prisma, audit, events]) as GameManagementService;
-  return { service, prisma, audit, events, transaction };
+  return {
+    service,
+    prisma,
+    events,
+    transaction,
+    callbackFinished: callbackFinished.promise,
+    releaseCommit: commitGate.resolve
+  };
 }
 
 describe('GameManagementService hard-delete publication', () => {
@@ -89,6 +111,33 @@ describe('GameManagementService hard-delete publication', () => {
     });
 
     expect(fixture.events.publishDeletedGame).toHaveBeenCalledExactlyOnceWith('game-1');
+  });
+
+  it('waits for the outer transaction to resolve after its callback finishes before publishing', async () => {
+    // Break caught: publishing from inside the callback exposes a deletion before COMMIT succeeds.
+    const fixture = createService({ deferCommit: true });
+    const deletion = fixture.service.hardDelete('game-1', actor);
+
+    await fixture.callbackFinished;
+    try {
+      expect(fixture.events.publishDeletedGame).not.toHaveBeenCalled();
+    } finally {
+      fixture.releaseCommit();
+    }
+
+    await expect(deletion).resolves.toEqual({ deletedGameId: 'game-1' });
+    expect(fixture.events.publishDeletedGame).toHaveBeenCalledExactlyOnceWith('game-1');
+  });
+
+  it('does not publish when COMMIT rejects after the transaction callback succeeds', async () => {
+    // Break caught: a callback-level publish notifies clients even though the outer transaction rolls back.
+    const commitFailure = new Error('commit failed');
+    const fixture = createService({ commitFailure });
+    const deletion = expect(fixture.service.hardDelete('game-1', actor)).rejects.toBe(commitFailure);
+
+    await fixture.callbackFinished;
+    await deletion;
+    expect(fixture.events.publishDeletedGame).not.toHaveBeenCalled();
   });
 
   it('never publishes when the transaction fails', async () => {
