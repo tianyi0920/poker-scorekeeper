@@ -42,6 +42,8 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
   let routedSocketCount = 0;
   let forwardedSocketCount = 0;
   let mainFrameNavigationCount = 0;
+  let primaryFailure: unknown;
+  const routedSockets = new Set<WebSocketRoute>();
   const snapshotRefreshes: string[] = [];
   const onResponse = (response: { request(): { method(): string }; url(): string }) => {
     const url = new URL(response.url());
@@ -52,6 +54,7 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
   const onFrameNavigated = (frame: Frame) => {
     if (frame === admin.page.mainFrame()) mainFrameNavigationCount += 1;
   };
+  const forward = (socket: WebSocketRoute): WebSocketRoute | undefined => socket.connectToServer();
 
   admin.page.on('response', onResponse);
   admin.page.on('framenavigated', onFrameNavigated);
@@ -67,13 +70,14 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
 
     await admin.page.routeWebSocket(/\/socket\.io\//, (socket) => {
       routedSocketCount += 1;
+      routedSockets.add(socket);
       if (blockSocketEndpoint) {
         blockedSocket = socket;
         blockedSocketStartedAt = Date.now();
         return;
       }
-      forwardedSocketCount += 1;
-      socket.connectToServer();
+      const server = forward(socket);
+      if (server !== undefined) forwardedSocketCount += 1;
     });
 
     await admin.page.goto(`/games/${game.id}`);
@@ -100,16 +104,39 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
     await blockedSocket.close();
     await expect.poll(() => routedSocketCount).toBeGreaterThanOrEqual(2);
     await expect.poll(() => forwardedSocketCount).toBeGreaterThanOrEqual(1);
+    await expect(warning).toHaveCount(0);
     await expect.poll(() => mainFrameNavigationCount).toBe(mainFrameNavigationCountBeforeRecovery);
     expect(await originalRoundTable.evaluate((node) => node.isConnected)).toBeTruthy();
     await expect(admin.page).toHaveURL(new RegExp(`/games/${game.id}$`));
     await expect(admin.page.getByRole('heading', { name: game.name })).toBeVisible();
     await expect(roundTable).toBeVisible();
-    await expect(admin.page.getByRole('status', { name: '实时连接状态' })).toHaveCount(0);
+  } catch (error) {
+    primaryFailure = error;
+    throw error;
   } finally {
-    admin.page.off('response', onResponse);
-    admin.page.off('framenavigated', onFrameNavigated);
-    await admin.context.close();
-    if (gameId) await cleanupTaskGame(gameId);
+    const cleanupErrors: unknown[] = [];
+    const bestEffort = async (operation: () => void | Promise<void>) => {
+      try {
+        await operation();
+      } catch (error) {
+        cleanupErrors.push(error);
+      }
+    };
+    await Promise.all([
+      bestEffort(() => admin.page.off('response', onResponse)),
+      bestEffort(() => admin.page.off('framenavigated', onFrameNavigated))
+    ]);
+    const socketCloseResults = await Promise.allSettled(
+      [...routedSockets].map(async (socket) => socket.close())
+    );
+    for (const result of socketCloseResults) {
+      if (result.status === 'rejected') cleanupErrors.push(result.reason);
+    }
+    try {
+      await bestEffort(() => admin.context.close());
+    } finally {
+      if (gameId) await bestEffort(() => cleanupTaskGame(gameId));
+    }
+    if (primaryFailure === undefined && cleanupErrors.length > 0) throw cleanupErrors[0];
   }
 });
