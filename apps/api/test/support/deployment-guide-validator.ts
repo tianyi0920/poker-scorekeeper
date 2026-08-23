@@ -7,6 +7,7 @@ import {
   Scalar,
   type Document,
 } from "yaml";
+import { parse as parseDotenv } from "dotenv";
 
 const requiredGuideSnippets = [
   "PORT=80",
@@ -282,6 +283,57 @@ function validateGuideEnvironmentAssignments(
   name: string,
 ): void {
   for (const assignment of readGuideEnvironmentAssignments(content, name)) {
+    validateGuideEnvironmentValue(assignment.key, assignment.value, name);
+  }
+}
+
+const productionTemplateEnvironmentKeys = [
+  "PORT",
+  "PUBLIC_ORIGIN",
+  "WS_ALLOWED_ORIGINS",
+] as const satisfies readonly GuideEnvironmentKey[];
+
+function readProductionTemplateEnvironmentAssignments(
+  content: string,
+  name: string,
+): GuideEnvironmentAssignment[] {
+  const values = parseDotenv(content);
+  const assignmentCounts = new Map<GuideEnvironmentKey, number>();
+  const assignmentLine =
+    /^\s*(?:export\s+)?(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)\s*=/u;
+
+  for (const line of content.split(/\r?\n/)) {
+    const key = assignmentLine.exec(line)?.[1] as
+      GuideEnvironmentKey | undefined;
+    if (key !== undefined) {
+      assignmentCounts.set(key, (assignmentCounts.get(key) ?? 0) + 1);
+    }
+  }
+
+  return productionTemplateEnvironmentKeys.map((key) => {
+    if (
+      assignmentCounts.get(key) !== 1 ||
+      !Object.prototype.hasOwnProperty.call(values, key)
+    ) {
+      return rejectInsecureBackendGuide(
+        name,
+        `production template must assign ${key} exactly once`,
+      );
+    }
+
+    return { key, value: values[key]! };
+  });
+}
+
+/** Validates the security-critical variables copied into .env.production. */
+export function validateSecureProductionEnvironmentTemplate(
+  content: string,
+  name: string,
+): void {
+  for (const assignment of readProductionTemplateEnvironmentAssignments(
+    content,
+    name,
+  )) {
     validateGuideEnvironmentValue(assignment.key, assignment.value, name);
   }
 }

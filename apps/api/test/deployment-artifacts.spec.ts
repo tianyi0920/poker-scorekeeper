@@ -3,7 +3,10 @@ import { readFile, readdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import { parse as parseDotenv } from "dotenv";
 import { parse } from "yaml";
-import { validateSecureBackendDeploymentGuide } from "./support/deployment-guide-validator.js";
+import {
+  validateSecureBackendDeploymentGuide,
+  validateSecureProductionEnvironmentTemplate,
+} from "./support/deployment-guide-validator.js";
 
 const repositoryRoot = resolve(import.meta.dirname, "../../..");
 
@@ -647,16 +650,22 @@ function validateSecureProductionChecklist(content: string): void {
     "WSS 出现在观战者列表",
   ]) {
     if (!content.includes(requirement)) {
-      throw new Error(`missing secure production checklist requirement: ${requirement}`);
+      throw new Error(
+        `missing secure production checklist requirement: ${requirement}`,
+      );
     }
   }
 
   if (
     content.includes("http://pk.tianyi.wiki") ||
     content.includes("ws://pk.tianyi.wiki") ||
-    /(?:本次)?没有 TLS[、,，HSTS 或]*WSS|(?:已明确接受|允许) HTTP\/WS 明文|公网 HTTP 登录/.test(content)
+    /(?:本次)?没有 TLS[、,，HSTS 或]*WSS|(?:已明确接受|允许) HTTP\/WS 明文|公网 HTTP 登录/.test(
+      content,
+    )
   ) {
-    throw new Error("production checklist permits insecure public realtime transport");
+    throw new Error(
+      "production checklist permits insecure public realtime transport",
+    );
   }
 }
 
@@ -672,9 +681,7 @@ describe("production deployment artifacts", () => {
       dockerfile.indexOf("FROM node:24-bookworm-slim AS runtime"),
     );
 
-    expect(bundle).toMatch(
-      /^FROM production-dependencies AS runtime-bundle$/m,
-    );
+    expect(bundle).toMatch(/^FROM production-dependencies AS runtime-bundle$/m);
     expect(bundle).toContain(
       "COPY --chmod=0555 scripts/docker/entrypoint.sh scripts/docker/healthcheck.mjs scripts/docker/healthcheck-url.mjs /app/scripts/docker/",
     );
@@ -699,12 +706,16 @@ describe("production deployment artifacts", () => {
     }
 
     expect(runtime.match(/^COPY .*$/gm) ?? []).toEqual([]);
-    expect(runtime).not.toMatch(/^COPY --from=(?:build|production-dependencies)\b/m);
+    expect(runtime).not.toMatch(
+      /^COPY --from=(?:build|production-dependencies)\b/m,
+    );
     expect(runtime).toContain(
       "RUN --mount=type=bind,from=runtime-bundle,source=/app,target=/mnt/runtime-bundle \\",
     );
     expect(runtime).not.toContain("target=/mnt/runtime-bundle,readonly");
-    expect(runtime).not.toMatch(/target=\/mnt\/runtime-bundle,(?:rw|readwrite)/);
+    expect(runtime).not.toMatch(
+      /target=\/mnt\/runtime-bundle,(?:rw|readwrite)/,
+    );
     expect(runtime).toContain("cp -a /mnt/runtime-bundle/. /app/");
   });
 
@@ -852,9 +863,9 @@ describe("production deployment artifacts", () => {
     expect(bundle).toContain(
       "COPY --from=build --chmod=0555 /app/prisma-schema-engine /app/prisma-schema-engine",
     );
-    expect(
-      runtime.indexOf("cp -a /mnt/runtime-bundle/. /app/"),
-    ).toBeLessThan(runtime.indexOf("USER node"));
+    expect(runtime.indexOf("cp -a /mnt/runtime-bundle/. /app/")).toBeLessThan(
+      runtime.indexOf("USER node"),
+    );
     const finalUserPreflight = runtime.slice(
       runtime.indexOf("USER node"),
       runtime.indexOf("EXPOSE"),
@@ -1155,25 +1166,102 @@ describe("production deployment artifacts", () => {
     });
   });
 
+  it("treats the copied production environment template as a static HTTPS origin contract", async () => {
+    // Break caught: Synology copies this file into .env.production, so an HTTP
+    // default, a non-80 port, or a shell-derived origin would reach production.
+    const environment = await readRepositoryFile(".env.example");
+
+    expect(() =>
+      validateSecureProductionEnvironmentTemplate(environment, ".env.example"),
+    ).not.toThrow();
+
+    const secureTemplate = [
+      "PORT=80",
+      "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+      "WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki",
+    ].join("\n");
+    expect(() =>
+      validateSecureProductionEnvironmentTemplate(
+        secureTemplate,
+        "secure template",
+      ),
+    ).not.toThrow();
+
+    const unsafeVariants = [
+      [
+        "HTTP origin",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=http://pk.tianyi.wiki",
+      ],
+      [
+        "origin path",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki/poker",
+      ],
+      [
+        "origin credentials",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://user:pass@pk.tianyi.wiki",
+      ],
+      [
+        "origin query",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki?preview=1",
+      ],
+      [
+        "origin fragment",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        'PUBLIC_ORIGIN="https://pk.tianyi.wiki#preview"',
+      ],
+      [
+        "dynamic origin",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=${PUBLIC_ORIGIN}",
+      ],
+      [
+        "HTTP WebSocket origin",
+        "WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki",
+        "WS_ALLOWED_ORIGINS=http://pk.tianyi.wiki",
+      ],
+      ["non-80 port", "PORT=80", "PORT=3000"],
+    ] as const;
+    for (const [label, expected, replacement] of unsafeVariants) {
+      expect(() =>
+        validateSecureProductionEnvironmentTemplate(
+          secureTemplate.replace(expected, replacement),
+          label,
+        ),
+      ).toThrow();
+    }
+  });
+
   it("requires HTTPS/WSS production verification and rejects insecure public transport", async () => {
-    const checklist = await readRepositoryFile("docs/deployment/production-checklist.md");
+    const checklist = await readRepositoryFile(
+      "docs/deployment/production-checklist.md",
+    );
 
     expect(() => validateSecureProductionChecklist(checklist)).not.toThrow();
     expect(() =>
       validateSecureProductionChecklist(
         checklist.replace("https://pk.tianyi.wiki", "http://pk.tianyi.wiki"),
       ),
-    ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
+    ).toThrow(
+      /secure production checklist requirement|insecure public realtime transport/,
+    );
     expect(() =>
       validateSecureProductionChecklist(
         checklist.replace("wss://pk.tianyi.wiki", "ws://pk.tianyi.wiki"),
       ),
-    ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
+    ).toThrow(
+      /secure production checklist requirement|insecure public realtime transport/,
+    );
     expect(() =>
       validateSecureProductionChecklist(
         checklist.replace("TLS 终止", "没有 TLS、HSTS 或 WSS"),
       ),
-    ).toThrow(/secure production checklist requirement|insecure public realtime transport/);
+    ).toThrow(
+      /secure production checklist requirement|insecure public realtime transport/,
+    );
   });
 
   it("keeps production app ports behind the OpenResty TLS loopback backend", async () => {
@@ -1181,8 +1269,12 @@ describe("production deployment artifacts", () => {
       readRepositoryFile("docker-compose.yml"),
       readRepositoryFile("docker-compose.registry.yml"),
     ]);
-    const source = parse(sourceCompose) as { services: { app: ComposeService } };
-    const registry = parse(registryCompose) as { services: { app: ComposeService } };
+    const source = parse(sourceCompose) as {
+      services: { app: ComposeService };
+    };
+    const registry = parse(registryCompose) as {
+      services: { app: ComposeService };
+    };
 
     expect(source.services.app.ports).toEqual(["127.0.0.1:3000:80"]);
     expect(registry.services.app.ports).toEqual(["127.0.0.1:3000:80"]);
@@ -1197,7 +1289,9 @@ describe("production deployment artifacts", () => {
       expect(document).toContain("/socket.io");
       expect(document).toContain("Upgrade");
     }
-    expect(extremeSpace).not.toMatch(/网络选择当前能直接给该容器分配公网 IPv6|如果界面要求端口映射，使用宿主机 `80` 到容器 `80`|端口映射为 `80:80`/);
+    expect(extremeSpace).not.toMatch(
+      /网络选择当前能直接给该容器分配公网 IPv6|如果界面要求端口映射，使用宿主机 `80` 到容器 `80`|端口映射为 `80:80`/,
+    );
     expect(checklist).not.toContain("只公开应用 TCP 80");
   });
 
