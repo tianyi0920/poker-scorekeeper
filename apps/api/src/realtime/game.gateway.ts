@@ -124,6 +124,7 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
       }
 
       try {
+        await socket.join(roomName(targetGameId));
         this.presence.add(targetGameId, authSession.user.id, socket.id);
         const snapshot = await this.events.snapshotFor(authSession.user, targetGameId);
         await this.events.publishPresence(targetGameId);
@@ -134,7 +135,6 @@ export class GameGateway implements OnGatewayInit, OnGatewayConnection, OnGatewa
           await this.events.publishPresence(previousGameId);
         }
 
-        await socket.join(roomName(targetGameId));
         socket.data.gameId = targetGameId;
         const snapshotSent = parsed.data.knownVersion !== snapshot.version;
         if (snapshotSent) socket.emit('game.snapshot', snapshot);

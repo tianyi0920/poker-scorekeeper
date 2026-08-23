@@ -10,6 +10,7 @@ import type {
 } from '@poker/contracts';
 import {
   gameJoinAckSchema,
+  gameDeletedEventSchema,
   gameLeaveAckSchema,
   gameSnapshotEventSchema,
   gameUpdatedEventSchema,
@@ -254,6 +255,13 @@ describe.sequential('realtime game rooms', () => {
       .send(body);
   }
 
+  function remove(auth: AuthContext, path: string) {
+    return request(app.getHttpServer())
+      .delete(path)
+      .set('Cookie', auth.cookie)
+      .set('X-CSRF-Token', auth.csrfToken);
+  }
+
   async function cleanGames(): Promise<void> {
     const gameIds = (await prisma.game.findMany({
       where: { name: { startsWith: prefix } },
@@ -434,6 +442,59 @@ describe.sequential('realtime game rooms', () => {
       code: 'VALIDATION_ERROR'
     });
     await expect(serverError).resolves.toEqual({ code: 'VALIDATION_ERROR' });
+  });
+
+  it('delivers deletion and rejects a target-room switch when hard delete commits at the final join check', async () => {
+    // Break caught: the final pre-join snapshot becomes stale, hard delete sees no target-room socket, and a stale success ack strands the client.
+    const firstGame = await seedGame('delete-race-old');
+    const targetGame = await seedGame('delete-race-target');
+    const socket = socketFor(viewerAuth.cookie);
+    await connect(socket);
+    await join(socket, firstGame.id, 0);
+
+    const events = app.get(GameEventsService);
+    const originalSnapshotFor = events.snapshotFor.bind(events);
+    let targetSnapshots = 0;
+    let reachedFinalSnapshot!: () => void;
+    const finalSnapshotReached = new Promise<void>((resolve) => { reachedFinalSnapshot = resolve; });
+    let releaseFinalSnapshot!: () => void;
+    const finalSnapshotRelease = new Promise<void>((resolve) => { releaseFinalSnapshot = resolve; });
+    vi.spyOn(events, 'snapshotFor').mockImplementation(async (actor, gameId) => {
+      if (gameId === targetGame.id && ++targetSnapshots === 2) {
+        reachedFinalSnapshot();
+        await finalSnapshotRelease;
+      }
+      return originalSnapshotFor(actor, gameId);
+    });
+
+    const deleted = waitForContractEvent(socket, 'game.deleted', gameDeletedEventSchema);
+    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason) => ({ status: 'rejected' as const, reason })
+    );
+    const snapshots: unknown[] = [];
+    socket.on('game.snapshot', (snapshot: unknown) => snapshots.push(snapshot));
+    const switchAck = emitWithExactlyOneAck<GameJoinAck>(socket, 'game.join', {
+      gameId: targetGame.id,
+      knownVersion: 0
+    });
+
+    await finalSnapshotReached;
+    try {
+      await remove(superAuth, `/api/games/${targetGame.id}`).expect(200);
+    } finally {
+      releaseFinalSnapshot();
+    }
+
+    await expect(deleted).resolves.toEqual({ gameId: targetGame.id, reason: 'HARD_DELETED' });
+    await expect(switchAck).resolves.toEqual({ ok: false, code: 'NOT_FOUND' });
+    await expect(serverError).resolves.toEqual({ status: 'fulfilled', value: { code: 'NOT_FOUND' } });
+    expect(snapshots).toEqual([]);
+    expect(await spectatorIds(firstGame.id)).toContain(viewer.id);
+
+    const oldRoomEvent = waitForContractEvent(socket, 'game.updated', gameUpdatedEventSchema);
+    await events.publishCommittedGame(firstGame.id);
+    await expect(oldRoomEvent).resolves.toMatchObject({ id: firstGame.id });
   });
 
   it('delivers one UNAUTHENTICATED ack and server.error before disconnecting an invalid session', async () => {
