@@ -480,6 +480,44 @@ const unknownTextFenceSourcePolicy = [
   ],
 ] as const;
 
+const sourcePolicyStructuralRecovery = [
+  [
+    "rejects malformed raw content in a known YAML fence despite a nested text fence",
+    "```yaml\n```text\nplain words\n```",
+    true,
+  ],
+  [
+    "rejects an indented unsafe environment after prose in an unknown text fence",
+    "```text\nx\n    environment:\n      PORT: 3000\n```",
+    true,
+  ],
+  [
+    "rejects an indented unsafe ports block after prose in an unknown text fence",
+    "```text\nx\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n```",
+    true,
+  ],
+  [
+    "rejects an indented unsafe environment after prose in a no-language fence",
+    "```\nx\n    environment:\n      PORT: 3000\n```",
+    true,
+  ],
+  [
+    "rejects an indented unsafe ports block after prose in a no-language fence",
+    "```\nx\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n```",
+    true,
+  ],
+  [
+    "accepts indented environment prose after prose in an unknown text fence",
+    "```text\nx\n    environment: production variables are discussed below.\n```",
+    false,
+  ],
+  [
+    "accepts indented ports prose after prose in a no-language fence",
+    "```\nx\n    ports: production bindings are discussed below.\n```",
+    false,
+  ],
+] as const;
+
 describe("secure backend deployment guide validator", () => {
   it.each(insecureUrlTokens)("rejects %s", (_label, token) => {
     expect(() => validate(token)).toThrow(
@@ -578,4 +616,18 @@ describe("secure backend deployment guide validator", () => {
       expect(validation).not.toThrow();
     }
   });
+
+  it.each(sourcePolicyStructuralRecovery)(
+    "%s",
+    (_label, fencedBody, rejects) => {
+      const validation = () => validate(fencedBody);
+      if (rejects) {
+        expect(validation).toThrow(
+          /permits an insecure public application backend/,
+        );
+      } else {
+        expect(validation).not.toThrow();
+      }
+    },
+  );
 });

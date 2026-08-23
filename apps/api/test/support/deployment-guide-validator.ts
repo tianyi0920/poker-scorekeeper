@@ -291,14 +291,16 @@ type SourcePolicy =
 
 /**
  * Each source owns its policy and local ranges. Parent Markdown candidates
- * exclude child bodies before parsing, so one body is never parsed under two
- * policies. Recursive children always omit at least their opener line.
+ * exclude child bodies before parsing; known YAML additionally retains its raw
+ * strict parent. Recursive children always omit at least their opener line.
  */
 interface YamlSource {
   content: string;
   policy: SourcePolicy;
   startOffset?: number;
   sourceId?: number;
+  recoveryForSourceId?: number;
+  recoveryStartOffset?: number;
 }
 
 const yamlFenceLanguages = new Set([
@@ -354,6 +356,33 @@ function stripIndentedCodePrefix(line: string): string {
   return line.startsWith("\t") ? line.slice(1) : line.slice(4);
 }
 
+function structuredYamlCandidate(
+  lines: string[],
+  start: number,
+): string | undefined {
+  const opening =
+    /^([ \t]*)(?:["']?(?:environment|ports|services)["']?)[ \t]*:/u.exec(
+      lines[start]!,
+    );
+  if (!opening) return undefined;
+
+  const baseline = opening[1]!;
+  let end = start + 1;
+  while (
+    end < lines.length &&
+    (lines[end]!.trim() === "" || lines[end]!.startsWith(baseline))
+  ) {
+    end += 1;
+  }
+
+  return lines
+    .slice(start, end)
+    .map((line) =>
+      line.startsWith(baseline) ? line.slice(baseline.length) : line,
+    )
+    .join("\n");
+}
+
 function sourcePolicyForFence(language: string): SourcePolicy {
   return yamlFenceLanguages.has(language)
     ? "known-yaml-fence"
@@ -375,9 +404,15 @@ function sourceAllowsTopLevelPlainProse(source: YamlSource): boolean {
   }
 }
 
-function findYamlSources(content: string): YamlSource[] {
+interface YamlSources {
+  primary: YamlSource[];
+  recovery: YamlSource[];
+}
+
+function findYamlSources(content: string): YamlSources {
   const normalizedContent = content.replace(/\r\n?/g, "\n");
   const sources: YamlSource[] = [];
+  const recoverySources: YamlSource[] = [];
   let nextSourceId = 0;
 
   function collectMarkdownSource(
@@ -394,6 +429,16 @@ function findYamlSources(content: string): YamlSource[] {
       nextLineOffset += line.length + 1;
     }
     const outsideFence = [...lines];
+
+    // A known YAML fence validates its original body before nested fences are
+    // considered. Child extraction can add inspection, never weaken strictness.
+    if (policy === "known-yaml-fence") {
+      sources.push({
+        content: sourceContent,
+        policy,
+        sourceId: nextSourceId++,
+      });
+    }
 
     for (let index = 0; index < lines.length; index += 1) {
       const fence = readMarkdownFenceOpening(lines[index]!);
@@ -447,6 +492,20 @@ function findYamlSources(content: string): YamlSource[] {
       index = end - 1;
     }
 
+    if (policy === "known-yaml-fence") return;
+
+    for (let index = 0; index < outsideFence.length; index += 1) {
+      const candidate = structuredYamlCandidate(outsideFence, index);
+      if (candidate === undefined) continue;
+      recoverySources.push({
+        content: candidate,
+        policy,
+        sourceId: nextSourceId++,
+        recoveryForSourceId: sourceId,
+        recoveryStartOffset: lineOffsets[index],
+      });
+    }
+
     for (let index = 0; index < outsideFence.length; index += 1) {
       const line = outsideFence[index]!;
       const indentation = /^ */u.exec(line)?.[0].length ?? 0;
@@ -464,7 +523,7 @@ function findYamlSources(content: string): YamlSource[] {
   }
 
   collectMarkdownSource(normalizedContent, "top-level-markdown");
-  return sources;
+  return { primary: sources, recovery: recoverySources };
 }
 
 function scalarText(value: unknown): string | undefined {
@@ -716,13 +775,19 @@ function hasSingleLineYamlRoot(
 
 function validateYamlComposeStructures(content: string, name: string): void {
   const validatedOutsideThrough = new Map<number, number>();
-  for (const source of findYamlSources(content)) {
+  const parseablePrimaryRanges = new Map<number, Array<[number, number]>>();
+  const { primary, recovery } = findYamlSources(content);
+
+  function validateSource(
+    source: YamlSource,
+    canTriggerRecovery: boolean,
+  ): void {
     const sourceId = source.sourceId ?? -1;
     if (
       source.startOffset !== undefined &&
       source.startOffset <= (validatedOutsideThrough.get(sourceId) ?? -1)
     ) {
-      continue;
+      return;
     }
     let documents;
     try {
@@ -731,7 +796,7 @@ function validateYamlComposeStructures(content: string, name: string): void {
       if (sourceFailsClosed(source)) {
         rejectInsecureBackendGuide(name, "invalid fenced YAML block");
       }
-      continue;
+      return;
     }
     if (
       sourceFailsClosed(source) &&
@@ -746,6 +811,20 @@ function validateYamlComposeStructures(content: string, name: string): void {
         !hasSingleLineYamlRoot(document, source)
       ) {
         continue;
+      }
+      if (
+        canTriggerRecovery &&
+        source.startOffset !== undefined &&
+        document.errors.length === 0 &&
+        document.range !== undefined
+      ) {
+        const range = [
+          source.startOffset,
+          source.startOffset + document.range[2] - 1,
+        ] as [number, number];
+        const ranges = parseablePrimaryRanges.get(sourceId) ?? [];
+        ranges.push(range);
+        parseablePrimaryRanges.set(sourceId, ranges);
       }
       const sections: ParsedComposeSection[] = [];
       collectComposeSections(document.contents, source, sections);
@@ -777,6 +856,23 @@ function validateYamlComposeStructures(content: string, name: string): void {
           ),
         );
       }
+    }
+  }
+
+  for (const source of primary) {
+    validateSource(source, true);
+  }
+  for (const source of recovery) {
+    if (
+      source.recoveryForSourceId !== undefined &&
+      source.recoveryStartOffset !== undefined &&
+      !(parseablePrimaryRanges.get(source.recoveryForSourceId) ?? []).some(
+        ([start, end]) =>
+          start <= source.recoveryStartOffset! &&
+          source.recoveryStartOffset! <= end,
+      )
+    ) {
+      validateSource(source, false);
     }
   }
 }
