@@ -65,3 +65,28 @@ it('keeps close button, Escape and backdrop dismissal enabled by default', () =>
 
   expect(onClose).toHaveBeenCalledTimes(3);
 });
+
+it('moves focus into the dialog when a focused close button becomes disabled', () => {
+  // Break caught: dynamically locking a busy modal can strand focus on its disabled close button.
+  const onClose = vi.fn();
+  const view = render(<Modal title="动态锁定" onClose={onClose}><button type="button">继续操作</button></Modal>);
+
+  expect(screen.getByRole('button', { name: '关闭' })).toHaveFocus();
+  view.rerender(<Modal title="动态锁定" dismissible={false} onClose={onClose}><button type="button">继续操作</button></Modal>);
+
+  expect(screen.getByRole('button', { name: '关闭' })).toBeDisabled();
+  expect(screen.getByRole('dialog', { name: '动态锁定' })).toHaveFocus();
+});
+
+it('does not steal child focus when a locked dialog becomes dismissible again', () => {
+  // Break caught: restoring dismissal should not interrupt the operation already focused by the user.
+  const onClose = vi.fn();
+  const view = render(<Modal title="恢复关闭" dismissible={false} onClose={onClose}><button type="button">继续操作</button></Modal>);
+  const childControl = screen.getByRole('button', { name: '继续操作' });
+  childControl.focus();
+
+  view.rerender(<Modal title="恢复关闭" onClose={onClose}><button type="button">继续操作</button></Modal>);
+
+  expect(screen.getByRole('button', { name: '关闭' })).toBeEnabled();
+  expect(childControl).toHaveFocus();
+});

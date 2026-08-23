@@ -16,6 +16,9 @@ export function Modal({ title, children, onClose, dismissible = true }: { title:
   useLayoutEffect(() => {
     onCloseRef.current = onClose;
     dismissibleRef.current = dismissible;
+    if (!dismissible && document.activeElement === closeButtonRef.current) {
+      dialogRef.current?.focus();
+    }
   }, [dismissible, onClose]);
 
   useEffect(() => {
