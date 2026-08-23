@@ -84,6 +84,10 @@ it.each([
   ['/games/game-1/settlement/', true],
   ['/games/new', false],
   ['/games/new/', false],
+  ['/games/new/settlement', false],
+  ['/games/new/settlement/', false],
+  ['/games/new/another-segment', false],
+  ['/games/newish/settlement/', true],
   ['/games/game-1/extra', false],
   ['/history/game-1', false],
   ['/profile', false],
@@ -97,6 +101,7 @@ it.each([
   ['/games/game-1/', true, true],
   ['/games/game-1/settlement/', true, false],
   ['/games/new/', false, false],
+  ['/games/new/settlement/', false, false],
   ['/history/game-1', false, false],
 ])('uses focused shell mode only for the active game workspace: %s', async (pathname, focused, liveGame) => {
   // Break caught: a live table and settlement share dock clearance, or a normal route loses navigation.

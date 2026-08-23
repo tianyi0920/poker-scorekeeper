@@ -8,12 +8,16 @@ export function OfflineBanner() {
   return !online ? <div className="offline-banner" role="status">当前离线，写入操作已禁用。</div> : null;
 }
 
+function isReservedGameRoute(pathname: string) {
+  return /^\/games\/new(?:\/|$)/.test(pathname);
+}
+
 export function isFocusedGameRoute(pathname: string) {
-  return /^\/games\/[^/]+(?:\/settlement)?\/?$/.test(pathname) && !/^\/games\/new\/?$/.test(pathname);
+  return /^\/games\/[^/]+(?:\/settlement)?\/?$/.test(pathname) && !isReservedGameRoute(pathname);
 }
 
 function isLiveGameRoute(pathname: string) {
-  return /^\/games\/[^/]+\/?$/.test(pathname) && !/^\/games\/new\/?$/.test(pathname);
+  return /^\/games\/[^/]+\/?$/.test(pathname) && !isReservedGameRoute(pathname);
 }
 
 export function AppShell() {
