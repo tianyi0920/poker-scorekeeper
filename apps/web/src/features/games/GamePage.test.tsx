@@ -283,11 +283,13 @@ it('removes the polling warning and interval immediately after reconnecting', as
 
 it('starts a new fallback grace period when a join acknowledgement and disconnect share one React batch', async () => {
   // Break caught: an ACK briefly clears polling, then a same-batch disconnect preserves a hidden prior interval.
-  vi.useFakeTimers({ shouldAdvanceTime: true });
   const socket = new FakeGameSocket();
   const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
   await screen.findByTestId('round-table');
   await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  // The initial ACK has stopped fallback before switching to a fully manual clock.
+  vi.useFakeTimers();
 
   act(() => {
     socket.connected = false;
