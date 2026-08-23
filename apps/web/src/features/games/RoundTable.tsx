@@ -8,7 +8,7 @@ const compactSeatPositions = [
 ] as const;
 
 export function getTableDensity(occupiedSeatCount: number): 'sparse' | 'standard' | 'full' {
-  if (occupiedSeatCount <= 2) return 'sparse';
+  if (occupiedSeatCount <= 4) return 'sparse';
   if (occupiedSeatCount <= 8) return 'standard';
   return 'full';
 }

@@ -27,10 +27,17 @@ it.each([1, 8, 12])('renders %i unique seats with self anchored at the bottom', 
 
 it.each([
   [0, 'sparse'],
+  [1, 'sparse'],
   [2, 'sparse'],
-  [3, 'standard'],
+  [3, 'sparse'],
+  [4, 'sparse'],
+  [5, 'standard'],
+  [6, 'standard'],
+  [7, 'standard'],
   [8, 'standard'],
   [9, 'full'],
+  [10, 'full'],
+  [11, 'full'],
   [12, 'full']
 ] as const)('uses the expected density for %i occupied seats', (count, density) => {
   // Break caught: a sparse table stays at the dense fixed geometry, wasting the first mobile screen.
