@@ -457,6 +457,29 @@ const validYamlDocuments = [
   ],
 ] as const;
 
+const unknownTextFenceSourcePolicy = [
+  [
+    "accepts top-level environment prose in an unknown text fence",
+    "```text\nenvironment: production variables are discussed below.\n```",
+    false,
+  ],
+  [
+    "accepts top-level ports prose in an unknown text fence",
+    "```text\nports: production bindings are discussed below.\n```",
+    false,
+  ],
+  [
+    "rejects nested unsafe environment YAML in an unknown text fence",
+    "```text\nservices:\n  app:\n    environment:\n      PORT: 3000\n```",
+    true,
+  ],
+  [
+    "rejects nested unsafe ports YAML in an unknown text fence",
+    "```text\nservices:\n  app:\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n```",
+    true,
+  ],
+] as const;
+
 describe("secure backend deployment guide validator", () => {
   it.each(insecureUrlTokens)("rejects %s", (_label, token) => {
     expect(() => validate(token)).toThrow(
@@ -543,5 +566,16 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(validYamlDocuments)("accepts %s", (_label, documents) => {
     expect(() => validate(documents)).not.toThrow();
+  });
+
+  it.each(unknownTextFenceSourcePolicy)("%s", (_label, fencedBody, rejects) => {
+    const validation = () => validate(fencedBody);
+    if (rejects) {
+      expect(validation).toThrow(
+        /permits an insecure public application backend/,
+      );
+    } else {
+      expect(validation).not.toThrow();
+    }
   });
 });

@@ -286,10 +286,17 @@ function validateGuideEnvironmentAssignments(
   }
 }
 
-interface YamlSnippet {
+type SourcePolicy =
+  "known-yaml-fence" | "unknown-fence" | "top-level-markdown" | "indented-code";
+
+/**
+ * Each source owns its policy and local ranges. Parent Markdown candidates
+ * exclude child bodies before parsing, so one body is never parsed under two
+ * policies. Recursive children always omit at least their opener line.
+ */
+interface YamlSource {
   content: string;
-  failClosed: boolean;
-  allowTopLevelProse: boolean;
+  policy: SourcePolicy;
   startOffset?: number;
   sourceId?: number;
 }
@@ -347,14 +354,35 @@ function stripIndentedCodePrefix(line: string): string {
   return line.startsWith("\t") ? line.slice(1) : line.slice(4);
 }
 
-function findYamlSnippets(content: string): YamlSnippet[] {
+function sourcePolicyForFence(language: string): SourcePolicy {
+  return yamlFenceLanguages.has(language)
+    ? "known-yaml-fence"
+    : "unknown-fence";
+}
+
+function sourceFailsClosed(source: YamlSource): boolean {
+  return source.policy === "known-yaml-fence";
+}
+
+function sourceAllowsTopLevelPlainProse(source: YamlSource): boolean {
+  switch (source.policy) {
+    case "known-yaml-fence":
+      return false;
+    case "unknown-fence":
+    case "top-level-markdown":
+    case "indented-code":
+      return true;
+  }
+}
+
+function findYamlSources(content: string): YamlSource[] {
   const normalizedContent = content.replace(/\r\n?/g, "\n");
-  const snippets: YamlSnippet[] = [];
+  const sources: YamlSource[] = [];
   let nextSourceId = 0;
 
   function collectMarkdownSource(
     sourceContent: string,
-    allowTopLevelProse: boolean,
+    policy: SourcePolicy,
   ): void {
     const sourceId = nextSourceId;
     nextSourceId += 1;
@@ -382,12 +410,10 @@ function findYamlSnippets(content: string): YamlSnippet[] {
         .slice(index + 1, end)
         .map((line) => stripFenceIndentation(line, fence.indentation))
         .join("\n");
-      snippets.push({
-        content: fencedContent,
-        failClosed: yamlFenceLanguages.has(fence.language),
-        allowTopLevelProse: false,
-      });
-      collectMarkdownSource(fencedContent, false);
+      collectMarkdownSource(
+        fencedContent,
+        sourcePolicyForFence(fence.language),
+      );
       outsideFence.fill("", index, Math.min(end + 1, lines.length));
       index = end;
     }
@@ -408,15 +434,14 @@ function findYamlSnippets(content: string): YamlSnippet[] {
       ) {
         end += 1;
       }
-      snippets.push({
+      sources.push({
         content: outsideFence
           .slice(index, end)
           .map((line) =>
             line.trim() === "" ? "" : stripIndentedCodePrefix(line),
           )
           .join("\n"),
-        failClosed: false,
-        allowTopLevelProse: false,
+        policy: "indented-code",
       });
       outsideFence.fill("", index, end);
       index = end - 1;
@@ -429,18 +454,17 @@ function findYamlSnippets(content: string): YamlSnippet[] {
         continue;
       }
 
-      snippets.push({
+      sources.push({
         content: outsideFence.slice(index).join("\n"),
-        failClosed: false,
-        allowTopLevelProse,
+        policy,
         startOffset: lineOffsets[index],
         sourceId,
       });
     }
   }
 
-  collectMarkdownSource(normalizedContent, true);
-  return snippets;
+  collectMarkdownSource(normalizedContent, "top-level-markdown");
+  return sources;
 }
 
 function scalarText(value: unknown): string | undefined {
@@ -568,7 +592,7 @@ function isStaticPlainMarkdownText(value: unknown): boolean {
 function isMarkdownLabelBeforeParagraph(
   map: { items: Array<{ key: unknown; value: unknown }> },
   index: number,
-  snippet: YamlSnippet,
+  source: YamlSource,
 ): boolean {
   const pair = map.items[index]!;
   const nextPair = map.items[index + 1];
@@ -594,7 +618,7 @@ function isMarkdownLabelBeforeParagraph(
     return false;
   }
 
-  const between = snippet.content.slice(
+  const between = source.content.slice(
     pair.value.range[2],
     nextPair.key.range[0],
   );
@@ -604,10 +628,12 @@ function isMarkdownLabelBeforeParagraph(
 function isMarkdownProseSection(
   map: { items: Array<{ key: unknown; value: unknown }> },
   index: number,
-  snippet: YamlSnippet,
+  source: YamlSource,
   markdownProseContainer: boolean,
 ): boolean {
-  if (!snippet.allowTopLevelProse || !markdownProseContainer) return false;
+  if (!sourceAllowsTopLevelPlainProse(source) || !markdownProseContainer) {
+    return false;
+  }
   const pair = map.items[index]!;
   if (
     !isScalar(pair.key) ||
@@ -618,13 +644,13 @@ function isMarkdownProseSection(
   }
   return (
     isStaticPlainMarkdownText(pair.value) ||
-    isMarkdownLabelBeforeParagraph(map, index, snippet)
+    isMarkdownLabelBeforeParagraph(map, index, source)
   );
 }
 
 function collectComposeSections(
   node: unknown,
-  snippet: YamlSnippet,
+  source: YamlSource,
   sections: ParsedComposeSection[],
   depth = 0,
   rootListItem = false,
@@ -639,20 +665,20 @@ function collectComposeSections(
           markdownProse: isMarkdownProseSection(
             node,
             index,
-            snippet,
+            source,
             depth === 0 || rootListItem,
           ),
         });
         continue;
       }
-      collectComposeSections(pair.value, snippet, sections, depth + 1, false);
+      collectComposeSections(pair.value, source, sections, depth + 1, false);
     }
     return;
   }
 
   if (isSeq(node)) {
     for (const item of node.items) {
-      collectComposeSections(item, snippet, sections, depth + 1, depth === 0);
+      collectComposeSections(item, source, sections, depth + 1, depth === 0);
     }
   }
 }
@@ -677,52 +703,52 @@ function yamlNodeToJs(
 
 function hasSingleLineYamlRoot(
   document: Document.Parsed,
-  snippet: YamlSnippet,
+  source: YamlSource,
 ): boolean {
   const contents = document.contents;
   if (isSeq(contents)) return true;
   if (!isMap(contents)) return false;
   const firstKey = contents.items[0]?.key;
   if (!isNode(firstKey) || firstKey.range === undefined) return false;
-  const rawKey = snippet.content.slice(firstKey.range[0], firstKey.range[2]);
+  const rawKey = source.content.slice(firstKey.range[0], firstKey.range[2]);
   return !/[\r\n]/u.test(rawKey);
 }
 
 function validateYamlComposeStructures(content: string, name: string): void {
   const validatedOutsideThrough = new Map<number, number>();
-  for (const snippet of findYamlSnippets(content)) {
-    const sourceId = snippet.sourceId ?? -1;
+  for (const source of findYamlSources(content)) {
+    const sourceId = source.sourceId ?? -1;
     if (
-      snippet.startOffset !== undefined &&
-      snippet.startOffset <= (validatedOutsideThrough.get(sourceId) ?? -1)
+      source.startOffset !== undefined &&
+      source.startOffset <= (validatedOutsideThrough.get(sourceId) ?? -1)
     ) {
       continue;
     }
     let documents;
     try {
-      documents = parseAllDocuments(snippet.content, { merge: true });
+      documents = parseAllDocuments(source.content, { merge: true });
     } catch {
-      if (snippet.failClosed) {
+      if (sourceFailsClosed(source)) {
         rejectInsecureBackendGuide(name, "invalid fenced YAML block");
       }
       continue;
     }
     if (
-      snippet.failClosed &&
+      sourceFailsClosed(source) &&
       documents.some((document) => document.errors.length > 0)
     ) {
       rejectInsecureBackendGuide(name, "invalid fenced YAML block");
     }
     for (const document of documents) {
       if (
-        !snippet.failClosed &&
+        !sourceFailsClosed(source) &&
         document.errors.length > 0 &&
-        !hasSingleLineYamlRoot(document, snippet)
+        !hasSingleLineYamlRoot(document, source)
       ) {
         continue;
       }
       const sections: ParsedComposeSection[] = [];
-      collectComposeSections(document.contents, snippet, sections);
+      collectComposeSections(document.contents, source, sections);
       const securitySections = sections.filter(
         (section) => !section.markdownProse,
       );
@@ -738,7 +764,7 @@ function validateYamlComposeStructures(content: string, name: string): void {
         }
       }
       if (
-        snippet.startOffset !== undefined &&
+        source.startOffset !== undefined &&
         document.errors.length === 0 &&
         sections.length > 0 &&
         document.range !== undefined
@@ -747,7 +773,7 @@ function validateYamlComposeStructures(content: string, name: string): void {
           sourceId,
           Math.max(
             validatedOutsideThrough.get(sourceId) ?? -1,
-            snippet.startOffset + document.range[2] - 1,
+            source.startOffset + document.range[2] - 1,
           ),
         );
       }
