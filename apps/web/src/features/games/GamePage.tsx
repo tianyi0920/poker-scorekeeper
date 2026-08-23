@@ -141,6 +141,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     let disposed = false;
     let joinTimeout: number | undefined;
     let retryTimeout: number | undefined;
+    let joinGeneration = 0;
     setSocketReady(true);
 
     const clearJoinTimers = () => {
@@ -149,43 +150,54 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       joinTimeout = undefined;
       retryTimeout = undefined;
     };
-    const scheduleJoinRetry = () => {
+    const scheduleJoinRetry = (generation: number) => {
       if (disposed || !socket.connected) return;
       if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
-      retryTimeout = window.setTimeout(() => attemptJoin(), 5_000);
+      const retry = window.setTimeout(() => {
+        if (disposed || generation !== joinGeneration || retryTimeout !== retry) return;
+        retryTimeout = undefined;
+        attemptJoin();
+      }, 5_000);
+      retryTimeout = retry;
     };
-    const failJoin = () => {
-      if (disposed) return;
+    const failJoin = (generation: number) => {
+      if (disposed || generation !== joinGeneration) return;
       if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
       joinTimeout = undefined;
       ensureFallbackGrace();
-      scheduleJoinRetry();
+      scheduleJoinRetry(generation);
     };
     const attemptJoin = () => {
       if (disposed || !socket.connected) return;
+      const generation = joinGeneration + 1;
+      joinGeneration = generation;
       if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
       if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
       retryTimeout = undefined;
       setRoomSynchronized(false);
       let acknowledged = false;
-      joinTimeout = window.setTimeout(() => {
-        if (acknowledged) return;
+      const timeout = window.setTimeout(() => {
+        if (disposed || generation !== joinGeneration || acknowledged) return;
         acknowledged = true;
-        failJoin();
+        if (joinTimeout === timeout) joinTimeout = undefined;
+        failJoin(generation);
       }, 3_000);
+      joinTimeout = timeout;
       socket.emit('game.join', {
         gameId,
         knownVersion: snapshotRef.current?.version ?? 0
       }, (value) => {
-        if (disposed || acknowledged) return;
+        if (disposed || generation !== joinGeneration || !socket.connected || acknowledged) return;
         acknowledged = true;
-        if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
-        joinTimeout = undefined;
+        if (joinTimeout === timeout) {
+          window.clearTimeout(timeout);
+          joinTimeout = undefined;
+        }
         const acknowledgement = gameJoinAckSchema.safeParse(value);
         if (!acknowledgement.success
           || !acknowledgement.data.ok
           || acknowledgement.data.gameId !== gameId) {
-          failJoin();
+          failJoin(generation);
           return;
         }
         stopFallback();
@@ -196,6 +208,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       attemptJoin();
     };
     const disconnect = () => {
+      joinGeneration += 1;
       clearJoinTimers();
       ensureFallbackGrace();
     };
@@ -224,11 +237,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (playerRakeUpdatedEventSchema.safeParse(value).success) void loadSnapshot(true);
     };
     const socketError = () => {
-      failJoin();
+      failJoin(joinGeneration);
     };
     const receiveServerError = (value: unknown) => {
       if (serverErrorEventSchema.safeParse(value).success) {
-        failJoin();
+        failJoin(joinGeneration);
       }
     };
 
@@ -248,6 +261,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
 
     return () => {
       disposed = true;
+      joinGeneration += 1;
       clearJoinTimers();
       if (socket.connected) socket.emit('game.leave', { gameId });
       for (const [event, listener] of listeners) socket.off(event, listener);

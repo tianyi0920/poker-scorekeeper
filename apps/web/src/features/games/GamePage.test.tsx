@@ -13,12 +13,14 @@ type Listener = (...args: unknown[]) => void;
 class FakeGameSocket implements GameSocketClient {
   connected = false;
   autoConnect = true;
+  deferJoinAcknowledgements = false;
   readonly joined: Array<{ gameId: string; knownVersion: number }> = [];
   leaves = 0;
   joinAcknowledgement: ((payload: { gameId: string; knownVersion: number }) => unknown | undefined) = (payload) => ({
     ok: true, gameId: payload.gameId, version: Math.max(1, payload.knownVersion), snapshotSent: false
   });
   private readonly listeners = new Map<string, Set<Listener>>();
+  private readonly deferredJoinAcknowledgements: Array<() => void> = [];
 
   on(event: string, listener: Listener): this {
     const listeners = this.listeners.get(event) ?? new Set<Listener>();
@@ -37,7 +39,14 @@ class FakeGameSocket implements GameSocketClient {
       const command = payload as { gameId: string; knownVersion: number };
       this.joined.push(command);
       const acknowledgement = this.joinAcknowledgement(command);
-      if (acknowledgement !== undefined) ack?.(acknowledgement);
+      if (acknowledgement !== undefined && ack !== undefined) {
+        const deliverAcknowledgement = () => ack(acknowledgement);
+        if (this.deferJoinAcknowledgements) {
+          this.deferredJoinAcknowledgements.push(deliverAcknowledgement);
+        } else {
+          deliverAcknowledgement();
+        }
+      }
     }
     if (event === 'game.leave') this.leaves += 1;
     return this;
@@ -61,6 +70,12 @@ class FakeGameSocket implements GameSocketClient {
 
   listenerCount(): number {
     return [...this.listeners.values()].reduce((total, listeners) => total + listeners.size, 0);
+  }
+
+  acknowledgeDeferredJoin(): void {
+    const acknowledgement = this.deferredJoinAcknowledgements.shift();
+    if (acknowledgement === undefined) throw new Error('No deferred game.join acknowledgement');
+    acknowledgement();
   }
 }
 
@@ -282,6 +297,47 @@ it('keeps an active polling fallback visible and refreshing after a reconnect di
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
     .toHaveLength(3);
+});
+
+it('ignores a stale valid join acknowledgement after disconnecting from active polling', async () => {
+  // Break caught: a prior room ACK stops an active polling fallback after its transport already disconnected.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+  fetchMock.mockClear();
+
+  socket.deferJoinAcknowledgements = true;
+  act(() => {
+    socket.connected = true;
+    socket.fire('connect');
+    socket.connected = false;
+    socket.fire('disconnect');
+    socket.connected = true;
+    socket.acknowledgeDeferredJoin();
+  });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(3);
+
+  socket.deferJoinAcknowledgements = false;
+  act(() => { socket.fire('connect'); });
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+  fetchMock.mockClear();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(0);
 });
 
 it.each([
