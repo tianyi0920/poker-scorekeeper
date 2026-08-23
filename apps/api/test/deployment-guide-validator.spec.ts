@@ -518,6 +518,92 @@ const sourcePolicyStructuralRecovery = [
   ],
 ] as const;
 
+const sourcePolicyBlockDiscoveryUnsafe = [
+  [
+    "rejects four-space flow environment after prose in an unknown text fence",
+    "```text\nintro\n    { environment: { PORT: 3000 } }\n```",
+  ],
+  [
+    "rejects eight-space flow ports after prose in an unknown text fence",
+    '```text\nintro\n        { ports: ["3000:80"] }\n```',
+  ],
+  [
+    "rejects tab-indented flow services after prose in an unknown text fence",
+    "```text\nintro\n\t{ services: { app: { environment: { PORT: 3000 } } } }\n```",
+  ],
+  [
+    "rejects four-space flow environment after prose in a no-language fence",
+    "```\nintro\n    { environment: { PORT: 3000 } }\n```",
+  ],
+  [
+    "rejects eight-space flow ports after prose in a no-language fence",
+    '```\nintro\n        { ports: ["3000:80"] }\n```',
+  ],
+  [
+    "rejects a root-list environment after prose in a no-language fence",
+    "```\nintro\n- environment:\n    PORT: 3000\n```",
+  ],
+] as const;
+
+function safelyBoundedBlock(
+  section: "environment" | "ports" | "services",
+  indentation: number,
+): string {
+  const prefix = " ".repeat(indentation);
+  if (section === "environment") {
+    return [
+      `${prefix}environment:`,
+      `${prefix}  PORT: 80`,
+      `${prefix}  PUBLIC_ORIGIN: https://safe.example`,
+      `${prefix}  WS_ALLOWED_ORIGINS: https://safe.example`,
+    ].join("\n");
+  }
+  if (section === "ports") {
+    return [
+      `${prefix}ports:`,
+      `${prefix}  - published: 3000`,
+      `${prefix}    target: 80`,
+      `${prefix}    host_ip: 127.0.0.1`,
+    ].join("\n");
+  }
+  return [
+    `${prefix}services:`,
+    `${prefix}  app:`,
+    `${prefix}    environment:`,
+    `${prefix}      PORT: 80`,
+    `${prefix}      PUBLIC_ORIGIN: https://safe.example`,
+    `${prefix}      WS_ALLOWED_ORIGINS: https://safe.example`,
+  ].join("\n");
+}
+
+const sourcePolicySafeTrailingProse = (["text", ""] as const).flatMap(
+  (language) =>
+    (["environment", "ports", "services"] as const).flatMap((section) =>
+      [0, 1, 2, 3].map(
+        (indentation) =>
+          [
+            `accepts ${language || "no-language"} ${section} block at ${indentation} spaces before trailing prose`,
+            `\`\`\`${language}\n${safelyBoundedBlock(section, indentation)}\noutro prose\n\`\`\``,
+          ] as const,
+      ),
+    ),
+);
+
+const sourcePolicyBlockDiscoverySafeControls = [
+  [
+    "accepts a four-space safe environment block before trailing prose",
+    `\`\`\`text\n${safelyBoundedBlock("environment", 4)}\noutro prose\n\`\`\``,
+  ],
+  [
+    "accepts an anchored safe services environment after prose",
+    "```text\nx-safe: &safe\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\nservices:\n  app:\n    environment:\n      <<: *safe\n      WS_ALLOWED_ORIGINS: https://safe.example\n```",
+  ],
+  [
+    "accepts an anchored safe services environment after a long nested child fence",
+    `\`\`\`\`text\n\`\`\`text\n${"safe child prose ".repeat(24)}\n\`\`\`\nx-safe: &safe\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\nservices:\n  app:\n    environment:\n      <<: *safe\n      WS_ALLOWED_ORIGINS: https://safe.example\n\`\`\`\``,
+  ],
+] as const;
+
 describe("secure backend deployment guide validator", () => {
   it.each(insecureUrlTokens)("rejects %s", (_label, token) => {
     expect(() => validate(token)).toThrow(
@@ -628,6 +714,26 @@ describe("secure backend deployment guide validator", () => {
       } else {
         expect(validation).not.toThrow();
       }
+    },
+  );
+
+  it.each(sourcePolicyBlockDiscoveryUnsafe)(
+    "%s",
+    (_label, fencedBody) => {
+      expect(() => validate(fencedBody)).toThrow(
+        /permits an insecure public application backend/,
+      );
+    },
+  );
+
+  it.each(sourcePolicySafeTrailingProse)("%s", (_label, fencedBody) => {
+    expect(() => validate(fencedBody)).not.toThrow();
+  });
+
+  it.each(sourcePolicyBlockDiscoverySafeControls)(
+    "%s",
+    (_label, fencedBody) => {
+      expect(() => validate(fencedBody)).not.toThrow();
     },
   );
 });

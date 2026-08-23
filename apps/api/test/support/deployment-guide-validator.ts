@@ -297,10 +297,7 @@ type SourcePolicy =
 interface YamlSource {
   content: string;
   policy: SourcePolicy;
-  startOffset?: number;
-  sourceId?: number;
-  recoveryForSourceId?: number;
-  recoveryStartOffset?: number;
+  fragment?: boolean;
 }
 
 const yamlFenceLanguages = new Set([
@@ -356,31 +353,50 @@ function stripIndentedCodePrefix(line: string): string {
   return line.startsWith("\t") ? line.slice(1) : line.slice(4);
 }
 
-function structuredYamlCandidate(
-  lines: string[],
-  start: number,
-): string | undefined {
-  const opening =
-    /^([ \t]*)(?:["']?(?:environment|ports|services)["']?)[ \t]*:/u.exec(
-      lines[start]!,
-    );
-  if (!opening) return undefined;
+const maxYamlBlockBoundaries = 32;
+const maxYamlBlockLines = 128;
 
-  const baseline = opening[1]!;
-  let end = start + 1;
-  while (
-    end < lines.length &&
-    (lines[end]!.trim() === "" || lines[end]!.startsWith(baseline))
-  ) {
-    end += 1;
+function leadingIndentation(line: string): string {
+  return /^[ \t]*/u.exec(line)?.[0] ?? "";
+}
+
+function sourceLocalYamlBlocks(lines: string[]): Array<{
+  content: string;
+  fragment: boolean;
+}> {
+  const blocks: Array<{ content: string; fragment: boolean }> = [];
+
+  for (let start = 0; start < lines.length; start += 1) {
+    if (lines[start]!.trim() === "") continue;
+
+    const baseline = leadingIndentation(lines[start]!);
+    const ends: number[] = [];
+    const searchEnd = Math.min(lines.length, start + maxYamlBlockLines);
+    for (let end = start + 1; end < searchEnd; end += 1) {
+      if (lines[end]!.trim() === "") continue;
+      if (leadingIndentation(lines[end]!).length <= baseline.length) {
+        ends.push(end);
+        if (ends.length === maxYamlBlockBoundaries) break;
+      }
+    }
+    if (ends.length === 0 || ends[ends.length - 1] !== searchEnd) {
+      ends.push(searchEnd);
+    }
+
+    for (const end of ends) {
+      blocks.push({
+        content: lines
+          .slice(start, end)
+          .map((line) =>
+            line.startsWith(baseline) ? line.slice(baseline.length) : line,
+          )
+          .join("\n"),
+        fragment: end < lines.length,
+      });
+    }
   }
 
-  return lines
-    .slice(start, end)
-    .map((line) =>
-      line.startsWith(baseline) ? line.slice(baseline.length) : line,
-    )
-    .join("\n");
+  return blocks;
 }
 
 function sourcePolicyForFence(language: string): SourcePolicy {
@@ -404,30 +420,15 @@ function sourceAllowsTopLevelPlainProse(source: YamlSource): boolean {
   }
 }
 
-interface YamlSources {
-  primary: YamlSource[];
-  recovery: YamlSource[];
-}
-
-function findYamlSources(content: string): YamlSources {
+function findYamlSources(content: string): YamlSource[] {
   const normalizedContent = content.replace(/\r\n?/g, "\n");
   const sources: YamlSource[] = [];
-  const recoverySources: YamlSource[] = [];
-  let nextSourceId = 0;
 
   function collectMarkdownSource(
     sourceContent: string,
     policy: SourcePolicy,
   ): void {
-    const sourceId = nextSourceId;
-    nextSourceId += 1;
     const lines = sourceContent.split("\n");
-    const lineOffsets: number[] = [];
-    let nextLineOffset = 0;
-    for (const line of lines) {
-      lineOffsets.push(nextLineOffset);
-      nextLineOffset += line.length + 1;
-    }
     const outsideFence = [...lines];
 
     // A known YAML fence validates its original body before nested fences are
@@ -436,7 +437,6 @@ function findYamlSources(content: string): YamlSources {
       sources.push({
         content: sourceContent,
         policy,
-        sourceId: nextSourceId++,
       });
     }
 
@@ -494,36 +494,16 @@ function findYamlSources(content: string): YamlSources {
 
     if (policy === "known-yaml-fence") return;
 
-    for (let index = 0; index < outsideFence.length; index += 1) {
-      const candidate = structuredYamlCandidate(outsideFence, index);
-      if (candidate === undefined) continue;
-      recoverySources.push({
-        content: candidate,
-        policy,
-        sourceId: nextSourceId++,
-        recoveryForSourceId: sourceId,
-        recoveryStartOffset: lineOffsets[index],
-      });
-    }
-
-    for (let index = 0; index < outsideFence.length; index += 1) {
-      const line = outsideFence[index]!;
-      const indentation = /^ */u.exec(line)?.[0].length ?? 0;
-      if (line.trim() === "" || line.startsWith("\t") || indentation > 3) {
-        continue;
-      }
-
+    for (const candidate of sourceLocalYamlBlocks(outsideFence)) {
       sources.push({
-        content: outsideFence.slice(index).join("\n"),
+        ...candidate,
         policy,
-        startOffset: lineOffsets[index],
-        sourceId,
       });
     }
   }
 
   collectMarkdownSource(normalizedContent, "top-level-markdown");
-  return { primary: sources, recovery: recoverySources };
+  return sources;
 }
 
 function scalarText(value: unknown): string | undefined {
@@ -746,49 +726,29 @@ function yamlNodeToJs(
   value: unknown,
   document: Document.Parsed,
   name: string,
-): unknown {
+  failClosed: boolean,
+): unknown | undefined {
   if (value === null || !isNode(value)) {
-    rejectInsecureBackendGuide(name, "invalid YAML deployment structure");
+    if (failClosed) {
+      rejectInsecureBackendGuide(name, "invalid YAML deployment structure");
+    }
+    return undefined;
   }
   try {
     return value.toJS(document);
   } catch {
-    return rejectInsecureBackendGuide(
-      name,
-      "invalid YAML deployment structure",
-    );
+    if (failClosed) {
+      return rejectInsecureBackendGuide(
+        name,
+        "invalid YAML deployment structure",
+      );
+    }
+    return undefined;
   }
 }
 
-function hasSingleLineYamlRoot(
-  document: Document.Parsed,
-  source: YamlSource,
-): boolean {
-  const contents = document.contents;
-  if (isSeq(contents)) return true;
-  if (!isMap(contents)) return false;
-  const firstKey = contents.items[0]?.key;
-  if (!isNode(firstKey) || firstKey.range === undefined) return false;
-  const rawKey = source.content.slice(firstKey.range[0], firstKey.range[2]);
-  return !/[\r\n]/u.test(rawKey);
-}
-
 function validateYamlComposeStructures(content: string, name: string): void {
-  const validatedOutsideThrough = new Map<number, number>();
-  const parseablePrimaryRanges = new Map<number, Array<[number, number]>>();
-  const { primary, recovery } = findYamlSources(content);
-
-  function validateSource(
-    source: YamlSource,
-    canTriggerRecovery: boolean,
-  ): void {
-    const sourceId = source.sourceId ?? -1;
-    if (
-      source.startOffset !== undefined &&
-      source.startOffset <= (validatedOutsideThrough.get(sourceId) ?? -1)
-    ) {
-      return;
-    }
+  for (const source of findYamlSources(content)) {
     let documents;
     try {
       documents = parseAllDocuments(source.content, { merge: true });
@@ -805,26 +765,8 @@ function validateYamlComposeStructures(content: string, name: string): void {
       rejectInsecureBackendGuide(name, "invalid fenced YAML block");
     }
     for (const document of documents) {
-      if (
-        !sourceFailsClosed(source) &&
-        document.errors.length > 0 &&
-        !hasSingleLineYamlRoot(document, source)
-      ) {
+      if (!sourceFailsClosed(source) && document.errors.length > 0) {
         continue;
-      }
-      if (
-        canTriggerRecovery &&
-        source.startOffset !== undefined &&
-        document.errors.length === 0 &&
-        document.range !== undefined
-      ) {
-        const range = [
-          source.startOffset,
-          source.startOffset + document.range[2] - 1,
-        ] as [number, number];
-        const ranges = parseablePrimaryRanges.get(sourceId) ?? [];
-        ranges.push(range);
-        parseablePrimaryRanges.set(sourceId, ranges);
       }
       const sections: ParsedComposeSection[] = [];
       collectComposeSections(document.contents, source, sections);
@@ -835,44 +777,26 @@ function validateYamlComposeStructures(content: string, name: string): void {
         rejectInsecureBackendGuide(name, "invalid YAML deployment structure");
       }
       for (const section of securitySections) {
-        const value = yamlNodeToJs(section.value, document, name);
+        if (
+          source.fragment &&
+          (section.value === null ||
+            (isScalar(section.value) && section.value.value === null))
+        ) {
+          continue;
+        }
+        const value = yamlNodeToJs(
+          section.value,
+          document,
+          name,
+          sourceFailsClosed(source),
+        );
+        if (value === undefined) continue;
         if (section.key === "environment") {
           validateComposeEnvironment(value, name);
         } else {
           validateComposePorts(value, name);
         }
       }
-      if (
-        source.startOffset !== undefined &&
-        document.errors.length === 0 &&
-        sections.length > 0 &&
-        document.range !== undefined
-      ) {
-        validatedOutsideThrough.set(
-          sourceId,
-          Math.max(
-            validatedOutsideThrough.get(sourceId) ?? -1,
-            source.startOffset + document.range[2] - 1,
-          ),
-        );
-      }
-    }
-  }
-
-  for (const source of primary) {
-    validateSource(source, true);
-  }
-  for (const source of recovery) {
-    if (
-      source.recoveryForSourceId !== undefined &&
-      source.recoveryStartOffset !== undefined &&
-      !(parseablePrimaryRanges.get(source.recoveryForSourceId) ?? []).some(
-        ([start, end]) =>
-          start <= source.recoveryStartOffset! &&
-          source.recoveryStartOffset! <= end,
-      )
-    ) {
-      validateSource(source, false);
     }
   }
 }
