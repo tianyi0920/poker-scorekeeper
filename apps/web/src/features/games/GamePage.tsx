@@ -44,10 +44,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [socketReady, setSocketReady] = useState(false);
-  const [transportConnected, setTransportConnected] = useState(false);
   const [roomSynchronized, setRoomSynchronized] = useState(false);
   const [polling, setPolling] = useState(false);
-  const [connectionError, setConnectionError] = useState<string | null>(null);
   const [tab, setTab] = useState<GameTab>('table');
   const [buyOpen, setBuyOpen] = useState(false);
   const [adjustment, setAdjustment] = useState<{ playerId: string; currentHands: number } | null>(null);
@@ -126,12 +124,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
       retryTimeout = window.setTimeout(() => attemptJoin(), 5_000);
     };
-    const failJoin = (message: string) => {
+    const failJoin = () => {
       if (disposed) return;
       if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
       joinTimeout = undefined;
       setRoomSynchronized(false);
-      setConnectionError(message);
       scheduleJoinRetry();
     };
     const attemptJoin = () => {
@@ -140,12 +137,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
       retryTimeout = undefined;
       setRoomSynchronized(false);
-      setConnectionError('正在同步实时房间…');
       let acknowledged = false;
       joinTimeout = window.setTimeout(() => {
         if (acknowledged) return;
         acknowledged = true;
-        failJoin('实时房间响应超时，正在尝试恢复。');
+        failJoin();
       }, 3_000);
       socket.emit('game.join', {
         gameId,
@@ -159,23 +155,19 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         if (!acknowledgement.success
           || !acknowledgement.data.ok
           || acknowledgement.data.gameId !== gameId) {
-          failJoin('实时房间同步失败，正在尝试恢复。');
+          failJoin();
           return;
         }
         setRoomSynchronized(true);
         setPolling(false);
-        setConnectionError(null);
       });
     };
     const connect = () => {
-      setTransportConnected(true);
       attemptJoin();
     };
     const disconnect = () => {
       clearJoinTimers();
-      setTransportConnected(false);
       setRoomSynchronized(false);
-      setConnectionError('实时连接中断，正在尝试恢复。');
     };
     const receiveSnapshot = (value: unknown) => {
       const parsed = gameSnapshotEventSchema.safeParse(value);
@@ -202,12 +194,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (playerRakeUpdatedEventSchema.safeParse(value).success) void loadSnapshot(true);
     };
     const socketError = () => {
-      setTransportConnected(false);
-      failJoin('实时连接中断，正在尝试恢复。');
+      failJoin();
     };
     const receiveServerError = (value: unknown) => {
       if (serverErrorEventSchema.safeParse(value).success) {
-        failJoin('实时房间同步失败，正在尝试恢复。');
+        failJoin();
       }
     };
 
@@ -232,7 +223,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       for (const [event, listener] of listeners) socket.off(event, listener);
       socket.disconnect();
       setSocketReady(false);
-      setTransportConnected(false);
       setRoomSynchronized(false);
     };
   }, [applySnapshot, gameId, hasSnapshot, loadSnapshot, socketFactory]);
@@ -242,16 +232,16 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setPolling(false);
       return;
     }
-    const fallback = window.setTimeout(() => setPolling(true), 5_000);
-    return () => window.clearTimeout(fallback);
-  }, [roomSynchronized, socketReady]);
-
-  useEffect(() => {
-    if (!polling) return;
-    void loadSnapshot(true);
-    const interval = window.setInterval(() => { void loadSnapshot(true); }, 10_000);
-    return () => window.clearInterval(interval);
-  }, [loadSnapshot, polling]);
+    let interval: number | undefined;
+    const fallback = window.setTimeout(() => {
+      setPolling(true);
+      interval = window.setInterval(() => { void loadSnapshot(true); }, 10_000);
+    }, 5_000);
+    return () => {
+      window.clearTimeout(fallback);
+      if (interval !== undefined) window.clearInterval(interval);
+    };
+  }, [loadSnapshot, roomSynchronized, socketReady]);
 
   const refreshAfterWrite = () => {
     void loadSnapshot(true);
@@ -310,12 +300,10 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         </div>
       </header>
 
-      {!roomSynchronized && socketReady && (
+      {polling && (
         <div className="connection-banner" role="status" aria-label="实时连接状态">
           <span className="connection-dot" aria-hidden="true" />
-          {polling
-            ? '实时连接中断，已启用每 10 秒定期同步'
-            : connectionError ?? (transportConnected ? '正在同步实时牌桌…' : '正在连接实时牌桌…')}
+          实时连接中断，已启用每 10 秒定期同步
         </div>
       )}
 

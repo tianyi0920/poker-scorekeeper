@@ -12,6 +12,7 @@ type Listener = (...args: unknown[]) => void;
 
 class FakeGameSocket implements GameSocketClient {
   connected = false;
+  autoConnect = true;
   readonly joined: Array<{ gameId: string; knownVersion: number }> = [];
   leaves = 0;
   joinAcknowledgement: ((payload: { gameId: string; knownVersion: number }) => unknown | undefined) = (payload) => ({
@@ -43,6 +44,7 @@ class FakeGameSocket implements GameSocketClient {
   }
 
   connect(): this {
+    if (!this.autoConnect) return this;
     this.connected = true;
     this.fire('connect');
     return this;
@@ -190,29 +192,74 @@ it('rejoins with the latest known version after a socket reconnect', async () =>
   expect(socket.joined.at(-1)).toEqual({ gameId: 'game-1', knownVersion: 4 });
 });
 
-it('starts HTTP fallback five seconds after disconnect and polls every ten seconds', async () => {
-  // Break caught: a dead WebSocket leaves the visible ledger stale without a clearly labelled fallback.
+it('keeps the realtime warning hidden throughout the initial five-second connection grace period', async () => {
+  // Break caught: the initial socket attempt immediately shows a warning before polling has actually taken over.
+  vi.useFakeTimers();
+  const socket = new FakeGameSocket();
+  socket.autoConnect = false;
+  renderGame(socket, snapshot({ players: players(1) }));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  expect(screen.getByTestId('round-table')).toBeInTheDocument();
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.getByRole('status', { name: '实时连接状态' }))
+    .toHaveTextContent('实时连接中断，已启用每 10 秒定期同步');
+});
+
+it('starts exactly one polling refresh every ten seconds after the fallback activates', async () => {
+  // Break caught: fallback refreshes immediately or duplicate disconnect callbacks create multiple polling intervals.
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const socket = new FakeGameSocket();
   const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
   await screen.findByTestId('round-table');
   await waitFor(() => expect(socket.joined).toHaveLength(1));
-  const initialSnapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')).length;
+  fetchMock.mockClear();
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByText('实时连接中断，已启用每 10 秒定期同步')).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(3);
+});
+
+it('removes the polling warning and interval immediately after reconnecting', async () => {
+  // Break caught: a recovered socket leaves the fallback warning or background polling active.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
 
   act(() => {
     socket.connected = false;
     socket.fire('disconnect');
   });
-  act(() => {
-    vi.advanceTimersByTime(5_000);
-  });
-  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('定期同步');
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByText('实时连接中断，已启用每 10 秒定期同步')).toBeVisible();
 
-  await act(async () => { vi.advanceTimersByTime(10_000); });
-  await waitFor(() => {
-    const snapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')).length;
-    expect(snapshots).toBeGreaterThan(initialSnapshots);
+  fetchMock.mockClear();
+  act(() => {
+    socket.connected = true;
+    socket.fire('connect');
   });
+  expect(screen.queryByText(/实时连接中断/)).not.toBeInTheDocument();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(0);
 });
 
 it.each([
@@ -226,10 +273,7 @@ it.each([
   const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
   await screen.findByTestId('round-table');
   await waitFor(() => expect(socket.joined).toHaveLength(1));
-  await waitFor(() => {
-    expect(screen.getByRole('status', { name: '实时连接状态' }))
-      .toHaveTextContent('实时房间同步失败');
-  });
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
   const initialSnapshots = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length;
 
   // The fallback effect is installed after the failed ACK render, so allow its
@@ -238,7 +282,7 @@ it.each([
   await waitFor(() => {
     expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('定期同步');
   });
-  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length).toBeGreaterThan(initialSnapshots);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot'))).toHaveLength(initialSnapshots);
 
   socket.joinAcknowledgement = (command) => ({
     ok: true, gameId: command.gameId, version: command.knownVersion, snapshotSent: false
@@ -248,27 +292,31 @@ it.each([
   expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
 });
 
-it('times out a silent room join and cleans all retry work on unmount', async () => {
-  // Break caught: a connected transport with no join ACK is reported healthy and leaves orphan retry timers after navigation.
+it('cleans fallback timeout and polling interval on unmount', async () => {
+  // Break caught: navigation leaves fallback timers alive, causing refreshes after the page is gone.
   vi.useFakeTimers({ shouldAdvanceTime: true });
   const socket = new FakeGameSocket();
-  socket.joinAcknowledgement = () => undefined;
-  const { unmount } = renderGame(socket, snapshot({ players: players(1) }));
+  const { fetchMock, unmount } = renderGame(socket, snapshot({ players: players(1) }));
   await screen.findByTestId('round-table');
   await waitFor(() => expect(socket.joined).toHaveLength(1));
 
-  await act(async () => { vi.advanceTimersByTime(3_000); });
-  expect(screen.getByRole('status', { name: '实时连接状态' })).toHaveTextContent('超时');
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByText('实时连接中断，已启用每 10 秒定期同步')).toBeVisible();
+  fetchMock.mockClear();
   unmount();
-  const joinsAtUnmount = socket.joined.length;
-  await act(async () => { vi.advanceTimersByTime(30_000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
 
-  expect(socket.joined).toHaveLength(joinsAtUnmount);
+  expect(fetchMock).not.toHaveBeenCalled();
   expect(socket.listenerCount()).toBe(0);
 });
 
 it('ignores malformed realtime events and reacts only to shared-contract payloads', async () => {
   // Break caught: an arbitrary Socket payload triggers a refresh or disconnect without passing the shared event schema.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
   const socket = new FakeGameSocket();
   const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
   await screen.findByTestId('round-table');
@@ -288,7 +336,10 @@ it('ignores malformed realtime events and reacts only to shared-contract payload
   await waitFor(() => {
     expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/snapshot')).length).toBeGreaterThan(initialSnapshots);
   });
+  socket.joinAcknowledgement = () => undefined;
   act(() => { socket.fire('server.error', { code: 'INTERNAL_ERROR' }); });
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_100); });
   expect(screen.getByRole('status', { name: '实时连接状态' })).toBeInTheDocument();
 });
 
