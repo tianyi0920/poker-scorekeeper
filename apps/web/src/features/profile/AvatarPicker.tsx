@@ -53,8 +53,10 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
   const activePresetSaveRef = useRef<number | null>(null);
   const uploadVersionRef = useRef(0);
   const activeUploadRef = useRef<number | null>(null);
+  const sessionSyncVersionRef = useRef(0);
   const [savedAvatar, setSavedAvatar] = useState(currentAvatar);
   const [pendingPreset, setPendingPreset] = useState<SelectablePresetAvatarId | null>(null);
+  const [pendingSessionSyncAvatar, setPendingSessionSyncAvatar] = useState<AvatarReference | null>(null);
   const [presets, setPresets] = useState<SelectablePresetAvatarCatalogItem[]>([]);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
@@ -62,8 +64,10 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
   const [croppedBlob, setCroppedBlob] = useState<Blob | null>(null);
   const [uploadFailed, setUploadFailed] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSynchronizing, setIsSynchronizing] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
 
   useLayoutEffect(() => {
@@ -74,6 +78,10 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
     setError(null);
     if (!sameAvatar(currentAvatar, acceptedAvatarRef.current)) {
       acceptedAvatarRef.current = null;
+      sessionSyncVersionRef.current += 1;
+      setPendingSessionSyncAvatar(null);
+      setIsSynchronizing(false);
+      setSyncError(null);
       setSuccess(null);
     }
   }, [currentAvatar?.kind, currentAvatar?.value]);
@@ -83,6 +91,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
       mountedRef.current = false;
       presetSaveVersionRef.current += 1;
       uploadVersionRef.current += 1;
+      sessionSyncVersionRef.current += 1;
       activePresetSaveRef.current = null;
       activeUploadRef.current = null;
     };
@@ -122,7 +131,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
     if (inputRef.current !== null) inputRef.current.value = '';
   }, [releaseSourceUrl]);
 
-  function applyServerAvatar(response: AvatarMutationResponse): AvatarReference {
+  function acceptServerAvatar(response: AvatarMutationResponse): AvatarReference {
     const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
     acceptedAvatarRef.current = next;
     setSavedAvatar(next);
@@ -131,31 +140,38 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
     return next;
   }
 
-  function acceptUploadedAvatar(response: AvatarMutationResponse): AvatarReference {
-    const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
-    acceptedAvatarRef.current = next;
-    setPendingPreset(null);
-    setSuccess('头像已保存');
-    return next;
-  }
+  const isCurrentSessionSync = (syncVersion: number, next: AvatarReference) => mountedRef.current
+    && sessionSyncVersionRef.current === syncVersion
+    && sameAvatar(acceptedAvatarRef.current, next);
 
   async function synchronizeAcceptedAvatar(next: AvatarReference): Promise<void> {
+    const syncVersion = ++sessionSyncVersionRef.current;
+    setIsSynchronizing(true);
+    setSyncError(null);
     try {
       await onChanged(next);
+      if (!isCurrentSessionSync(syncVersion, next)) return;
+      setPendingSessionSyncAvatar(null);
     } catch {
-      // The avatar mutation already succeeded. Session synchronization cannot turn it into a retryable write.
+      if (!isCurrentSessionSync(syncVersion, next)) return;
+      setPendingSessionSyncAvatar(next);
+      setSyncError('头像已保存，但页面状态同步失败');
+    } finally {
+      if (isCurrentSessionSync(syncVersion, next)) setIsSynchronizing(false);
     }
   }
 
   const savedPreset = savedAvatar?.kind === 'PRESET' ? savedAvatar.value : null;
   const selectedPreset = pendingPreset ?? savedPreset;
   const hasPendingPreset = pendingPreset !== null && pendingPreset !== savedPreset;
+  const hasPendingSessionSync = pendingSessionSyncAvatar !== null;
+  const isAvatarWriteLocked = isSaving || hasPendingSessionSync;
   const isCurrentPresetSave = (saveVersion: number) => mountedRef.current
     && activePresetSaveRef.current === saveVersion
     && presetSaveVersionRef.current === saveVersion;
 
   function choosePreset(id: SelectablePresetAvatarId) {
-    if (isSaving || !online) return;
+    if (isAvatarWriteLocked || !online) return;
     setPendingPreset(id === savedPreset ? null : id);
     setUploadFailed(false);
     setError(null);
@@ -163,13 +179,13 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
   }
 
   function cancelPreset() {
-    if (isSaving) return;
+    if (isAvatarWriteLocked) return;
     setPendingPreset(null);
     setError(null);
   }
 
   async function savePreset() {
-    if (!hasPendingPreset || pendingPreset === null || isSaving || activePresetSaveRef.current !== null || !online) return;
+    if (!hasPendingPreset || pendingPreset === null || isAvatarWriteLocked || activePresetSaveRef.current !== null || !online) return;
     const saveVersion = ++presetSaveVersionRef.current;
     activePresetSaveRef.current = saveVersion;
     setIsSaving(true);
@@ -178,7 +194,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
     try {
       const response = await scorekeeperApi.selectPresetAvatar({ presetId: pendingPreset });
       if (!isCurrentPresetSave(saveVersion)) return;
-      const acceptedAvatar = applyServerAvatar(response);
+      const acceptedAvatar = acceptServerAvatar(response);
       await synchronizeAcceptedAvatar(acceptedAvatar);
     } catch (reason) {
       if (isCurrentPresetSave(saveVersion)) setError(mutationMessage(reason, '头像保存失败'));
@@ -243,7 +259,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
     && !controller.signal.aborted;
 
   async function saveUpload(retainedBlob: Blob | null) {
-    if (image === null || crop === null || isSaving || activeUploadRef.current !== null || !online) return;
+    if (image === null || crop === null || isAvatarWriteLocked || activeUploadRef.current !== null || !online) return;
     const uploadVersion = ++uploadVersionRef.current;
     activeUploadRef.current = uploadVersion;
     setIsSaving(true);
@@ -265,7 +281,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
         if (isCurrentUpload(uploadVersion, controller)) setProgress(nextProgress);
       }, controller.signal);
       if (!isCurrentUpload(uploadVersion, controller)) return;
-      const acceptedAvatar = acceptUploadedAvatar(response);
+      const acceptedAvatar = acceptServerAvatar(response);
       await synchronizeAcceptedAvatar(acceptedAvatar);
       if (mountedRef.current && activeUploadRef.current === uploadVersion) closeCrop();
     } catch (reason) {
@@ -288,7 +304,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
   }
 
   function openFilePicker() {
-    if (isSaving || !online) return;
+    if (isAvatarWriteLocked || !online) return;
     if (inputRef.current !== null) {
       inputRef.current.value = '';
       inputRef.current.click();
@@ -296,32 +312,39 @@ export function AvatarPicker({ currentAvatar, onChanged }: {
   }
 
   function reselectPhoto() {
-    if (isSaving || !online) return;
+    if (isAvatarWriteLocked || !online) return;
     closeCrop();
     inputRef.current?.click();
   }
 
+  async function retrySessionSynchronization() {
+    if (pendingSessionSyncAvatar === null || isSynchronizing || !online) return;
+    await synchronizeAcceptedAvatar(pendingSessionSyncAvatar);
+  }
+
   return <div className="avatar-picker">
     {error !== null && <Toast tone="error" message={error} />}
+    {syncError !== null && <Toast tone="error" message={syncError} />}
     {success !== null && <Toast tone="success" message={success} />}
     <div className="current-avatar">{savedAvatar === null ? <span className="avatar-placeholder" aria-hidden="true">?</span> : <img src={avatarUrl(savedAvatar)} alt="当前头像" />}<div><strong>{savedAvatar === null ? '当前头像尚未载入' : '当前头像'}</strong><span>新头像仅在服务器保存成功后替换</span></div></div>
     <div className="preset-grid" role="radiogroup" aria-label="默认头像">{presets.map((preset) => {
       const label = `头像 ${Number(preset.id.slice('preset-'.length))}`;
       const checked = selectedPreset === preset.id;
       return <label key={preset.id} className={checked ? 'preset-avatar preset-avatar--active' : 'preset-avatar'}>
-        <input type="radio" name="preset-avatar" value={preset.id} checked={checked} disabled={isSaving || !online} onChange={() => choosePreset(preset.id)} />
+        <input type="radio" name="preset-avatar" value={preset.id} checked={checked} disabled={isAvatarWriteLocked || !online} onChange={() => choosePreset(preset.id)} />
         <img src={preset.path} alt="" />
         <span className="sr-only">{label}</span>
       </label>;
     })}</div>
     {hasPendingPreset && <div className="avatar-actions">
-      <button className="button button--primary" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>保存头像</button>
-      <button className="button button--secondary" type="button" disabled={isSaving} onClick={cancelPreset}>取消修改</button>
+      <button className="button button--primary" type="button" disabled={isAvatarWriteLocked || !online} onClick={() => void savePreset()}>保存头像</button>
+      <button className="button button--secondary" type="button" disabled={isAvatarWriteLocked} onClick={cancelPreset}>取消修改</button>
     </div>}
     {error !== null && hasPendingPreset && !uploadFailed && <button className="button button--secondary avatar-retry" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>重试保存</button>}
+    {hasPendingSessionSync && <button className="button button--secondary avatar-retry" type="button" disabled={isSynchronizing || !online} onClick={() => void retrySessionSynchronization()}>重试页面状态同步</button>}
     <div className="avatar-upload-picker">
-      <button className="button button--secondary avatar-album-button" type="button" disabled={isSaving || !online} onClick={openFilePicker}>从相册选择</button>
-      <input ref={inputRef} className="visually-hidden-file-input" id="avatar-file" aria-label="从相册选择文件" tabIndex={-1} type="file" accept="image/jpeg,image/png,image/webp" disabled={isSaving || !online} onChange={chooseFile} />
+      <button className="button button--secondary avatar-album-button" type="button" disabled={isAvatarWriteLocked || !online} onClick={openFilePicker}>从相册选择</button>
+      <input ref={inputRef} className="visually-hidden-file-input" id="avatar-file" aria-label="从相册选择文件" tabIndex={-1} type="file" accept="image/jpeg,image/png,image/webp" disabled={isAvatarWriteLocked || !online} onChange={chooseFile} />
       <span>JPG / PNG / WebP，最大 5 MiB</span>
     </div>
     {image !== null && sourceUrl !== null && crop !== null && <AvatarCropDialog sourceUrl={sourceUrl} image={image} crop={crop} busy={isSaving} progress={progress} uploadFailed={uploadFailed} onCropChange={setCrop} onConfirm={() => void saveUpload(null)} onRetry={() => void saveUpload(croppedBlob)} onReselect={reselectPhoto} onClose={closeCrop} />}

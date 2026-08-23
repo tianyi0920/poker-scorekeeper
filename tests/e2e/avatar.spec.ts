@@ -247,9 +247,10 @@ test('failed custom upload retains the crop and retries the same file before per
 
     expect(uploaded).toMatchObject({ avatarKind: 'UPLOAD' });
     expect(uploaded.avatarValue).toMatch(/^[a-z0-9-]+\.webp$/);
+    const uploadedUrl = `/avatars/uploads/${uploaded.avatarValue}`;
     expect(uploadMutations.requests).toHaveLength(2);
     await sessionFetchReady;
-    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
+    await expect(currentAvatar).toHaveAttribute('src', uploadedUrl);
     for (const radio of await page.getByRole('radio').all()) await expect(radio).toBeDisabled();
     await expect(page.getByRole('button', { name: '从相册选择', exact: true })).toBeDisabled();
     await expect(fileInput).toBeDisabled();
@@ -266,7 +267,6 @@ test('failed custom upload retains the crop and retries the same file before per
       fileChanges: (window as typeof window & { avatarFileChanges?: number }).avatarFileChanges,
       cropConfirmClicks: (window as typeof window & { avatarCropConfirmClicks?: number }).avatarCropConfirmClicks
     }))).toEqual({ fileChanges: 1, cropConfirmClicks: 1 });
-    const uploadedUrl = `/avatars/uploads/${uploaded.avatarValue}`;
     releaseSessionRefresh();
     expect((await refreshedSession).status()).toBe(200);
     await sessionGateSettled;

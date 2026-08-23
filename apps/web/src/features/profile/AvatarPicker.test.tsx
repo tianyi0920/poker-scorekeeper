@@ -17,10 +17,14 @@ function avatarResponse(id: string): Response {
   });
 }
 
-function deferred() {
-  let resolve!: () => void;
-  const promise = new Promise<void>((resolvePromise) => { resolve = resolvePromise; });
-  return { promise, resolve };
+function deferred<T = void>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 function renderPicker({
@@ -186,8 +190,8 @@ it('keeps preset writes locked until the accepted avatar finishes session synchr
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
 });
 
-it('does not report an accepted mutation as failed when session synchronization rejects', async () => {
-  // Break caught: a post-mutation refresh failure is presented as a retryable avatar mutation failure.
+it('keeps an accepted preset locally and retries only session synchronization after it rejects', async () => {
+  // Break caught: a post-mutation refresh failure hides the accepted avatar or retries the saved preset mutation.
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
     if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
@@ -195,16 +199,29 @@ it('does not report an accepted mutation as failed when session synchronization 
     return new Response('{}', { status: 404 });
   });
   vi.stubGlobal('fetch', fetchMock);
+  const onChanged = vi.fn()
+    .mockRejectedValueOnce(new Error('session refresh failed'))
+    .mockResolvedValueOnce(undefined);
   const user = userEvent.setup();
-  renderPicker({ onChanged: vi.fn(async () => { throw new Error('session refresh failed'); }) });
+  renderPicker({ onChanged });
 
   await user.click(await screen.findByRole('radio', { name: '头像 14' }));
   await user.click(screen.getByRole('button', { name: '保存头像' }));
 
-  await waitFor(() => expect(screen.getByRole('radio', { name: '头像 15' })).toBeEnabled());
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(await screen.findByRole('alert')).toHaveTextContent('头像已保存，但页面状态同步失败');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-14.webp');
   expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
+  expect(screen.getByRole('button', { name: '重试页面状态同步' })).toBeEnabled();
+  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
+
+  await user.click(screen.getByRole('button', { name: '重试页面状态同步' }));
+
+  await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-14.webp');
+  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
 });
 
 it('ignores a delayed preset save after a newer session avatar arrives', async () => {
@@ -563,8 +580,8 @@ it('does not offer Blob retry when local crop encoding fails before upload start
   expect(screen.getByRole('button', { name: '裁剪并上传' })).toBeEnabled();
 });
 
-it('keeps the current avatar until the successful upload is echoed by the refreshed session', async () => {
-  // Break caught: the upload response creates page-only avatar truth before the authenticated session refresh finishes.
+it('shows the successful upload response locally before the refreshed session echoes it', async () => {
+  // Break caught: a successful upload leaves the stale avatar visible while session refresh is pending.
   stubPresetFetch();
   installCropHarness();
   vi.spyOn(avatarResources, 'uploadAvatar').mockResolvedValue({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
@@ -575,10 +592,86 @@ it('keeps the current avatar until the successful upload is echoed by the refres
   fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
   await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ kind: 'UPLOAD', value: 'saved.webp' }));
 
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-13.webp');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
   view.rerender(<AvatarPicker currentAvatar={{ kind: 'UPLOAD', value: 'saved.webp' }} onChanged={onChanged} />);
   expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
   expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
+});
+
+it('keeps an accepted upload locally and retries only session synchronization after it rejects', async () => {
+  // Break caught: a session refresh failure reverts a successful upload, retains the crop, or retries the Blob upload.
+  stubPresetFetch();
+  installCropHarness();
+  const upload = vi.spyOn(avatarResources, 'uploadAvatar').mockResolvedValue({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
+  const onChanged = vi.fn()
+    .mockRejectedValueOnce(new Error('session refresh failed'))
+    .mockResolvedValueOnce(undefined);
+  const user = userEvent.setup();
+  renderPicker({ onChanged });
+
+  await chooseImage();
+  await user.click(screen.getByRole('button', { name: '裁剪并上传' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('头像已保存，但页面状态同步失败');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
+  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
+  expect(screen.queryByRole('dialog', { name: '裁剪头像' })).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '重新上传' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '重试页面状态同步' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
+  for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
+  expect(upload).toHaveBeenCalledOnce();
+
+  await user.click(screen.getByRole('button', { name: '重试页面状态同步' }));
+
+  await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
+  expect(upload).toHaveBeenCalledOnce();
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
+  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
+  expect(screen.getByRole('button', { name: '从相册选择' })).toBeEnabled();
+});
+
+it('prioritizes a newer external session avatar over a late rejected upload synchronization', async () => {
+  // Break caught: a stale synchronization failure replaces a newer session avatar with obsolete local feedback.
+  stubPresetFetch();
+  installCropHarness();
+  const sessionSync = deferred();
+  vi.spyOn(avatarResources, 'uploadAvatar').mockResolvedValue({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
+  const onChanged = vi.fn(() => sessionSync.promise);
+  const view = render(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-13' }} onChanged={onChanged} />);
+
+  await chooseImage();
+  fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
+  await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ kind: 'UPLOAD', value: 'saved.webp' }));
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
+
+  view.rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
+  await act(async () => sessionSync.reject(new Error('stale session refresh failed')));
+
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '重试页面状态同步' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '从相册选择' })).toBeEnabled();
+});
+
+it('does not set synchronization failure state after an upload picker unmounts', async () => {
+  // Break caught: a rejected session callback after unmount schedules avatar feedback on the disposed picker.
+  stubPresetFetch();
+  installCropHarness();
+  const sessionSync = deferred();
+  vi.spyOn(avatarResources, 'uploadAvatar').mockResolvedValue({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
+  const onChanged = vi.fn(() => sessionSync.promise);
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  const view = render(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-13' }} onChanged={onChanged} />);
+
+  await chooseImage();
+  fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
+  await waitFor(() => expect(onChanged).toHaveBeenCalledOnce());
+  view.unmount();
+  await act(async () => sessionSync.reject(new Error('late session refresh failed')));
+
+  expect(consoleError).not.toHaveBeenCalled();
 });
 
 it('keeps upload and modal writes locked until the accepted upload finishes session synchronization', async () => {
@@ -597,7 +690,7 @@ it('keeps upload and modal writes locked until the accepted upload finishes sess
   fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
   await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ kind: 'UPLOAD', value: 'saved.webp' }));
 
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-13.webp');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
   expect(screen.getByRole('dialog', { name: '裁剪头像' })).toBeInTheDocument();
   expect(screen.getByText('正在上传 100%')).toBeInTheDocument();
   for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
