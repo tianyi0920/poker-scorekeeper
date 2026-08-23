@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { GameSnapshotDto, PresenceUpdatedEvent } from '@poker/contracts';
+import type { GameDeletedEvent, GameSnapshotDto, PresenceUpdatedEvent } from '@poker/contracts';
 import type { Server } from 'socket.io';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { AppError } from '../common/errors/app-error.js';
@@ -67,6 +67,54 @@ export class GameEventsService {
     await this.forEachAuthorizedSocket(gameId, game, (socket) => {
       socket.emit('presence.updated', event);
     });
+  }
+
+  async publishDeletedGame(gameId: string): Promise<void> {
+    try {
+      const server = this.server;
+      if (server === undefined) return;
+      const socketIds = server.sockets.adapter.rooms.get(roomName(gameId));
+      if (socketIds === undefined) return;
+      const event: GameDeletedEvent = { gameId, reason: 'HARD_DELETED' };
+
+      for (const socketId of [...socketIds]) {
+        const socket = server.sockets.sockets.get(socketId) as GameSocket | undefined;
+        if (socket === undefined) continue;
+
+        let authenticated = false;
+        try {
+          authenticated = await this.socketSessions.revalidate(socket) !== null;
+        } catch {
+          // Treat a failed session lookup as unauthenticated for this best-effort broadcast.
+        }
+        if (!authenticated) {
+          try {
+            socket.disconnect(true);
+          } catch {
+            // Continue processing the remaining sockets.
+          }
+          continue;
+        }
+
+        try {
+          socket.emit('game.deleted', event);
+        } catch {
+          // Room cleanup remains necessary when one transport emit fails.
+        }
+        try {
+          await socket.leave(roomName(gameId));
+        } catch {
+          try {
+            socket.disconnect(true);
+          } catch {
+            // Continue processing the remaining sockets.
+          }
+        }
+        if (socket.data.gameId === gameId) delete socket.data.gameId;
+      }
+    } finally {
+      this.presence.clear(gameId);
+    }
   }
 
   async publishRakeSettings(version: number): Promise<void> {

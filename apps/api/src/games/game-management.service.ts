@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   canonicalPublicIdSchema,
   type HardDeleteGameResponseDto,
@@ -10,6 +10,7 @@ import type { AuthUser } from '../common/auth/auth-user.js';
 import { badRequest, forbidden } from '../common/errors/app-error.js';
 import { Role } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockGameLifecycleCoordinator } from './game-lifecycle-coordinator.js';
 import { lockGameForUpdate } from './game-lock.js';
 
@@ -64,9 +65,12 @@ function encodeCursor(createdAt: Date, id: string): string {
 
 @Injectable()
 export class GameManagementService {
+  private readonly logger = new Logger(GameManagementService.name);
+
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
-    @Inject(AuditService) private readonly audit: AuditService
+    @Inject(AuditService) private readonly audit: AuditService,
+    @Inject(GameEventsService) private readonly events: GameEventsService
   ) {}
 
   async list(query: ManagementQuery): Promise<ManagedGamesResponseDto> {
@@ -103,7 +107,7 @@ export class GameManagementService {
   }
 
   async hardDelete(id: string, actor: AuthUser): Promise<HardDeleteGameResponseDto> {
-    return this.prisma.$transaction(async (transaction) => {
+    const response = await this.prisma.$transaction(async (transaction) => {
       await lockGameLifecycleCoordinator(transaction);
       const game = await lockGameForUpdate(transaction, id);
       const [operator] = await transaction.$queryRaw<LockedOperatorRow[]>`
@@ -157,5 +161,14 @@ export class GameManagementService {
       });
       return { deletedGameId: id };
     });
+    try {
+      await this.events.publishDeletedGame(id);
+    } catch (error) {
+      this.logger.error(
+        `Failed to publish hard-deleted game ${id}`,
+        error instanceof Error ? error.stack : undefined
+      );
+    }
+    return response;
   }
 }
