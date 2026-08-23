@@ -52,3 +52,20 @@ export function writeCachedSettlementDetail(userId: string, detail: unknown): bo
   try { for (const id of (old?.ids ?? []).filter((id) => !ids.includes(id))) localStorage.removeItem(key(detailPrefix, userId, `detail:${encodeURIComponent(id)}`)); } catch { /* cache is optional */ }
   return write(indexKey, { version: 1, ids });
 }
+
+export function removeCachedHistoryGame(userId: string, gameId: string): void {
+  if (userId === '' || gameId === '') return;
+  const listKey = key(listPrefix, userId, 'list');
+  const history = readCachedHistory(userId);
+  if (history !== null && history.items.some((item) => item.gameId === gameId)
+    && !writeCachedHistory(userId, { ...history, items: history.items.filter((item) => item.gameId !== gameId) })) {
+    try { localStorage.removeItem(listKey); } catch { /* cache is optional */ }
+  }
+  const detailKey = key(detailPrefix, userId, `detail:${encodeURIComponent(gameId)}`);
+  const indexKey = key(detailPrefix, userId, 'detail-index');
+  const index = readIndex(userId);
+  try { localStorage.removeItem(detailKey); } catch { /* cache is optional */ }
+  if (index !== null && index.ids.includes(gameId) && !write(indexKey, { version: 1, ids: index.ids.filter((id) => id !== gameId) })) {
+    try { localStorage.removeItem(indexKey); } catch { /* cache is optional */ }
+  }
+}

@@ -1,4 +1,4 @@
-import { expect, test, type BrowserContext } from "@playwright/test";
+import { expect, test, type BrowserContext, type Page, type WebSocket } from "@playwright/test";
 import {
   apiBuyHands,
   apiLogin,
@@ -28,6 +28,27 @@ async function cleanupExistingFixture(
   if (gameId === undefined) return;
   const counts = await readGameGraphCounts(gameId);
   if (counts.games === 1) await cleanupTaskGame(gameId);
+}
+
+function waitForGameSocketJoin(page: Page, gameId: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const finish = (error?: Error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      page.off("websocket", observeSocket);
+      if (error === undefined) resolve(); else reject(error);
+    };
+    const observeSocket = (socket: WebSocket) => {
+      socket.on("framereceived", (frame) => {
+        const payload = frame.payload;
+        if (typeof payload === "string" && payload.includes(gameId) && payload.includes('"ok":true')) finish();
+      });
+    };
+    const timeout = setTimeout(() => finish(new Error(`Timed out waiting for game socket join: ${gameId}`)), 10_000);
+    page.on("websocket", observeSocket);
+  });
 }
 
 test("super admin hard deletes an active joined table and every target business row", async ({
@@ -161,7 +182,7 @@ test("super admin hard deletes an active joined table and every target business 
   }
 });
 
-test("super admin hard deletes a completed game from management and uncached history", async ({
+test("super admin hard deletes a completed game from management, cached history, and uncached history", async ({
   browser,
 }) => {
   // Break caught: completed hard delete removes only the game row or stale client storage hides server history.
@@ -205,6 +226,7 @@ test("super admin hard deletes a completed game from management and uncached his
 
     const participant = await loginContext(browser, "player-a");
     participantContext = participant.context;
+    const participantSocketJoined = waitForGameSocketJoin(participant.page, game.id);
     await participant.page.goto("/history");
     await expect(
       participant.page.locator(".result-row", { hasText: game.name }),
@@ -214,6 +236,7 @@ test("super admin hard deletes a completed game from management and uncached his
     await expect(
       participant.page.getByRole("heading", { name: game.name, exact: true }),
     ).toBeVisible();
+    await participantSocketJoined;
 
     const countsBeforeDelete = await readGameGraphCounts(game.id);
     expect(countsBeforeDelete).toMatchObject({
@@ -259,6 +282,26 @@ test("super admin hard deletes a completed game from management and uncached his
       .click();
     expect((await deletedResponse).status()).toBe(200);
     await expect(targetRow).toHaveCount(0);
+
+    await expect(participant.page).toHaveURL(/\/history$/);
+    await expect(
+      participant.page.locator(".result-row", { hasText: game.name }),
+    ).toHaveCount(0);
+    await expect(participant.page.getByLabel("历史结算明细")).toHaveCount(0);
+    await expect(
+      participant.page.getByRole("heading", { name: game.name, exact: true }),
+    ).toHaveCount(0);
+
+    await participant.page.goto(`/history/${encodeURIComponent(game.id)}`);
+    await expect(
+      participant.page.getByText("该历史结算不存在，或你没有查看权限。", {
+        exact: true,
+      }),
+    ).toBeVisible();
+    await expect(participant.page.getByLabel("历史结算明细")).toHaveCount(0);
+    await expect(
+      participant.page.getByRole("heading", { name: game.name, exact: true }),
+    ).toHaveCount(0);
 
     const uncachedDetail = await playerA.context.get(
       `/api/history/${encodeURIComponent(game.id)}`,
