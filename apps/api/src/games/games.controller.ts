@@ -16,6 +16,7 @@ import {
   type CreateGameRequest,
   type CurrentGamesResponse,
   type GameSnapshotDto,
+  type HardDeleteGameResponseDto,
   type ManagedGamesResponseDto
 } from '@poker/contracts';
 import type { AuthUser } from '../common/auth/auth-user.js';
@@ -78,6 +79,16 @@ export class GamesController {
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
   async deleteDraft(@CurrentUser() actor: AuthUser, @Param('id') id: string): Promise<void> {
     await this.games.deleteDraft(id, actor);
+  }
+
+  @Delete(':id')
+  @HttpCode(200)
+  @Roles(Role.SUPER_ADMIN)
+  hardDelete(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string
+  ): Promise<HardDeleteGameResponseDto> {
+    return this.gameManagement.hardDelete(id, actor);
   }
 
   @Post(':id/void')
