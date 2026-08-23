@@ -46,6 +46,10 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [socketReady, setSocketReady] = useState(false);
   const [roomSynchronized, setRoomSynchronized] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [fallbackGeneration, setFallbackGeneration] = useState(0);
+  const fallbackGenerationRef = useRef(0);
+  const fallbackTimeoutRef = useRef<number | undefined>(undefined);
+  const pollingIntervalRef = useRef<number | undefined>(undefined);
   const [tab, setTab] = useState<GameTab>('table');
   const [buyOpen, setBuyOpen] = useState(false);
   const [adjustment, setAdjustment] = useState<{ playerId: string; currentHands: number } | null>(null);
@@ -79,6 +83,31 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (!background && activeGameIdRef.current === requestedGameId) setLoading(false);
     }
   }, [applySnapshot, gameId]);
+
+  const stopFallback = useCallback(() => {
+    if (fallbackTimeoutRef.current !== undefined) {
+      window.clearTimeout(fallbackTimeoutRef.current);
+      fallbackTimeoutRef.current = undefined;
+    }
+    if (pollingIntervalRef.current !== undefined) {
+      window.clearInterval(pollingIntervalRef.current);
+      pollingIntervalRef.current = undefined;
+    }
+    setPolling(false);
+  }, []);
+
+  const startFallbackGrace = useCallback(() => {
+    stopFallback();
+    const nextGeneration = fallbackGenerationRef.current + 1;
+    fallbackGenerationRef.current = nextGeneration;
+    setFallbackGeneration(nextGeneration);
+    setRoomSynchronized(false);
+  }, [stopFallback]);
+
+  const ensureFallbackGrace = useCallback(() => {
+    if (fallbackTimeoutRef.current !== undefined || pollingIntervalRef.current !== undefined) return;
+    startFallbackGrace();
+  }, [startFallbackGrace]);
 
   useEffect(() => {
     snapshotRef.current = null;
@@ -128,7 +157,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (disposed) return;
       if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
       joinTimeout = undefined;
-      setRoomSynchronized(false);
+      ensureFallbackGrace();
       scheduleJoinRetry();
     };
     const attemptJoin = () => {
@@ -158,8 +187,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
           failJoin();
           return;
         }
+        stopFallback();
         setRoomSynchronized(true);
-        setPolling(false);
       });
     };
     const connect = () => {
@@ -167,7 +196,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     };
     const disconnect = () => {
       clearJoinTimers();
-      setRoomSynchronized(false);
+      startFallbackGrace();
     };
     const receiveSnapshot = (value: unknown) => {
       const parsed = gameSnapshotEventSchema.safeParse(value);
@@ -225,23 +254,23 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setSocketReady(false);
       setRoomSynchronized(false);
     };
-  }, [applySnapshot, gameId, hasSnapshot, loadSnapshot, socketFactory]);
+  }, [applySnapshot, ensureFallbackGrace, gameId, hasSnapshot, loadSnapshot, socketFactory, startFallbackGrace, stopFallback]);
 
   useEffect(() => {
     if (!socketReady || roomSynchronized) {
-      setPolling(false);
+      stopFallback();
       return;
     }
-    let interval: number | undefined;
-    const fallback = window.setTimeout(() => {
+    stopFallback();
+    const generation = fallbackGeneration;
+    fallbackTimeoutRef.current = window.setTimeout(() => {
+      if (generation !== fallbackGenerationRef.current) return;
+      fallbackTimeoutRef.current = undefined;
       setPolling(true);
-      interval = window.setInterval(() => { void loadSnapshot(true); }, 10_000);
+      pollingIntervalRef.current = window.setInterval(() => { void loadSnapshot(true); }, 10_000);
     }, 5_000);
-    return () => {
-      window.clearTimeout(fallback);
-      if (interval !== undefined) window.clearInterval(interval);
-    };
-  }, [loadSnapshot, roomSynchronized, socketReady]);
+    return stopFallback;
+  }, [fallbackGeneration, loadSnapshot, roomSynchronized, socketReady, stopFallback]);
 
   const refreshAfterWrite = () => {
     void loadSnapshot(true);

@@ -262,6 +262,43 @@ it('removes the polling warning and interval immediately after reconnecting', as
     .toHaveLength(0);
 });
 
+it('starts a new fallback grace period when a join acknowledgement and disconnect share one React batch', async () => {
+  // Break caught: an ACK briefly clears polling, then a same-batch disconnect preserves a hidden prior interval.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByText('实时连接中断，已启用每 10 秒定期同步')).toBeVisible();
+  fetchMock.mockClear();
+
+  act(() => {
+    socket.connected = true;
+    socket.fire('connect');
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  expect(screen.queryByText(/实时连接中断/)).not.toBeInTheDocument();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(4_999); });
+  expect(screen.queryByText(/实时连接中断/)).not.toBeInTheDocument();
+  expect(fetchMock).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(1); });
+  expect(screen.getByText('实时连接中断，已启用每 10 秒定期同步')).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(fetchMock).not.toHaveBeenCalled();
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(1);
+});
+
 it.each([
   ['negative', { ok: false, code: 'FORBIDDEN' }],
   ['invalid', { ok: true, gameId: 'game-1' }]
@@ -312,6 +349,27 @@ it('cleans fallback timeout and polling interval on unmount', async () => {
 
   expect(fetchMock).not.toHaveBeenCalled();
   expect(socket.listenerCount()).toBe(0);
+});
+
+it('cleans the fallback timeout when unmounting during the connection grace period', async () => {
+  // Break caught: leaving before polling begins still allows a stale fallback timer to refresh the removed page.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock, unmount } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  fetchMock.mockClear();
+  unmount();
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(socket.listenerCount()).toBe(0);
+  expect(screen.queryByText(/实时连接中断/)).not.toBeInTheDocument();
 });
 
 it('ignores malformed realtime events and reacts only to shared-contract payloads', async () => {
