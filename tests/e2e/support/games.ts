@@ -34,12 +34,14 @@ export async function createAndStartGame(
   try {
     await page.getByRole('button', { name: '创建并开启' }).click();
     const created = await (await createdResponse).json() as { id: string; status: string };
+    if (typeof created.id !== 'string' || created.id === '') throw new Error('Created game response has no id');
+    const createdId = created.id;
+    onGameCreated?.(createdId);
     expect(created.status).toBe('ACTIVE');
-    onGameCreated?.(created.id);
-    await expect(page).toHaveURL(new RegExp(`/games/${created.id}$`));
+    await expect(page).toHaveURL(new RegExp(`/games/${createdId}$`));
     await expect(page.getByRole('heading', { name })).toBeVisible();
     expect(startRequests).toEqual([]);
-    return { id: created.id, name };
+    return { id: createdId, name };
   } finally {
     page.off('request', recordStartRequest);
   }
