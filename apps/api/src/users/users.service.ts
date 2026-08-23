@@ -20,8 +20,8 @@ import {
   requireCurrentActor
 } from './user-policy.js';
 import { normalizeNickname, normalizeUsername } from './user-normalization.js';
+import { DEFAULT_PRESET_AVATAR } from '../uploads/preset-avatars.js';
 
-const DEFAULT_AVATAR = 'preset-01';
 const ROLE_RANK: Readonly<Record<Role, number>> = {
   USER: 0,
   ADMIN: 1,
@@ -108,7 +108,7 @@ export class UsersService {
             passwordHash,
             role,
             rakeEnabled: input.rakeEnabled,
-            avatarValue: DEFAULT_AVATAR,
+            avatarValue: DEFAULT_PRESET_AVATAR,
             mustChangePassword: true,
             createdById: currentActor.id
           },

@@ -7,7 +7,7 @@ import { extname, join, relative, resolve, sep } from 'node:path';
 
 const UPLOAD_PATH_PREFIX = '/avatars/uploads/';
 const UPLOAD_FILENAME = /^[a-z0-9]{3,30}-[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\.webp$/;
-const PRESET_AVATAR_PATH = /^\/avatars\/preset-(?:0[1-9]|1[0-2])\.webp$/;
+const PRESET_AVATAR_PATH = /^\/avatars\/preset-(?:0[1-9]|1[0-9]|2[0-4])\.webp$/;
 const MAX_SERVED_AVATAR_BYTES = 5 * 1024 * 1024;
 
 function isReservedPath(path: string): boolean {

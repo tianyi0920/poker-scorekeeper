@@ -220,7 +220,9 @@ describe.sequential('user administration', () => {
             nickname,
             role: targetRole,
             isActive: true,
-            rakeEnabled: true
+            rakeEnabled: true,
+            avatarKind: 'PRESET',
+            avatarValue: 'preset-13'
           });
           expect(response.body).not.toHaveProperty('passwordHash');
         } else {

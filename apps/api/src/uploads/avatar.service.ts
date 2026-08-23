@@ -1,6 +1,9 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { PresetAvatarId } from '@poker/contracts';
+import {
+  selectablePresetAvatarIdSchema,
+  type SelectablePresetAvatarId
+} from '@poker/contracts';
 import { randomUUID } from 'node:crypto';
 import { mkdir, rename, rm } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
@@ -60,8 +63,10 @@ export class AvatarService {
     );
   }
 
-  async selectPreset(userId: string, presetId: PresetAvatarId): Promise<AvatarResponse> {
-    return this.replaceWithPreset(userId, presetId);
+  async selectPreset(userId: string, presetId: SelectablePresetAvatarId): Promise<AvatarResponse> {
+    const selected = selectablePresetAvatarIdSchema.safeParse(presetId);
+    if (!selected.success) throw badRequest('VALIDATION_ERROR');
+    return this.replaceWithPreset(userId, selected.data);
   }
 
   async upload(userId: string, file: UploadedAvatarFile | undefined): Promise<AvatarResponse> {
@@ -115,7 +120,7 @@ export class AvatarService {
 
   private async replaceWithPreset(
     userId: string,
-    presetId: PresetAvatarId,
+    presetId: SelectablePresetAvatarId,
     actor?: AuthUser
   ): Promise<AvatarResponse> {
     await this.prisma.$transaction(async (transaction) => {

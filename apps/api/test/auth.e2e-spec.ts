@@ -584,6 +584,7 @@ describe.sequential('session authentication', () => {
       where: { normalizedUsername: normalized(process.env.BOOTSTRAP_ADMIN_USERNAME!) }
     });
     expect(bootstrap.role).toBe(Role.SUPER_ADMIN);
+    expect(bootstrap.avatarValue).toBe('preset-13');
     expect(bootstrap.mustChangePassword).toBe(true);
     expect(bootstrap.passwordHash).toMatch(/^\$argon2id\$/);
     expect(await argon2.verify(bootstrap.passwordHash, bootstrapPassword)).toBe(true);

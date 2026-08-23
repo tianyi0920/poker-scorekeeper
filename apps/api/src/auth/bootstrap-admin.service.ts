@@ -4,6 +4,7 @@ import { ConfigService } from '@nestjs/config';
 import { Role, type Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { PasswordService } from './password.service.js';
+import { DEFAULT_PRESET_AVATAR } from '../uploads/preset-avatars.js';
 
 function normalize(value: string): string {
   return value.trim().toLowerCase();
@@ -119,7 +120,7 @@ export class BootstrapAdminService implements OnApplicationBootstrap {
         activeNormalizedNickname: normalize(configuration.nickname),
         passwordHash: await this.passwords.hash(configuration.password),
         role: Role.SUPER_ADMIN,
-        avatarValue: 'default',
+        avatarValue: DEFAULT_PRESET_AVATAR,
         mustChangePassword: true
       }
     });

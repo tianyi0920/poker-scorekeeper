@@ -127,15 +127,15 @@ describe.sequential('avatar pipeline', () => {
     if (legacyAvatarRoot !== undefined) await rm(legacyAvatarRoot, { recursive: true, force: true });
   }, 30_000);
 
-  it('returns twelve stable controlled preset identifiers', async () => {
+  it('returns twelve stable selectable preset identifiers while legacy rows remain renderable', async () => {
     await request(app.getHttpServer())
       .get('/api/avatars/presets')
       .set('Cookie', userAuth.cookie)
       .expect(200)
       .expect(({ body }) => {
         expect(body.presets).toHaveLength(12);
-        expect(body.presets[0]).toEqual({ id: 'preset-01', path: '/avatars/preset-01.webp' });
-        expect(body.presets[11]).toEqual({ id: 'preset-12', path: '/avatars/preset-12.webp' });
+        expect(body.presets[0]).toEqual({ id: 'preset-13', path: '/avatars/preset-13.webp' });
+        expect(body.presets[11]).toEqual({ id: 'preset-24', path: '/avatars/preset-24.webp' });
       });
   });
 
@@ -144,12 +144,20 @@ describe.sequential('avatar pipeline', () => {
       .put('/api/me/avatar/preset')
       .set('Cookie', userAuth.cookie)
       .set('X-CSRF-Token', userAuth.csrfToken)
-      .send({ presetId: 'preset-07' })
+      .send({ presetId: 'preset-13' })
       .expect(200)
       .expect(({ body }) => expect(body).toMatchObject({
         avatarKind: 'PRESET',
-        avatarValue: 'preset-07'
+        avatarValue: 'preset-13'
       }));
+
+    await request(app.getHttpServer())
+      .put('/api/me/avatar/preset')
+      .set('Cookie', userAuth.cookie)
+      .set('X-CSRF-Token', userAuth.csrfToken)
+      .send({ presetId: 'preset-01' })
+      .expect(400)
+      .expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
 
     await request(app.getHttpServer())
       .put('/api/me/avatar/preset')
@@ -357,7 +365,7 @@ describe.sequential('avatar pipeline', () => {
         .expect(200)
         .expect(({ body }) => expect(body).toMatchObject({
           avatarKind: 'PRESET',
-          avatarValue: 'preset-01'
+          avatarValue: 'preset-13'
         }));
       expect(count).not.toHaveBeenCalled();
       await expect(readFile(oldPath)).resolves.toEqual(validPng);
@@ -481,7 +489,7 @@ describe.sequential('avatar pipeline', () => {
         .expect(200)
         .expect(({ body }) => expect(body).toMatchObject({
           avatarKind: 'PRESET',
-          avatarValue: 'preset-01'
+          avatarValue: 'preset-13'
         }));
       await expect(readFile(sentinel, 'utf8')).resolves.toBe('do-not-delete');
     } finally {

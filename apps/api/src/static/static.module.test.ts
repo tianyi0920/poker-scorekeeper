@@ -2,7 +2,9 @@ import { constants } from 'node:fs';
 import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readControlledUploadedAvatar } from './static.module.js';
+import express from 'express';
+import request from 'supertest';
+import { createStaticAssetsHandler, readControlledUploadedAvatar } from './static.module.js';
 
 describe('uploaded avatar file descriptor safety', () => {
   it('reads and validates through the same no-follow file descriptor', async () => {
@@ -68,4 +70,29 @@ describe('uploaded avatar file descriptor safety', () => {
       }
     }
   );
+});
+
+describe('preset avatar static assets', () => {
+  it('serves the new selectable preset files while retaining the legacy URL space', async () => {
+    // Break caught: the API advertises a selectable preset that static middleware rejects as reserved.
+    const webRoot = await mkdtemp(join(tmpdir(), 'poker-static-presets-'));
+    try {
+      const avatars = join(webRoot, 'avatars');
+      await mkdir(avatars);
+      const newPreset = Buffer.from('new-preset');
+      const legacyPreset = Buffer.from('legacy-preset');
+      await writeFile(join(avatars, 'preset-13.webp'), newPreset);
+      await writeFile(join(avatars, 'preset-01.webp'), legacyPreset);
+      const app = express();
+      app.use(createStaticAssetsHandler({ WEB_DIST_ROOT: webRoot }));
+      app.use((_request, response) => response.sendStatus(404));
+
+      const newResponse = await request(app).get('/avatars/preset-13.webp').expect(200);
+      const legacyResponse = await request(app).get('/avatars/preset-01.webp').expect(200);
+      expect(newResponse.body).toEqual(newPreset);
+      expect(legacyResponse.body).toEqual(legacyPreset);
+    } finally {
+      await rm(webRoot, { recursive: true, force: true });
+    }
+  });
 });
