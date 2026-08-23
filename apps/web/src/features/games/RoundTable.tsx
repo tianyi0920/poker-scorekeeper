@@ -7,6 +7,12 @@ const compactSeatPositions = [
   [50, 9], [71, 9], [88, 27], [91, 45], [88, 63], [71, 81]
 ] as const;
 
+export function getTableDensity(occupiedSeatCount: number): 'sparse' | 'standard' | 'full' {
+  if (occupiedSeatCount <= 2) return 'sparse';
+  if (occupiedSeatCount <= 8) return 'standard';
+  return 'full';
+}
+
 export function seatPosition(index: number, count: number, selfIndex: number) {
   const anchorIndex = selfIndex >= 0 ? selfIndex : 0;
   const rotated = (index - anchorIndex + count) % count;
@@ -41,12 +47,13 @@ export function RoundTable({
   const ordered = [...players].sort((left, right) => left.seatNo - right.seatNo);
   const selfIndex = ordered.findIndex(({ userId }) => userId === selfUserId);
   const compact = ordered.length >= 9;
+  const density = getTableDensity(ordered.length);
 
   return (
     <section
-      className={`round-table${compact ? ' round-table--compact' : ''}`}
+      className={`round-table round-table--${density}${compact ? ' round-table--compact' : ''}`}
       data-testid="round-table"
-      aria-label={`牌桌，共 ${ordered.length} 位玩家`}
+      aria-label={`牌桌，${ordered.length} 名玩家`}
     >
       <div className="poker-felt" aria-hidden="true"><span className="felt-line" /></div>
       <div className="table-center">{children}</div>

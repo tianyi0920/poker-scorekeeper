@@ -143,7 +143,7 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
 
   expect(await screen.findAllByTestId('table-seat')).toHaveLength(12);
   expect(screen.getByText('观战小王')).toBeInTheDocument();
-  expect(screen.getByText('全桌总买入')).toBeInTheDocument();
+  expect(screen.getByText('总买入')).toBeInTheDocument();
   expect(screen.getByText('01:00:00')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '购买筹码' })).toBeInTheDocument();
 
@@ -151,6 +151,25 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
   expect(screen.getByText('购买 1 手')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '更正我的最后一笔购买' })).toBeInTheDocument();
+});
+
+it('puts player count, total buy-in, hand price, and timer in the compact table summary', async () => {
+  // Break caught: vital table information is hidden in the ellipse instead of remaining readable above it.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({
+    handPrice: '300',
+    players: [
+      { ...players(2)[0]!, buyInAmount: '900' },
+      { ...players(2)[1]!, buyInAmount: '1800' }
+    ]
+  }));
+
+  const summary = await screen.findByTestId('game-table-summary');
+  expect(summary).toHaveTextContent('玩家 2/12');
+  expect(summary).toHaveTextContent('总买入 ¥2,700');
+  expect(summary).toHaveTextContent('每手 ¥300');
+  expect(summary).toHaveTextContent('01:00:00');
+  expect(summary.compareDocumentPosition(screen.getByTestId('round-table')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
 it('implements linked tabs with roving focus and arrow-key selection', async () => {

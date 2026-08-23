@@ -26,6 +26,7 @@ import { SpectatorBar } from './SpectatorBar.js';
 
 type GameTab = 'table' | 'purchases';
 type SocketFactory = () => GameSocketClient;
+const moneyFormatter = new Intl.NumberFormat('zh-CN');
 
 function totalBuyIn(snapshot: GameSnapshotDto): bigint {
   return snapshot.players.reduce((total, player) => total + BigInt(player.buyInAmount), 0n);
@@ -363,14 +364,13 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
 
       {tab === 'table' ? (
         <div id="game-panel-table" role="tabpanel" aria-labelledby="game-tab-table" tabIndex={0} className="battle-panel">
-          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''}>
-            <span>已开局</span>
-            <strong><GameTimer startedAt={snapshot.startedAt} stoppedAt={snapshot.stoppedAt} serverNow={snapshot.serverNow} /></strong>
-            <dl>
-              <div><dt>每手</dt><dd>¥{snapshot.handPrice}</dd></div>
-              <div><dt>全桌总买入</dt><dd>¥{totalBuyIn(snapshot).toString()}</dd></div>
-            </dl>
-          </RoundTable>
+          <dl className="game-table-summary" data-testid="game-table-summary">
+            <div><dt className="visually-hidden">玩家</dt><dd>玩家 {snapshot.players.length}/12</dd></div>
+            <div><dt className="visually-hidden">总买入</dt><dd>总买入 ¥{moneyFormatter.format(totalBuyIn(snapshot))}</dd></div>
+            <div><dt className="visually-hidden">每手</dt><dd>每手 ¥{moneyFormatter.format(BigInt(snapshot.handPrice))}</dd></div>
+            <div className="game-table-summary__timer"><dt className="visually-hidden">已开局</dt><dd>已开局 <GameTimer startedAt={snapshot.startedAt} stoppedAt={snapshot.stoppedAt} serverNow={snapshot.serverNow} /></dd></div>
+          </dl>
+          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} />
           <SpectatorBar spectators={snapshot.spectators} />
         </div>
       ) : (

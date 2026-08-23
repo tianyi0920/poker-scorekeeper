@@ -1,7 +1,7 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { render, screen } from '@testing-library/react';
 import { expect, it } from 'vitest';
-import { RoundTable, seatPosition } from './RoundTable.js';
+import { getTableDensity, RoundTable, seatPosition } from './RoundTable.js';
 
 function makePlayers(count: number): GameSnapshotDto['players'] {
   return Array.from({ length: count }, (_, index) => ({
@@ -23,6 +23,20 @@ it.each([1, 8, 12])('renders %i unique seats with self anchored at the bottom', 
   expect(seats).toHaveLength(count);
   expect(screen.getByTestId('seat-self')).toHaveAttribute('data-anchor', 'bottom');
   expect(new Set(seats.map((seat) => seat.getAttribute('data-position'))).size).toBe(count);
+});
+
+it.each([
+  [0, 'sparse'],
+  [2, 'sparse'],
+  [3, 'standard'],
+  [8, 'standard'],
+  [9, 'full'],
+  [12, 'full']
+] as const)('uses the expected density for %i occupied seats', (count, density) => {
+  // Break caught: a sparse table stays at the dense fixed geometry, wasting the first mobile screen.
+  expect(getTableDensity(count)).toBe(density);
+  render(<RoundTable players={makePlayers(count)} selfUserId="self" />);
+  expect(screen.getByTestId('round-table')).toHaveClass(`round-table--${density}`);
 });
 
 it('shows the complete financial identity on every compact twelve-player seat', () => {
