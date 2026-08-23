@@ -1186,6 +1186,12 @@ describe("production deployment artifacts", () => {
         "secure template",
       ),
     ).not.toThrow();
+    expect(() =>
+      validateSecureProductionEnvironmentTemplate(
+        `# Standalone comments remain safe.\n${secureTemplate}`,
+        "commented secure template",
+      ),
+    ).not.toThrow();
 
     const unsafeVariants = [
       [
@@ -1223,14 +1229,78 @@ describe("production deployment artifacts", () => {
         "WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki",
         "WS_ALLOWED_ORIGINS=http://pk.tianyi.wiki",
       ],
+      [
+        "different public origin",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://evil.example",
+      ],
+      [
+        "different WebSocket origin",
+        "WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki",
+        "WS_ALLOWED_ORIGINS=https://evil.example",
+      ],
+      [
+        "additional WebSocket origin",
+        "WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki",
+        "WS_ALLOWED_ORIGINS=https://pk.tianyi.wiki,https://evil.example",
+      ],
+      [
+        "origin trailing dot",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki.",
+      ],
+      [
+        "origin uppercase",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://PK.TIANYI.WIKI",
+      ],
+      [
+        "origin default port",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki:443",
+      ],
+      [
+        "origin trailing slash",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki/",
+      ],
+      ["bare carriage-return duplicate port", "PORT=80", "PORT=3000\rPORT=80"],
+      [
+        "unquoted origin fragment",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki#preview",
+      ],
+      [
+        "origin inline comment",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki # preview",
+      ],
+      [
+        "semicolon suffix",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki; preview",
+      ],
+      ["duplicate exported assignment", "PORT=80", "PORT=80\nexport PORT=80"],
+      [
+        "whitespace assignment",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        "PUBLIC_ORIGIN = https://pk.tianyi.wiki",
+      ],
+      [
+        "quoted assignment key",
+        "PUBLIC_ORIGIN=https://pk.tianyi.wiki",
+        '"PUBLIC_ORIGIN"=https://pk.tianyi.wiki',
+      ],
       ["non-80 port", "PORT=80", "PORT=3000"],
     ] as const;
     for (const [label, expected, replacement] of unsafeVariants) {
-      expect(() =>
-        validateSecureProductionEnvironmentTemplate(
-          secureTemplate.replace(expected, replacement),
-          label,
-        ),
+      expect(
+        () =>
+          validateSecureProductionEnvironmentTemplate(
+            secureTemplate.replace(expected, replacement),
+            label,
+          ),
+        `production template must reject ${label}`,
       ).toThrow();
     }
   });

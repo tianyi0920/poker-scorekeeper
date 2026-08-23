@@ -293,26 +293,37 @@ const productionTemplateEnvironmentKeys = [
   "WS_ALLOWED_ORIGINS",
 ] as const satisfies readonly GuideEnvironmentKey[];
 
+const expectedProductionTemplateEnvironmentValues = {
+  PORT: "80",
+  PUBLIC_ORIGIN: "https://pk.tianyi.wiki",
+  WS_ALLOWED_ORIGINS: "https://pk.tianyi.wiki",
+} as const satisfies Record<GuideEnvironmentKey, string>;
+
+interface ProductionTemplateEnvironmentAssignment extends GuideEnvironmentAssignment {
+  sourceLine: string;
+}
+
 function readProductionTemplateEnvironmentAssignments(
   content: string,
   name: string,
-): GuideEnvironmentAssignment[] {
+): ProductionTemplateEnvironmentAssignment[] {
   const values = parseDotenv(content);
-  const assignmentCounts = new Map<GuideEnvironmentKey, number>();
+  const assignmentLines = new Map<GuideEnvironmentKey, string[]>();
   const assignmentLine =
     /^\s*(?:export\s+)?(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)\s*=/u;
 
-  for (const line of content.split(/\r?\n/)) {
+  for (const line of content.split(/\r\n?|\n/)) {
     const key = assignmentLine.exec(line)?.[1] as
       GuideEnvironmentKey | undefined;
     if (key !== undefined) {
-      assignmentCounts.set(key, (assignmentCounts.get(key) ?? 0) + 1);
+      assignmentLines.set(key, [...(assignmentLines.get(key) ?? []), line]);
     }
   }
 
   return productionTemplateEnvironmentKeys.map((key) => {
+    const sourceLines = assignmentLines.get(key) ?? [];
     if (
-      assignmentCounts.get(key) !== 1 ||
+      sourceLines.length !== 1 ||
       !Object.prototype.hasOwnProperty.call(values, key)
     ) {
       return rejectInsecureBackendGuide(
@@ -321,7 +332,7 @@ function readProductionTemplateEnvironmentAssignments(
       );
     }
 
-    return { key, value: values[key]! };
+    return { key, value: values[key]!, sourceLine: sourceLines[0]! };
   });
 }
 
@@ -335,6 +346,17 @@ export function validateSecureProductionEnvironmentTemplate(
     name,
   )) {
     validateGuideEnvironmentValue(assignment.key, assignment.value, name);
+    const expected =
+      expectedProductionTemplateEnvironmentValues[assignment.key];
+    if (
+      assignment.value !== expected ||
+      assignment.sourceLine !== `${assignment.key}=${expected}`
+    ) {
+      rejectInsecureBackendGuide(
+        name,
+        `${assignment.key} must use the exact static production template value`,
+      );
+    }
   }
 }
 
