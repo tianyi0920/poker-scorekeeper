@@ -9,14 +9,20 @@ export function OfflineBanner() {
 }
 
 export function isFocusedGameRoute(pathname: string) {
-  return /^\/games\/[^/]+(?:\/settlement)?$/.test(pathname) && pathname !== '/games/new';
+  return /^\/games\/[^/]+(?:\/settlement)?\/?$/.test(pathname) && !/^\/games\/new\/?$/.test(pathname);
+}
+
+function isLiveGameRoute(pathname: string) {
+  return /^\/games\/[^/]+\/?$/.test(pathname) && !/^\/games\/new\/?$/.test(pathname);
 }
 
 export function AppShell() {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
   const focused = isFocusedGameRoute(pathname);
-  return <div className={focused ? 'app-shell app-shell--focus' : 'app-shell'}>
+  const liveGame = isLiveGameRoute(pathname);
+  const shellClassName = ['app-shell', focused && 'app-shell--focus', liveGame && 'app-shell--game'].filter(Boolean).join(' ');
+  return <div className={shellClassName}>
     <header className="app-header"><div><span className="eyebrow">MIDNIGHT TABLE</span><h1>德州计分</h1></div><Button variant="ghost" unsafe aria-label="退出登录" onClick={() => void logout()}>退出</Button></header>
     <main className="app-content"><p className="welcome">晚上好，{user?.nickname}</p><Outlet /></main>
     {!focused && <nav className="bottom-nav" aria-label="主导航">

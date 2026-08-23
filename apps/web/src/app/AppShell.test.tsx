@@ -5,7 +5,7 @@ import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../auth/AuthProvider.js';
 import { App } from './App.js';
-import { AppShell } from './AppShell.js';
+import { AppShell, isFocusedGameRoute } from './AppShell.js';
 
 const csrfToken = 'a'.repeat(64);
 
@@ -79,20 +79,38 @@ it('announces offline state and disables the logout write action', async () => {
 
 it.each([
   ['/games/game-1', true],
+  ['/games/game-1/', true],
   ['/games/game-1/settlement', true],
+  ['/games/game-1/settlement/', true],
   ['/games/new', false],
+  ['/games/new/', false],
+  ['/games/game-1/extra', false],
   ['/history/game-1', false],
   ['/profile', false],
   ['/users', false],
-])('uses focused shell mode only for the active game workspace: %s', async (pathname, focused) => {
-  // Break caught: a live game keeps global navigation, or a create/history/admin route loses it.
+])('classifies focused routes including one optional trailing slash: %s', (pathname, focused) => {
+  // Break caught: React Router renders a trailing-slash game route while the shell leaves its global navigation visible.
+  expect(isFocusedGameRoute(pathname)).toBe(focused);
+});
+
+it.each([
+  ['/games/game-1/', true, true],
+  ['/games/game-1/settlement/', true, false],
+  ['/games/new/', false, false],
+  ['/history/game-1', false, false],
+])('uses focused shell mode only for the active game workspace: %s', async (pathname, focused, liveGame) => {
+  // Break caught: a live table and settlement share dock clearance, or a normal route loses navigation.
   renderShell(pathname);
   await screen.findByRole('button', { name: '退出登录' });
 
   const shell = screen.getByText('路由内容').closest('.app-shell');
   const navigation = screen.queryByRole('navigation', { name: '主导航' });
 
-  expect(shell).toHaveClass(focused ? 'app-shell--focus' : 'app-shell');
+  expect(shell).toHaveClass('app-shell');
+  expect(shell).toHaveClass(liveGame ? 'app-shell--game' : 'app-shell');
+  if (!liveGame) expect(shell).not.toHaveClass('app-shell--game');
+  if (focused) expect(shell).toHaveClass('app-shell--focus');
+  else expect(shell).not.toHaveClass('app-shell--focus');
   if (focused) expect(navigation).not.toBeInTheDocument();
   else expect(navigation).toBeVisible();
 });
