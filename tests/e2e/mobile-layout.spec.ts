@@ -103,34 +103,61 @@ test('four-seat table keeps sparse mobile geometry and reachable player cards at
 
     for (const width of [360, 390, 430]) {
       await page.setViewportSize({ width, height: 844 });
+      const positionedScrollY = await table.evaluate((element) => {
+        element.scrollIntoView({ block: 'center', inline: 'nearest' });
+        return window.scrollY;
+      });
       const geometry = await page.evaluate(() => {
         const table = document.querySelector<HTMLElement>('[data-testid="round-table"]');
         const dock = document.querySelector<HTMLElement>('.game-action-dock');
         if (!table || !dock) throw new Error('牌桌或固定购买栏未渲染');
 
         const dockRect = dock.getBoundingClientRect();
-        const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]')).map((seat) => {
-          seat.scrollIntoView({ block: 'center', inline: 'nearest' });
-          const rect = seat.getBoundingClientRect();
+        const inspect = (element: HTMLElement | null) => {
+          if (!element) return { missing: true, display: 'missing', visibility: 'missing', opacity: 0, width: 0, height: 0, inViewport: false, overlapsDock: false };
+          const rect = element.getBoundingClientRect();
+          const style = getComputedStyle(element);
           return {
+            missing: false,
+            display: style.display,
+            visibility: style.visibility,
+            opacity: Number.parseFloat(style.opacity),
             left: rect.left,
             right: rect.right,
             top: rect.top,
             bottom: rect.bottom,
             width: rect.width,
             height: rect.height,
-            overlapsDock: rect.left < dockRect.right && rect.right > dockRect.left && rect.top < dockRect.bottom && rect.bottom > dockRect.top,
-            reachableAboveDock: rect.top >= 0 && rect.bottom <= dockRect.top
+            inViewport: rect.left >= 0 && rect.right <= window.innerWidth && rect.top >= 0 && rect.bottom <= window.innerHeight,
+            overlapsDock: rect.left < dockRect.right && rect.right > dockRect.left && rect.top < dockRect.bottom && rect.bottom > dockRect.top
           };
-        });
+        };
+        const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]')).map((seat) => ({
+          seat: inspect(seat),
+          image: inspect(seat.querySelector('img')),
+          nickname: inspect(seat.querySelector('strong')),
+          hands: inspect(seat.querySelector(':scope > span:not(.visually-hidden)')),
+          amount: inspect(seat.querySelector('b'))
+        }));
+        const seatOverlaps: Array<[number, number]> = [];
+        for (let leftIndex = 0; leftIndex < seats.length; leftIndex += 1) {
+          for (let rightIndex = leftIndex + 1; rightIndex < seats.length; rightIndex += 1) {
+            const left = seats[leftIndex]!.seat;
+            const right = seats[rightIndex]!.seat;
+            if (left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top) {
+              seatOverlaps.push([leftIndex, rightIndex]);
+            }
+          }
+        }
 
         return {
           density: table.className,
           computedHeight: Number.parseFloat(getComputedStyle(table).height),
           renderedHeight: table.getBoundingClientRect().height,
           horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
-          dockTop: dockRect.top,
-          seats
+          scrollY: window.scrollY,
+          seats,
+          seatOverlaps
         };
       });
 
@@ -140,8 +167,19 @@ test('four-seat table keeps sparse mobile geometry and reachable player cards at
       expect(geometry.renderedHeight).toBeGreaterThanOrEqual(280);
       expect(geometry.renderedHeight).toBeLessThanOrEqual(320);
       expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
+      expect(geometry.scrollY).toBe(positionedScrollY);
+      expect(geometry.seatOverlaps, JSON.stringify({ width, ...geometry })).toEqual([]);
       expect(
-        geometry.seats.every((seat) => seat.width > 0 && seat.height > 0 && !seat.overlapsDock && seat.reachableAboveDock),
+        geometry.seats.every((seat) => Object.values(seat).every((part) => (
+          !part.missing
+          && part.display !== 'none'
+          && part.visibility !== 'hidden'
+          && part.opacity > 0
+          && part.width > 0
+          && part.height > 0
+          && part.inViewport
+          && !part.overlapsDock
+        ))),
         JSON.stringify({ width, ...geometry })
       ).toBe(true);
     }
