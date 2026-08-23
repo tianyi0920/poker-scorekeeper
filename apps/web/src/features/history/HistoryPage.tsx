@@ -17,8 +17,9 @@ export function HistoryPage() {
     if (user === null) { if (!authLoading) { setItems([]); setLoading(false); } return; }
     let active = true; const cached = readCachedHistory(user.id); setItems(cached?.items ?? []); setLoading(cached === null); setError(null);
     void scorekeeperApi.history(10).then((response) => {
+      if (!active) return;
       writeCachedHistory(user.id, response);
-      if (active) { setItems(response.items); setError(null); }
+      setItems(response.items); setError(null);
     }).catch(() => { if (active) setError(cached === null ? '历史战绩暂时无法加载，请稍后重试。' : '当前离线，正在展示已缓存的历史战绩。'); }).finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [authLoading, reload, user]);
