@@ -37,16 +37,21 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   const mountedRef = useRef(true);
   const sourceUrlRef = useRef<string | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
-  const [avatar, setAvatar] = useState(currentAvatar);
+  const [savedAvatar, setSavedAvatar] = useState(currentAvatar);
+  const [pendingPreset, setPendingPreset] = useState<string | null>(null);
   const [presets, setPresets] = useState<PresetAvatarDto[]>([]);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropRect | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
-  useEffect(() => setAvatar(currentAvatar), [currentAvatar?.kind, currentAvatar?.value]);
+  useEffect(() => {
+    setSavedAvatar(currentAvatar);
+    setPendingPreset(null);
+  }, [currentAvatar?.kind, currentAvatar?.value]);
   useEffect(() => {
     let active = true;
     void scorekeeperApi.getPresetAvatars().then(({ presets: response }) => active && setPresets(response))
@@ -70,26 +75,47 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     setImage(null);
     setCrop(null);
     setProgress(0);
-    setBusy(false);
+    setIsSaving(false);
     if (inputRef.current !== null) inputRef.current.value = '';
   }, []);
 
   function applyServerAvatar(response: AvatarMutationResponse) {
     const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
-    setAvatar(next);
+    setSavedAvatar(next);
+    setPendingPreset(null);
+    setSuccess('头像已保存');
     onChanged(next);
   }
 
-  async function choosePreset(id: string) {
-    setBusy(true);
+  const savedPreset = savedAvatar?.kind === 'PRESET' ? savedAvatar.value : null;
+  const selectedPreset = pendingPreset ?? savedPreset;
+  const hasPendingPreset = pendingPreset !== null && pendingPreset !== savedPreset;
+
+  function choosePreset(id: string) {
+    if (isSaving || !online) return;
+    setPendingPreset(id === savedPreset ? null : id);
     setError(null);
+    setSuccess(null);
+  }
+
+  function cancelPreset() {
+    if (isSaving) return;
+    setPendingPreset(null);
+    setError(null);
+  }
+
+  async function savePreset() {
+    if (!hasPendingPreset || pendingPreset === null || isSaving || !online) return;
+    setIsSaving(true);
+    setError(null);
+    setSuccess(null);
     try {
-      const response = await scorekeeperApi.selectPresetAvatar({ presetId: id as SelectablePresetAvatarId });
+      const response = await scorekeeperApi.selectPresetAvatar({ presetId: pendingPreset as SelectablePresetAvatarId });
       applyServerAvatar(response);
     } catch (reason) {
       setError(mutationMessage(reason, '头像保存失败'));
     } finally {
-      setBusy(false);
+      setIsSaving(false);
     }
   }
 
@@ -137,9 +163,10 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
 
   async function confirmUpload() {
     if (image === null || crop === null) return;
-    setBusy(true);
+    setIsSaving(true);
     setProgress(0);
     setError(null);
+    setSuccess(null);
     const controller = new AbortController();
     uploadAbortRef.current?.abort();
     uploadAbortRef.current = controller;
@@ -164,15 +191,29 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
       setError(message);
     } finally {
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
-      if (mountedRef.current) setBusy(false);
+      if (mountedRef.current) setIsSaving(false);
     }
   }
 
   return <div className="avatar-picker">
     {error !== null && <Toast tone="error" message={error} />}
-    <div className="current-avatar">{avatar === null ? <span className="avatar-placeholder" aria-hidden="true">?</span> : <img src={avatarUrl(avatar)} alt="当前头像" />}<div><strong>{avatar === null ? '当前头像尚未载入' : '当前头像'}</strong><span>新头像仅在服务器保存成功后替换</span></div></div>
-    <div className="preset-grid" aria-label="预设头像">{presets.map((preset, index) => <button key={preset.id} type="button" disabled={busy || !online} aria-label={`选择预设头像 ${String(index + 1).padStart(2, '0')}`} className={avatar?.kind === 'PRESET' && avatar.value === preset.id ? 'preset-avatar preset-avatar--active' : 'preset-avatar'} onClick={() => void choosePreset(preset.id)}><img src={preset.path} alt="" /></button>)}</div>
-    <label className="upload-label" htmlFor="avatar-file">上传自定义头像<input ref={inputRef} id="avatar-file" aria-label="上传自定义头像" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy || !online} onChange={chooseFile} /><span>JPG / PNG / WebP，最大 5 MiB</span></label>
-    {image !== null && sourceUrl !== null && crop !== null && <AvatarCropDialog sourceUrl={sourceUrl} image={image} crop={crop} busy={busy} progress={progress} onCropChange={setCrop} onConfirm={() => void confirmUpload()} onClose={closeCrop} />}
+    {success !== null && <Toast tone="success" message={success} />}
+    <div className="current-avatar">{savedAvatar === null ? <span className="avatar-placeholder" aria-hidden="true">?</span> : <img src={avatarUrl(savedAvatar)} alt="当前头像" />}<div><strong>{savedAvatar === null ? '当前头像尚未载入' : '当前头像'}</strong><span>新头像仅在服务器保存成功后替换</span></div></div>
+    <div className="preset-grid" role="radiogroup" aria-label="默认头像">{presets.map((preset) => {
+      const label = `头像 ${Number(preset.id.slice('preset-'.length))}`;
+      const checked = selectedPreset === preset.id;
+      return <label key={preset.id} className={checked ? 'preset-avatar preset-avatar--active' : 'preset-avatar'}>
+        <input type="radio" name="preset-avatar" value={preset.id} checked={checked} disabled={isSaving || !online} onChange={() => choosePreset(preset.id)} />
+        <img src={preset.path} alt="" />
+        <span className="sr-only">{label}</span>
+      </label>;
+    })}</div>
+    {hasPendingPreset && <div className="avatar-actions">
+      <button className="button button--primary" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>保存头像</button>
+      <button className="button button--secondary" type="button" disabled={isSaving} onClick={cancelPreset}>取消修改</button>
+    </div>}
+    {error !== null && hasPendingPreset && <button className="button button--secondary avatar-retry" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>重试保存</button>}
+    <label className="upload-label" htmlFor="avatar-file">上传自定义头像<input ref={inputRef} id="avatar-file" aria-label="上传自定义头像" type="file" accept="image/jpeg,image/png,image/webp" disabled={isSaving || !online} onChange={chooseFile} /><span>JPG / PNG / WebP，最大 5 MiB</span></label>
+    {image !== null && sourceUrl !== null && crop !== null && <AvatarCropDialog sourceUrl={sourceUrl} image={image} crop={crop} busy={isSaving} progress={progress} onCropChange={setCrop} onConfirm={() => void confirmUpload()} onClose={closeCrop} />}
   </div>;
 }
