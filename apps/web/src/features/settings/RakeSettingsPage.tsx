@@ -69,7 +69,7 @@ export function RakeSettingsPage() {
   }
 
   return <div className="page-stack narrow-page">
-    <div className="page-title"><span className="section-kicker">RAKE RULE</span><h2>抽成设置</h2><p>规则对进行中与结算草稿实时生效；完成记录不会重算。</p></div>
+    <div className="page-title"><span className="section-kicker">抽成规则</span><h2>抽成设置</h2><p>规则对进行中与结算草稿实时生效；完成记录不会重算。</p></div>
     <Card>{loading ? <p className="muted">正在加载规则…</p> : <form className="form-stack" onSubmit={submit}>
       {error !== null && <Toast tone="error" message={error} />}
       {success !== null && <Toast tone="success" message={success} />}

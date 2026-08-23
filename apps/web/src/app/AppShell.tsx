@@ -27,7 +27,7 @@ export function AppShell() {
   const liveGame = isLiveGameRoute(pathname);
   const shellClassName = ['app-shell', focused && 'app-shell--focus', liveGame && 'app-shell--game'].filter(Boolean).join(' ');
   return <div className={shellClassName}>
-    <header className="app-header"><div><span className="eyebrow">MIDNIGHT TABLE</span><h1>德州计分</h1></div><Button variant="ghost" unsafe aria-label="退出登录" onClick={() => void logout()}>退出</Button></header>
+    <header className="app-header"><div><span className="eyebrow">朋友牌局</span><h1>德州计分</h1></div><Button variant="ghost" unsafe aria-label="退出登录" onClick={() => void logout()}>退出</Button></header>
     <main className="app-content"><p className="welcome">晚上好，{user?.nickname}</p><Outlet /></main>
     {!focused && <nav className="bottom-nav" aria-label="主导航">
       <NavLink to="/" end>首页</NavLink>

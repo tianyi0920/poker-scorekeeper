@@ -86,7 +86,7 @@ export function UserListPage() {
   }
 
   return <div className="page-stack">
-    <div className="section-heading"><div className="page-title"><span className="section-kicker">TEAM</span><h2>用户管理</h2><p>账号共 {users.length} 个</p></div><Link className="compact-link" to="/users/new">创建用户</Link></div>
+    <div className="section-heading"><div className="page-title"><span className="section-kicker">成员管理</span><h2>用户管理</h2><p>账号共 {users.length} 个</p></div><Link className="compact-link" to="/users/new">创建用户</Link></div>
     {error !== null && <Toast tone="error" message={error} />}
     {loading ? <p className="muted">正在加载用户…</p> : <div className="card-list">{users.map((target) => {
       const canEdit = actor?.role === 'SUPER_ADMIN' || target.role === 'USER';

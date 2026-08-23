@@ -36,7 +36,7 @@ export function CreateGamePage() {
   }
 
   return <div className="page-stack narrow-page">
-    <div className="page-title"><span className="section-kicker">NEW TABLE</span><h2>创建对局</h2><p>先设置这一桌的基础规则，开启后即可邀请大家入座。</p></div>
+    <div className="page-title"><span className="section-kicker">新建牌桌</span><h2>创建对局</h2><p>先设置这一桌的基础规则，开启后即可邀请大家入座。</p></div>
     {error !== null && <Toast tone="error" message={error} />}
     <Card><form className="form-stack" onSubmit={submit}>
       <label className="field" htmlFor="game-name">对局名称（选填）<input id="game-name" aria-label="对局名称（选填）" maxLength={40} value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：8月17日晚场" /><small>名称由服务器自动生成，也可以手动填写</small></label>

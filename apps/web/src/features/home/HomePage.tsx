@@ -45,7 +45,7 @@ export function HomePage() {
   return <div className="page-stack home-page" aria-label="主页基础框架">
     {notice !== null && <p className="toast toast--info" role="status" aria-label="对局删除提示">{notice}</p>}
     <section aria-labelledby="current-games-title">
-      <div className="section-heading"><div><span className="section-kicker">LIVE TABLES</span><h2 id="current-games-title">当前对局</h2></div>{canManageGames && <Link className="compact-link" to="/games/new">创建对局</Link>}</div>
+      <div className="section-heading"><div><span className="section-kicker">实时牌桌</span><h2 id="current-games-title">当前对局</h2></div>{canManageGames && <Link className="compact-link" to="/games/new">创建对局</Link>}</div>
       {currentError !== null ? <Toast tone="error" message={currentError} /> : currentLoading ? <p className="muted">正在加载对局…</p> : current.length === 0
         ? <Card className="empty-card"><span aria-hidden="true">◇</span><p>当前没有进行中的对局</p>{canManageGames && <Link className="action-link" to="/games/new">创建一场</Link>}</Card>
         : <div className="card-list">{current.map((game) => <CurrentGameCard key={game.id} game={game} />)}</div>}

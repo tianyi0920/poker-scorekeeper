@@ -78,7 +78,7 @@ export function UserFormPage({ mode }: { mode: 'create' | 'edit' }) {
   if (!canManageTarget) return <Card><Toast tone="error" message="你的角色不能编辑该账号" /><Link className="action-link" to="/users">返回用户列表</Link></Card>;
 
   return <div className="page-stack narrow-page">
-    <div className="page-title"><span className="section-kicker">{mode === 'create' ? 'NEW MEMBER' : 'MEMBER PROFILE'}</span><h2>{mode === 'create' ? '创建用户' : `编辑 ${target?.nickname ?? ''}`}</h2><p>权限选项会根据你的角色自动收窄。</p></div>
+    <div className="page-title"><span className="section-kicker">{mode === 'create' ? '新建用户' : '用户资料'}</span><h2>{mode === 'create' ? '创建用户' : `编辑 ${target?.nickname ?? ''}`}</h2><p>权限选项会根据你的角色自动收窄。</p></div>
     <Card><form className="form-stack" onSubmit={submit}>
       {error !== null && <Toast tone="error" message={error} />}
       {mode === 'create' && <label className="field" htmlFor="new-username">用户名<input id="new-username" minLength={3} maxLength={32} pattern="[A-Za-z0-9._-]+" value={username} onChange={(event) => setUsername(event.target.value)} autoComplete="off" required /></label>}
