@@ -80,6 +80,41 @@ describe('game management contracts', () => {
       .toEqual({ items: [], nextCursor: null });
   });
 
+  it.each(['DRAFT', 'ACTIVE', 'SETTLING', 'COMPLETED', 'VOIDED'])(
+    'accepts the %s game status',
+    (status) => {
+      expect(managedGameSchema.safeParse({ ...managedGame, status }).success).toBe(true);
+    }
+  );
+
+  it('rejects an unknown game status', () => {
+    expect(managedGameSchema.safeParse({ ...managedGame, status: 'DELETED' }).success)
+      .toBe(false);
+  });
+
+  it('accepts the maximum player count and offset lifecycle timestamps', () => {
+    expect(managedGameSchema.parse({
+      ...managedGame,
+      startedAt: '2026-08-23T09:02:03.000+08:00',
+      completedAt: '2026-08-23T03:02:03.000+00:00',
+      playerCount: 12
+    })).toMatchObject({
+      startedAt: '2026-08-23T09:02:03.000+08:00',
+      completedAt: '2026-08-23T03:02:03.000+00:00',
+      playerCount: 12
+    });
+  });
+
+  it('accepts 40-code-point names and rejects 41-code-point names', () => {
+    const fortyCodePointName = '牌'.repeat(40);
+    const fortyOneCodePointName = `${fortyCodePointName}局`;
+
+    expect(managedGameSchema.safeParse({ ...managedGame, name: fortyCodePointName }).success)
+      .toBe(true);
+    expect(managedGameSchema.safeParse({ ...managedGame, name: fortyOneCodePointName }).success)
+      .toBe(false);
+  });
+
   it.each([
     { ...managedGame, id: 'CM123' },
     { ...managedGame, name: ' ' },
