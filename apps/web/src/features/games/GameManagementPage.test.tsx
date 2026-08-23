@@ -137,6 +137,52 @@ it('opens one dialog, sends one DELETE, removes only that row, and does not refe
   expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
 });
 
+it('never resurrects a deleted game when an older load-more response arrives afterward', async () => {
+  // Break caught: a stale pagination response re-adds a row deleted while that page was in flight.
+  let finishMore!: (response: Response) => void;
+  const pendingMore = new Promise<Response>((resolve) => { finishMore = resolve; });
+  let managementRequests = 0;
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes('/api/games/manage?limit=50')) {
+      managementRequests += 1;
+      if (managementRequests === 1) {
+        return jsonResponse({
+          items: [managedGame('game-1', '即将删除局', 'ACTIVE'), managedGame('game-2', '保留局', 'DRAFT')],
+          nextCursor: 'next-page'
+        });
+      }
+      return pendingMore;
+    }
+    if (url.endsWith('/api/games/game-1') && init?.method === 'DELETE') {
+      return jsonResponse({ deletedGameId: 'game-1' });
+    }
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  render(<MemoryRouter><GameManagementPage /></MemoryRouter>);
+  await screen.findByRole('article', { name: '即将删除局' });
+
+  await user.click(screen.getByRole('button', { name: '加载更多' }));
+  await vi.waitFor(() => expect(managementRequests).toBe(2));
+  await user.click(screen.getByRole('button', { name: '永久删除 即将删除局' }));
+  await user.click(screen.getByRole('button', { name: '确认永久删除' }));
+  expect(await screen.findByText('已永久删除“即将删除局”')).toBeInTheDocument();
+  expect(screen.queryByRole('article', { name: '即将删除局' })).not.toBeInTheDocument();
+
+  finishMore(jsonResponse({
+    items: [managedGame('game-1', '即将删除局', 'ACTIVE'), managedGame('game-3', '分页新增局', 'COMPLETED')],
+    nextCursor: null
+  }));
+
+  expect(await screen.findByRole('article', { name: '分页新增局' })).toBeInTheDocument();
+  expect(screen.queryByRole('article', { name: '即将删除局' })).not.toBeInTheDocument();
+  expect(screen.getByRole('article', { name: '保留局' })).toBeInTheDocument();
+  expect(managementRequests).toBe(2);
+  expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'DELETE')).toHaveLength(1);
+});
+
 it.each(['ADMIN', 'USER'] as const)('rejects %s at the real management route', async (role) => {
   // Break caught: hiding the profile entry is mistaken for route authorization.
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {

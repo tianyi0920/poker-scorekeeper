@@ -7,10 +7,10 @@ import { Card } from '../../components/Card.js';
 import { Toast } from '../../components/Toast.js';
 import { DeleteGameDialog, managedGameStatusLabels } from './DeleteGameDialog.js';
 
-function appendUniqueGames(current: ManagedGameDto[], incoming: ManagedGameDto[]): ManagedGameDto[] {
+function appendUniqueGames(current: ManagedGameDto[], incoming: ManagedGameDto[], deletedIds: ReadonlySet<string>): ManagedGameDto[] {
   const ids = new Set(current.map((game) => game.id));
   return [...current, ...incoming.filter((game) => {
-    if (ids.has(game.id)) return false;
+    if (deletedIds.has(game.id) || ids.has(game.id)) return false;
     ids.add(game.id);
     return true;
   })];
@@ -38,6 +38,7 @@ function GameDestination({ game }: { game: ManagedGameDto }) {
 
 export function GameManagementPage() {
   const mounted = useRef(true);
+  const deletedIds = useRef(new Set<string>());
   const [items, setItems] = useState<ManagedGameDto[]>([]);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -59,7 +60,7 @@ export function GameManagementPage() {
     setMoreError(false);
     void scorekeeperApi.managedGames(50).then((response) => {
       if (!active) return;
-      setItems(appendUniqueGames([], response.items));
+      setItems(appendUniqueGames([], response.items, deletedIds.current));
       setNextCursor(response.nextCursor);
     }).catch((reason) => {
       if (active) setError(mutationMessage(reason, '对局列表加载失败，请稍后重试'));
@@ -80,7 +81,7 @@ export function GameManagementPage() {
     try {
       const response = await scorekeeperApi.managedGames(50, nextCursor);
       if (!mounted.current) return;
-      setItems((current) => appendUniqueGames(current, response.items));
+      setItems((current) => appendUniqueGames(current, response.items, deletedIds.current));
       setNextCursor(response.nextCursor);
     } catch (reason) {
       if (!mounted.current) return;
@@ -92,6 +93,7 @@ export function GameManagementPage() {
   }
 
   function finishDelete(game: ManagedGameDto) {
+    deletedIds.current.add(game.id);
     setItems((current) => current.filter((item) => item.id !== game.id));
     setDeleteTarget(null);
     setSuccess(`已永久删除“${game.name}”`);
