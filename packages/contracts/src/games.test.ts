@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { gameSnapshotSchema } from './games.js';
+import {
+  gameSnapshotSchema,
+  hardDeleteGameResponseSchema,
+  managedGameSchema,
+  managedGamesResponseSchema
+} from './games.js';
 
 function snapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -51,5 +56,61 @@ describe('game snapshot contract', () => {
         buyInAmount: '110680464442257309684'
       }]
     })).success).toBe(true);
+  });
+});
+
+const managedGame = {
+  id: 'cm123456789012345678901234',
+  name: '测试局',
+  status: 'VOIDED',
+  createdAt: '2026-08-23T01:02:03.000+00:00',
+  startedAt: null,
+  completedAt: null,
+  playerCount: 0
+};
+
+describe('game management contracts', () => {
+  it('parses a paginated all-status management page', () => {
+    expect(managedGamesResponseSchema.parse({
+      items: [managedGame],
+      nextCursor: 'eyJjcmVhdGVkQXQiOiIyMDI2LTA4LTIzVDAxOjAyOjAzLjAwMFoiLCJpZCI6ImNtMSJ9'
+    }).items[0]?.status).toBe('VOIDED');
+
+    expect(managedGamesResponseSchema.parse({ items: [], nextCursor: null }))
+      .toEqual({ items: [], nextCursor: null });
+  });
+
+  it.each([
+    { ...managedGame, id: 'CM123' },
+    { ...managedGame, name: ' ' },
+    { ...managedGame, createdAt: '2026-08-23T01:02:03.000' },
+    { ...managedGame, startedAt: '2026-08-23T01:02:03.000' },
+    { ...managedGame, completedAt: '2026-08-23T01:02:03.000' },
+    { ...managedGame, playerCount: -1 },
+    { ...managedGame, playerCount: 1.5 },
+    { ...managedGame, playerCount: 13 },
+    { ...managedGame, extra: true }
+  ])('rejects an invalid managed game: %j', (value) => {
+    expect(managedGameSchema.safeParse(value).success).toBe(false);
+  });
+
+  it.each([
+    { items: [managedGame], nextCursor: '' },
+    { items: [managedGame], nextCursor: null, extra: true }
+  ])('rejects an invalid management page: %j', (value) => {
+    expect(managedGamesResponseSchema.safeParse(value).success).toBe(false);
+  });
+
+  it('accepts only a strict canonical hard-delete response', () => {
+    expect(hardDeleteGameResponseSchema.parse({
+      deletedGameId: 'cm123456789012345678901234'
+    })).toEqual({ deletedGameId: 'cm123456789012345678901234' });
+
+    expect(hardDeleteGameResponseSchema.safeParse({ deletedGameId: 'CM123' }).success)
+      .toBe(false);
+    expect(hardDeleteGameResponseSchema.safeParse({
+      deletedGameId: 'cm123456789012345678901234',
+      extra: true
+    }).success).toBe(false);
   });
 });

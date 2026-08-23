@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  gameDeletedEventSchema,
   gameJoinAckSchema,
   gameJoinCommandSchema,
   gameLeaveAckSchema,
@@ -13,6 +14,30 @@ import {
 } from './realtime.js';
 
 describe('realtime contracts', () => {
+  it('accepts only the hard-delete realtime reason', () => {
+    expect(gameDeletedEventSchema.parse({
+      gameId: 'cm123456789012345678901234',
+      reason: 'HARD_DELETED'
+    })).toEqual({
+      gameId: 'cm123456789012345678901234',
+      reason: 'HARD_DELETED'
+    });
+
+    expect(gameDeletedEventSchema.safeParse({
+      gameId: 'cm123456789012345678901234',
+      reason: 'SOFT_DELETED'
+    }).success).toBe(false);
+    expect(gameDeletedEventSchema.safeParse({
+      gameId: 'CM123',
+      reason: 'HARD_DELETED'
+    }).success).toBe(false);
+    expect(gameDeletedEventSchema.safeParse({
+      gameId: 'cm123456789012345678901234',
+      reason: 'HARD_DELETED',
+      extra: true
+    }).success).toBe(false);
+  });
+
   it('accepts a canonical game id and zero as the initial known version', () => {
     expect(gameJoinCommandSchema.parse({ gameId: 'cm123abc', knownVersion: 0 }))
       .toEqual({ gameId: 'cm123abc', knownVersion: 0 });

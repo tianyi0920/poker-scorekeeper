@@ -51,6 +51,11 @@ export const playerRakeUpdatedEventSchema = z.object({
   userId: canonicalPublicIdSchema
 }).strict();
 
+export const gameDeletedEventSchema = z.object({
+  gameId: canonicalPublicIdSchema,
+  reason: z.literal('HARD_DELETED')
+}).strict();
+
 export const serverErrorEventSchema = z.object({ code: realtimeErrorCodeSchema }).strict();
 
 export const gameSnapshotEventSchema = gameSnapshotSchema.strict();
@@ -63,4 +68,5 @@ export type GameLeaveAck = z.infer<typeof gameLeaveAckSchema>;
 export type PresenceUpdatedEvent = z.infer<typeof presenceUpdatedEventSchema>;
 export type RakeSettingsUpdatedEvent = z.infer<typeof rakeSettingsUpdatedEventSchema>;
 export type PlayerRakeUpdatedEvent = z.infer<typeof playerRakeUpdatedEventSchema>;
+export type GameDeletedEvent = z.infer<typeof gameDeletedEventSchema>;
 export type ServerErrorEvent = z.infer<typeof serverErrorEventSchema>;

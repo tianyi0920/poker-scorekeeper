@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { canonicalPublicIdSchema } from './buyins.js';
 import { moneyJsonSchema } from './money.js';
 import { nonNegativeMoneyJsonSchema } from './settings.js';
 
@@ -81,7 +82,29 @@ export const currentGamesResponseSchema = z.object({
   games: z.array(gameSnapshotSchema)
 });
 
+export const managedGameSchema = z.object({
+  id: canonicalPublicIdSchema,
+  name: gameNameSchema,
+  status: gameStatusSchema,
+  createdAt: offsetDateTimeSchema,
+  startedAt: offsetDateTimeSchema.nullable(),
+  completedAt: offsetDateTimeSchema.nullable(),
+  playerCount: z.number().int().min(0).max(12)
+}).strict();
+
+export const managedGamesResponseSchema = z.object({
+  items: z.array(managedGameSchema),
+  nextCursor: z.string().min(1).nullable()
+}).strict();
+
+export const hardDeleteGameResponseSchema = z.object({
+  deletedGameId: canonicalPublicIdSchema
+}).strict();
+
 export type CreateGameRequest = z.infer<typeof createGameSchema>;
 export type GameSpectatorSnapshotDto = z.infer<typeof gameSpectatorSnapshotSchema>;
 export type GameSnapshotDto = z.infer<typeof gameSnapshotSchema>;
 export type CurrentGamesResponse = z.infer<typeof currentGamesResponseSchema>;
+export type ManagedGameDto = z.infer<typeof managedGameSchema>;
+export type ManagedGamesResponseDto = z.infer<typeof managedGamesResponseSchema>;
+export type HardDeleteGameResponseDto = z.infer<typeof hardDeleteGameResponseSchema>;
