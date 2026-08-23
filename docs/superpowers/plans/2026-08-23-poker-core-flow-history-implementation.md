@@ -521,9 +521,8 @@ Expected: FAIL because both initial states are empty strings.
 
 - [ ] **Step 3: Add and consume the shared constant**
 
-```ts
-export const DEFAULT_TEMPORARY_PASSWORD = '12345678';
-```
+Create and export a shared `DEFAULT_TEMPORARY_PASSWORD` constant using the
+agreed `12345678` initial value.
 
 Initialize `initialPassword` and reset-dialog `password` from the constant. After a successful reset, close through the existing completed state; do not silently submit on dialog open.
 
