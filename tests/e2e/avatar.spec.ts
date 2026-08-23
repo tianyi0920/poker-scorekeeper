@@ -75,8 +75,16 @@ test('preset selection requires an explicit save and persists after reload', asy
 });
 
 test('failed custom upload retains the crop and retries the same file before persisting', async ({ browser }) => {
-  const browserSession = await loginContext(browser, 'player-b');
-  const { page } = browserSession;
+  const context = await browser.newContext({ serviceWorkers: 'block' });
+  const page = await context.newPage();
+  const account = accounts['player-b'];
+
+  await page.goto('/login');
+  await page.getByLabel('用户名').fill(account.username);
+  await page.getByLabel('密码').fill(account.password);
+  await page.getByRole('button', { name: '登录' }).click();
+  await expect(page).toHaveURL(/\/(home)?$/);
+  await expect(page.getByRole('heading', { name: '德州计分' })).toBeVisible();
   const uploadMutations = watchRequestCount(page, 'POST', '/api/me/avatar/upload');
   const failFirstUpload = async (route: Route) => {
     await new Promise((resolveDelay) => setTimeout(resolveDelay, 750));
@@ -86,6 +94,10 @@ test('failed custom upload retains the crop and retries the same file before per
       body: JSON.stringify({ statusCode: 503, code: 'DATABASE_UNAVAILABLE' })
     });
   };
+  let releaseSessionRefresh: (() => void) | null = null;
+  let gateSessionRefresh: ((route: Route) => Promise<void>) | null = null;
+  let sessionGateStarted = false;
+  let sessionGateSettled: Promise<void> | null = null;
   try {
     await page.goto('/profile');
     const currentAvatar = page.getByRole('img', { name: '当前头像' });
@@ -114,13 +126,34 @@ test('failed custom upload retains the crop and retries the same file before per
       counters.avatarFileChanges = 0;
       counters.avatarCropConfirmClicks = 0;
       counters.avatarProgressMessages = [];
-      const captureProgress = () => {
-        const message = document.querySelector('.avatar-upload-progress span')?.textContent?.trim();
+      const recordProgress = (message: string | null | undefined) => {
+        message = message?.trim();
         if (message && counters.avatarProgressMessages?.at(-1) !== message) {
           counters.avatarProgressMessages?.push(message);
         }
       };
-      new MutationObserver(captureProgress).observe(document.body, {
+      const captureProgressNode = (node: Node) => {
+        if (node instanceof Text) {
+          if (node.parentElement?.closest('.avatar-upload-progress') !== null) {
+            recordProgress(node.textContent);
+          }
+          return;
+        }
+        if (!(node instanceof Element)) return;
+        if (node.matches('.avatar-upload-progress, .avatar-upload-progress span')) {
+          recordProgress(node.textContent);
+        }
+        node.querySelectorAll('.avatar-upload-progress span').forEach((progress) => {
+          recordProgress(progress.textContent);
+        });
+      };
+      new MutationObserver((records) => {
+        records.forEach((record) => {
+          if (record.type === 'characterData') captureProgressNode(record.target);
+          record.addedNodes.forEach(captureProgressNode);
+          record.removedNodes.forEach(captureProgressNode);
+        });
+      }).observe(document.body, {
         childList: true,
         subtree: true,
         characterData: true
@@ -172,6 +205,37 @@ test('failed custom upload retains the crop and retries the same file before per
     }))).toEqual({ fileChanges: 1, cropConfirmClicks: 1 });
 
     await page.unroute('**/api/me/avatar/upload', failFirstUpload);
+    let resolveSessionFetch!: () => void;
+    let rejectSessionFetch!: (reason?: unknown) => void;
+    const sessionFetchReady = new Promise<void>((resolveReady, rejectReady) => {
+      resolveSessionFetch = resolveReady;
+      rejectSessionFetch = rejectReady;
+    });
+    const sessionRelease = new Promise<void>((resolveRelease) => {
+      releaseSessionRefresh = resolveRelease;
+    });
+    let resolveSessionGateSettled!: () => void;
+    sessionGateSettled = new Promise<void>((resolveSettled) => {
+      resolveSessionGateSettled = resolveSettled;
+    });
+    gateSessionRefresh = async (route: Route) => {
+      sessionGateStarted = true;
+      try {
+        const response = await route.fetch();
+        resolveSessionFetch();
+        await sessionRelease;
+        await route.fulfill({ response });
+      } catch (error) {
+        rejectSessionFetch(error);
+        throw error;
+      } finally {
+        resolveSessionGateSettled();
+      }
+    };
+    await page.route('**/api/auth/session', gateSessionRefresh, { times: 1 });
+    await page.evaluate(() => {
+      (window as typeof window & { avatarProgressMessages?: string[] }).avatarProgressMessages = [];
+    });
     const uploadedResponse = page.waitForResponse((response) => (
       isRequest(response.request(), 'POST', '/api/me/avatar/upload') && response.status() === 201
     ));
@@ -179,12 +243,14 @@ test('failed custom upload retains the crop and retries the same file before per
       isRequest(response.request(), 'GET', '/api/auth/session') && response.status() === 200
     ));
     await page.getByRole('button', { name: '重新上传' }).click();
-    const [response] = await Promise.all([uploadedResponse, refreshedSession]);
+    const response = await uploadedResponse;
     const uploaded = await response.json() as { avatarKind: string; avatarValue: string };
 
     expect(uploaded).toMatchObject({ avatarKind: 'UPLOAD' });
     expect(uploaded.avatarValue).toMatch(/^[a-z0-9-]+\.webp$/);
     expect(uploadMutations.requests).toHaveLength(2);
+    await sessionFetchReady;
+    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
     await expect.poll(() => page.evaluate(() => (
       (window as typeof window & { avatarProgressMessages?: string[] }).avatarProgressMessages ?? []
     ))).toContainEqual(expect.stringMatching(/^正在上传 (?:[1-9]\d?|100)%$/));
@@ -193,15 +259,27 @@ test('failed custom upload retains the crop and retries the same file before per
       cropConfirmClicks: (window as typeof window & { avatarCropConfirmClicks?: number }).avatarCropConfirmClicks
     }))).toEqual({ fileChanges: 1, cropConfirmClicks: 1 });
     const uploadedUrl = `/avatars/uploads/${uploaded.avatarValue}`;
+    releaseSessionRefresh();
+    expect((await refreshedSession).status()).toBe(200);
+    await sessionGateSettled;
+    await page.unroute('**/api/auth/session', gateSessionRefresh);
+    gateSessionRefresh = null;
     await expect(currentAvatar).toHaveAttribute('src', uploadedUrl);
 
     await page.reload();
     await expect(page.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', uploadedUrl);
     expect(uploadMutations.requests).toHaveLength(2);
   } finally {
+    releaseSessionRefresh?.();
+    if (sessionGateStarted && sessionGateSettled !== null) {
+      await sessionGateSettled.catch(() => undefined);
+    }
+    if (gateSessionRefresh !== null) {
+      await page.unroute('**/api/auth/session', gateSessionRefresh).catch(() => undefined);
+    }
     await page.unroute('**/api/me/avatar/upload', failFirstUpload).catch(() => undefined);
     uploadMutations.stop();
-    await browserSession.context.close();
+    await context.close();
   }
 });
 
