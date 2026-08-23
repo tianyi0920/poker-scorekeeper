@@ -1204,6 +1204,63 @@ describe("production deployment artifacts", () => {
       ["PUBLIC_ORIGIN", "${EVIL}"],
       ["WS_ALLOWED_ORIGINS", "https://evil.example"],
     ] as const;
+    const dotenvLineEndings = [
+      ["LF", "\n"],
+      ["CRLF", "\r\n"],
+      ["bare CR", "\r"],
+    ] as const;
+    for (const [lineEndingLabel, lineEnding] of dotenvLineEndings) {
+      for (const [operatorLabel, operator, separator] of [
+        ["equals", "=", ""],
+        ["colon", ":", " "],
+      ] as const) {
+        for (const exported of [false, true]) {
+          for (const [key, unsafeValue] of criticalKeyUnsafeValues) {
+            const prefix = exported ? "export " : "";
+            expect(
+              () =>
+                validateSecureProductionEnvironmentTemplate(
+                  `${prefix}${key}${lineEnding}${operator}${separator}${unsafeValue}${lineEnding}${secureTemplate}`,
+                  `${prefix}${key} multiline ${operatorLabel} assignment with ${lineEndingLabel}`,
+                ),
+              `production template must audit ${key} multiline ${operatorLabel} assignments with ${lineEndingLabel}`,
+            ).toThrow();
+          }
+        }
+      }
+    }
+    for (const [lineEndingLabel, lineEnding] of dotenvLineEndings) {
+      for (const exported of [false, true]) {
+        for (const [key, unsafeValue] of criticalKeyUnsafeValues) {
+          const prefix = exported ? "export " : "";
+          expect(
+            () =>
+              validateSecureProductionEnvironmentTemplate(
+                `${prefix}${key}:${lineEnding}${unsafeValue}${lineEnding}${secureTemplate}`,
+                `${prefix}${key}: value on next line with ${lineEndingLabel}`,
+              ),
+            `production template must audit ${key}: values on the next line with ${lineEndingLabel}`,
+          ).toThrow();
+        }
+      }
+    }
+    for (const [key, unsafeValue] of criticalKeyUnsafeValues) {
+      for (const quote of ["'", '"', "`"] as const) {
+        for (const [operator, separator] of [
+          ["=", ""],
+          [":", " "],
+        ] as const) {
+          expect(
+            () =>
+              validateSecureProductionEnvironmentTemplate(
+                `${quote}${key}${quote}\n${operator}${separator}${unsafeValue}\n${secureTemplate}`,
+                `${quote}${key}${quote} multiline ${operator} assignment`,
+              ),
+            `production template must reject quoted multiline ${key}${operator} assignment`,
+          ).toThrow();
+        }
+      }
+    }
     for (const [lineEndingLabel, lineEnding] of [
       ["LF", "\n"],
       ["CRLF", "\r\n"],

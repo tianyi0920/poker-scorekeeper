@@ -300,44 +300,53 @@ const expectedProductionTemplateEnvironmentValues = {
 } as const satisfies Record<GuideEnvironmentKey, string>;
 
 interface ProductionTemplateEnvironmentAssignment extends GuideEnvironmentAssignment {
-  sourceLine: string;
+  sourceToken: string;
 }
 
 function readProductionTemplateEnvironmentAssignments(
   content: string,
   name: string,
 ): ProductionTemplateEnvironmentAssignment[] {
-  const values = parseDotenv(content);
-  const assignmentLines = new Map<GuideEnvironmentKey, string[]>();
-  const assignmentLine = /^\s*(?:export\s+)?([\w.-]+)\s*(?:=|:\s+)/u;
-  const quotedCriticalKeyLine =
-    /^\s*(?:export\s+)?(['"`])(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)\1\s*(?:=|:\s+)/u;
+  const normalizedContent = content.replace(/\r\n?/g, "\n");
+  const values = parseDotenv(normalizedContent);
+  const assignmentTokens = new Map<GuideEnvironmentKey, string[]>();
+  const dotenvAssignmentToken =
+    /(?:^|^)(\s*(?:export\s+)?([\w.-]+)(?:\s*=\s*?|\s*:\s+?)(\s*'(?:\\'|[^'])*'|\s*"(?:\\"|[^"])*"|\s*`(?:\\`|[^`])*`|[^#\r\n]+)?[ \t]*(?:#[^\r\n]*)?)(?:$|$)/gmu;
+  const quotedCriticalKeyToken =
+    /(?:^|^)\s*(?:export\s+)?(['"`])(PORT|PUBLIC_ORIGIN|WS_ALLOWED_ORIGINS)\1\s*(?:=|:\s+)/gmu;
 
-  for (const line of content.split(/\r\n?|\n/)) {
-    const quotedKey = quotedCriticalKeyLine.exec(line)?.[2];
+  for (const match of normalizedContent.matchAll(quotedCriticalKeyToken)) {
+    const quotedKey = match[2];
     if (quotedKey !== undefined) {
       rejectInsecureBackendGuide(
         name,
         `production template must not quote critical key ${quotedKey}`,
       );
     }
+  }
 
-    const unquotedKey = assignmentLine.exec(line)?.[1];
+  for (const match of normalizedContent.matchAll(dotenvAssignmentToken)) {
+    const sourceToken = match[1];
+    const unquotedKey = match[2];
     if (
+      sourceToken !== undefined &&
       unquotedKey !== undefined &&
       productionTemplateEnvironmentKeys.includes(
         unquotedKey as GuideEnvironmentKey,
       )
     ) {
       const key = unquotedKey as GuideEnvironmentKey;
-      assignmentLines.set(key, [...(assignmentLines.get(key) ?? []), line]);
+      assignmentTokens.set(key, [
+        ...(assignmentTokens.get(key) ?? []),
+        sourceToken,
+      ]);
     }
   }
 
   return productionTemplateEnvironmentKeys.map((key) => {
-    const sourceLines = assignmentLines.get(key) ?? [];
+    const sourceTokens = assignmentTokens.get(key) ?? [];
     if (
-      sourceLines.length !== 1 ||
+      sourceTokens.length !== 1 ||
       !Object.prototype.hasOwnProperty.call(values, key)
     ) {
       return rejectInsecureBackendGuide(
@@ -346,7 +355,7 @@ function readProductionTemplateEnvironmentAssignments(
       );
     }
 
-    return { key, value: values[key]!, sourceLine: sourceLines[0]! };
+    return { key, value: values[key]!, sourceToken: sourceTokens[0]! };
   });
 }
 
@@ -364,7 +373,7 @@ export function validateSecureProductionEnvironmentTemplate(
       expectedProductionTemplateEnvironmentValues[assignment.key];
     if (
       assignment.value !== expected ||
-      assignment.sourceLine !== `${assignment.key}=${expected}`
+      assignment.sourceToken !== `${assignment.key}=${expected}`
     ) {
       rejectInsecureBackendGuide(
         name,
