@@ -260,42 +260,60 @@ describe.sequential('super-administrator game management list', () => {
     for (const id of [...expectedIds].reverse()) {
       await seedGame(id.slice(`gm-${runId}-`.length), GameStatus.DRAFT, createdAt, { id });
     }
-
-    const first = await read(superAuth, '/api/games/manage?limit=3').expect(200);
-    const second = await read(
-      superAuth,
-      `/api/games/manage?limit=3&cursor=${encodeURIComponent(first.body.nextCursor)}`
-    ).expect(200);
-    const third = await read(
-      superAuth,
-      `/api/games/manage?limit=3&cursor=${encodeURIComponent(second.body.nextCursor)}`
-    ).expect(200);
-    const firstSeven = [...first.body.items, ...second.body.items, ...third.body.items]
-      .slice(0, expectedIds.length)
-      .map(({ id }: { id: string }) => id);
-
-    expect(firstSeven).toEqual(expectedIds);
-    expect(new Set(firstSeven).size).toBe(expectedIds.length);
-  });
-
-  it('returns null after the final cursor page', async () => {
-    const oldest = await prisma.game.findFirst({
-      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-      select: { createdAt: true, id: true }
-    });
-    const boundary = oldest ?? await seedGame(
-      'oldest', GameStatus.DRAFT, new Date('2000-01-01T00:00:00.000Z')
-    );
-    const cursor = encodeCursor({
-      createdAt: boundary.createdAt.toISOString(),
-      id: boundary.id
+    const externalId = gameId('tie-dd');
+    await prisma.game.create({
+      data: {
+        id: externalId,
+        name: `${prefix}-external-tie`,
+        status: GameStatus.DRAFT,
+        handPrice: 300n,
+        rakeEnabled: true,
+        version: 1,
+        createdById: adminUser.id,
+        createdAt
+      }
     });
 
-    await read(superAuth, `/api/games/manage?limit=2&cursor=${encodeURIComponent(cursor)}`)
-      .expect(200)
-      .expect(({ body }) => {
-        expect(body.items).toEqual([]);
-        expect(body.nextCursor).toBeNull();
-      });
+    try {
+      const expectedIdSet = new Set(expectedIds);
+      const targetOrder: string[] = [];
+      const targetCounts = new Map<string, number>();
+      const visitedCursors = new Set<string>();
+      const pageSize = 3;
+      const maxPages = Math.ceil((await prisma.game.count()) / pageSize) + 2;
+      let cursor: string | undefined;
+      let reachedFinalPage = false;
+
+      for (let pageNumber = 0; pageNumber < maxPages; pageNumber += 1) {
+        const path = cursor === undefined
+          ? `/api/games/manage?limit=${pageSize}`
+          : `/api/games/manage?limit=${pageSize}&cursor=${encodeURIComponent(cursor)}`;
+        const response = await read(superAuth, path).expect(200);
+        for (const item of response.body.items as Array<{ id: string }>) {
+          if (!expectedIdSet.has(item.id)) continue;
+          targetOrder.push(item.id);
+          targetCounts.set(item.id, (targetCounts.get(item.id) ?? 0) + 1);
+        }
+
+        if (response.body.nextCursor === null) {
+          reachedFinalPage = true;
+          break;
+        }
+        if (typeof response.body.nextCursor !== 'string') {
+          throw new Error('Management pagination returned neither a cursor nor null');
+        }
+        expect(visitedCursors.has(response.body.nextCursor)).toBe(false);
+        visitedCursors.add(response.body.nextCursor);
+        cursor = response.body.nextCursor;
+      }
+
+      expect(reachedFinalPage).toBe(true);
+      expect(targetOrder).toEqual(expectedIds);
+      expect(expectedIds.map((id) => targetCounts.get(id) ?? 0))
+        .toEqual(expectedIds.map(() => 1));
+    } finally {
+      const cleaned = await prisma.game.deleteMany({ where: { id: externalId } });
+      expect(cleaned.count).toBe(1);
+    }
   });
 });
