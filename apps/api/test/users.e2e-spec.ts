@@ -651,14 +651,19 @@ describe.sequential('user administration', () => {
       });
     }, { timeout: 10_000, maxWait: 5_000 });
     await locked;
-    const resetPromise = usersService.resetPassword(
+    const resetResult = usersService.resetPassword(
       adminActor,
       target.id,
       { newPassword: replacementPassword }
+    ).then(
+      (value) => ({ status: 'fulfilled' as const, value }),
+      (reason: unknown) => ({ status: 'rejected' as const, reason })
     );
 
     await blocker;
-    await expect(resetPromise).rejects.toMatchObject({ code: 'FORBIDDEN' });
+    await expect(resetResult).resolves.toMatchObject({
+      status: 'rejected', reason: { code: 'FORBIDDEN' }
+    });
   }, 60_000);
 
   it.each(['role', 'isActive'] as const)('revokes sessions after %s changes', async (field) => {
