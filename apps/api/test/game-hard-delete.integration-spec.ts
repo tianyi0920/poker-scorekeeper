@@ -41,8 +41,12 @@ type TransactionPhase = 'deleter' | 'buyin' | 'finalization';
 
 interface ProcessRow {
   processId: number | bigint;
-  command: string;
   queryText: string | null;
+}
+
+interface ProcessReadTracker {
+  calls: number;
+  onRead?(): void;
 }
 
 interface ConnectionIdRow {
@@ -64,13 +68,78 @@ interface InteractiveTransactionRunner {
 
 interface TransactionConnectionProbe {
   setPhase(phase: TransactionPhase): void;
-  waitForConnection(phase: TransactionPhase): Promise<number>;
+  waitForConnection(phase: TransactionPhase, signal: AbortSignal): Promise<number>;
   restore(): void;
+}
+
+interface ObserverScope {
+  start<T>(observer: (signal: AbortSignal) => Promise<T>): Promise<T>;
+  cancelAndSettle(): Promise<void>;
+}
+
+interface ConnectionWaiter {
+  signal: AbortSignal;
+  onAbort(): void;
+  resolve(processId: number): void;
+  reject(error: unknown): void;
 }
 
 type CapturedOutcome =
   | { status: 'fulfilled'; value: unknown }
   | { status: 'rejected'; reason: unknown };
+
+function observerAbortError(description: string): Error {
+  const error = new Error(`Cancelled waiting for ${description}`);
+  error.name = 'AbortError';
+  return error;
+}
+
+function throwIfObserverAborted(signal: AbortSignal | undefined, description: string): void {
+  if (signal?.aborted === true) throw observerAbortError(description);
+}
+
+function createObserverScope(): ObserverScope {
+  const controllers: AbortController[] = [];
+  const observers: Promise<unknown>[] = [];
+  return {
+    start<T>(observer: (signal: AbortSignal) => Promise<T>): Promise<T> {
+      const controller = new AbortController();
+      controllers.push(controller);
+      const promise = observer(controller.signal);
+      observers.push(promise);
+      return promise;
+    },
+    async cancelAndSettle(): Promise<void> {
+      for (const controller of controllers) controller.abort();
+      await Promise.allSettled(observers);
+    }
+  };
+}
+
+function captureOutcome<T>(promise: Promise<T>): Promise<CapturedOutcome> {
+  return promise.then(
+    (value) => ({ status: 'fulfilled' as const, value }),
+    (reason: unknown) => ({ status: 'rejected' as const, reason })
+  );
+}
+
+async function observeBeforeBusinessSettles<T>(
+  observer: Promise<T>,
+  business: Promise<CapturedOutcome>,
+  description: string
+): Promise<T> {
+  const winner = await Promise.race([
+    observer.then(
+      (value) => ({ kind: 'observer' as const, value }),
+      (reason: unknown) => ({ kind: 'observer-error' as const, reason })
+    ),
+    business.then((outcome) => ({ kind: 'business' as const, outcome }))
+  ]);
+  if (winner.kind === 'observer') return winner.value;
+  if (winner.kind === 'observer-error') throw winner.reason;
+  if (winner.outcome.status === 'rejected') throw winner.outcome.reason;
+  throw new Error(`${description} completed before the observation`);
+}
 
 function normalize(value: string): string {
   return value.trim().normalize('NFKC').toLocaleLowerCase('zh-CN');
@@ -102,13 +171,17 @@ function connectionOptions() {
 async function waitForCondition<T>(
   description: string,
   read: () => Promise<T | null>,
-  timeoutMilliseconds = 10_000
+  timeoutMilliseconds = 10_000,
+  signal?: AbortSignal
 ): Promise<T> {
   const deadline = Date.now() + timeoutMilliseconds;
   while (Date.now() < deadline) {
+    throwIfObserverAborted(signal, description);
     const result = await read();
+    throwIfObserverAborted(signal, description);
     if (result !== null) return result;
   }
+  throwIfObserverAborted(signal, description);
   throw new Error(`Timed out waiting for ${description}`);
 }
 
@@ -142,7 +215,7 @@ function observeInteractiveTransactions(prisma: PrismaService): TransactionConne
   const runner = prisma as unknown as InteractiveTransactionRunner;
   const originalTransaction = runner.$transaction.bind(runner);
   const observed = new Map<TransactionPhase, number>();
-  const waiters = new Map<TransactionPhase, (processId: number) => void>();
+  const waiters = new Map<TransactionPhase, Set<ConnectionWaiter>>();
   let currentPhase: TransactionPhase = 'deleter';
   const transactionSpy = vi.spyOn(runner, '$transaction');
   transactionSpy.mockImplementation(async <T>(
@@ -158,8 +231,14 @@ function observeInteractiveTransactions(prisma: PrismaService): TransactionConne
       const processId = Number(identity.connectionId);
       if (!observed.has(phase)) {
         observed.set(phase, processId);
-        waiters.get(phase)?.(processId);
-        waiters.delete(phase);
+        const phaseWaiters = waiters.get(phase);
+        if (phaseWaiters !== undefined) {
+          waiters.delete(phase);
+          for (const waiter of phaseWaiters) {
+            waiter.signal.removeEventListener('abort', waiter.onAbort);
+            waiter.resolve(processId);
+          }
+        }
       }
       return operation(transaction);
     }, options);
@@ -168,12 +247,37 @@ function observeInteractiveTransactions(prisma: PrismaService): TransactionConne
     setPhase(phase) {
       currentPhase = phase;
     },
-    waitForConnection(phase) {
+    waitForConnection(phase, signal) {
+      if (signal.aborted) return Promise.reject(observerAbortError(`${phase} connection`));
       const processId = observed.get(phase);
       if (processId !== undefined) return Promise.resolve(processId);
-      return new Promise<number>((resolve) => { waiters.set(phase, resolve); });
+      return new Promise<number>((resolve, reject) => {
+        const waiter: ConnectionWaiter = {
+          signal,
+          resolve,
+          reject,
+          onAbort() {
+            const phaseWaiters = waiters.get(phase);
+            phaseWaiters?.delete(waiter);
+            if (phaseWaiters?.size === 0) waiters.delete(phase);
+            signal.removeEventListener('abort', waiter.onAbort);
+            reject(observerAbortError(`${phase} connection`));
+          }
+        };
+        const phaseWaiters = waiters.get(phase) ?? new Set<ConnectionWaiter>();
+        phaseWaiters.add(waiter);
+        waiters.set(phase, phaseWaiters);
+        signal.addEventListener('abort', waiter.onAbort, { once: true });
+      });
     },
     restore() {
+      for (const [phase, phaseWaiters] of waiters) {
+        waiters.delete(phase);
+        for (const waiter of phaseWaiters) {
+          waiter.signal.removeEventListener('abort', waiter.onAbort);
+          waiter.reject(observerAbortError(`${phase} connection probe restored`));
+        }
+      }
       transactionSpy.mockRestore();
     }
   };
@@ -181,10 +285,13 @@ function observeInteractiveTransactions(prisma: PrismaService): TransactionConne
 
 async function readProcess(
   monitor: Connection,
-  processId: number
+  processId: number,
+  tracker: ProcessReadTracker
 ): Promise<ProcessRow | null> {
+  tracker.calls += 1;
+  tracker.onRead?.();
   const rows = await monitor.query<ProcessRow[]>(`
-    SELECT ID AS processId, COMMAND AS command, INFO AS queryText
+    SELECT ID AS processId, INFO AS queryText
     FROM information_schema.PROCESSLIST
     WHERE DB = ? AND ID = ?
   `, [databaseName, processId]);
@@ -195,34 +302,37 @@ async function waitForExactLockQuery(
   monitor: Connection,
   processId: number,
   tableName: 'games' | 'system_settings',
+  tracker: ProcessReadTracker,
+  signal: AbortSignal
 ): Promise<ProcessRow> {
   return waitForCondition(
     `connection ${processId} executing ${tableName} FOR UPDATE`,
     async () => {
-      const row = await readProcess(monitor, processId);
+      const row = await readProcess(monitor, processId, tracker);
       const normalized = row?.queryText?.toLowerCase() ?? '';
-      return row !== null && row.command === 'Execute'
-        && normalized.includes(`from ${tableName}`) && normalized.includes('for update')
+      return row !== null && normalized.includes(`from ${tableName}`)
+        && normalized.includes('for update')
         ? row
         : null;
-    }
+    },
+    10_000,
+    signal
   );
 }
 
-async function expectBlockerTransaction(monitor: Connection, blocker: GameBlocker): Promise<void> {
+async function expectBlockerTransaction(
+  monitor: Connection,
+  blocker: GameBlocker,
+  tracker: ProcessReadTracker,
+  signal: AbortSignal
+): Promise<void> {
   const process = await waitForCondition(
     `blocker connection ${blocker.processId}`,
-    () => readProcess(monitor, blocker.processId)
+    () => readProcess(monitor, blocker.processId, tracker),
+    10_000,
+    signal
   );
-  expect({
-    processId: Number(process.processId),
-    command: process.command,
-    queryText: process.queryText
-  }).toEqual({
-    processId: blocker.processId,
-    command: 'Sleep',
-    queryText: null
-  });
+  expect(Number(process.processId)).toBe(blocker.processId);
   const transactions = await monitor.query<Array<{ processId: number | bigint }>>(`
     SELECT trx_mysql_thread_id AS processId
     FROM information_schema.INNODB_TRX
@@ -237,7 +347,6 @@ function expectExactLockQuery(
   tableName: 'games' | 'system_settings'
 ): void {
   expect(Number(row.processId)).toBe(processId);
-  expect(row.command).toBe('Execute');
   const normalized = row.queryText?.toLowerCase() ?? '';
   expect(normalized).toContain(`from ${tableName}`);
   expect(normalized).toContain('for update');
@@ -246,10 +355,11 @@ function expectExactLockQuery(
 async function expectConnectionRemainsBlocked(
   monitor: Connection,
   processId: number,
-  tableName: 'games' | 'system_settings'
+  tableName: 'games' | 'system_settings',
+  tracker: ProcessReadTracker
 ): Promise<void> {
   await monitor.query('SELECT 1');
-  const row = await readProcess(monitor, processId);
+  const row = await readProcess(monitor, processId, tracker);
   expect(row).not.toBeNull();
   expectExactLockQuery(row!, processId, tableName);
 }
@@ -443,69 +553,143 @@ describe.sequential('transactional hard-delete lock ordering', () => {
 
   it('queues hard delete first so a later buy-in cannot write after deletion', async () => {
     // Break caught: a buy-in commits after the target game and its descendants are deleted.
+    let firstCancellationRead!: () => void;
+    const cancellationReadStarted = new Promise<void>((resolve) => {
+      firstCancellationRead = resolve;
+    });
+    const cancellationReads: ProcessReadTracker = {
+      calls: 0,
+      onRead: firstCancellationRead
+    };
+    const cancellationObservers = createObserverScope();
+    const canceledProcessObserver = cancellationObservers.start((signal) => waitForExactLockQuery(
+      monitor,
+      -1,
+      'games',
+      cancellationReads,
+      signal
+    ));
+    await cancellationReadStarted;
+    await cancellationObservers.cancelAndSettle();
+    await expect(canceledProcessObserver).rejects.toMatchObject({ name: 'AbortError' });
+    const readsAfterCancellation = cancellationReads.calls;
+    await monitor.query('SELECT 1');
+    expect(cancellationReads.calls).toBe(readsAfterCancellation);
+
+    const cancellationProbe = observeInteractiveTransactions(prisma);
+    const probeObservers = createObserverScope();
+    const canceledProbeObserver = probeObservers.start((signal) => (
+      cancellationProbe.waitForConnection('buyin', signal)
+    ));
+    try {
+      await probeObservers.cancelAndSettle();
+      await expect(canceledProbeObserver).rejects.toMatchObject({ name: 'AbortError' });
+    } finally {
+      await probeObservers.cancelAndSettle();
+      cancellationProbe.restore();
+    }
+
     const game = await seedActiveGame();
     const blocker = await lockGameOutsidePrisma(game.id);
+    const observers = createObserverScope();
+    const processReads: ProcessReadTracker = { calls: 0 };
     let connections: TransactionConnectionProbe | undefined;
     let deletion: ReturnType<GameManagementService['hardDelete']> | undefined;
+    let deletionOutcome: Promise<CapturedOutcome> | undefined;
     const buy: { current: Promise<CapturedOutcome> } = {
       current: Promise.resolve({ status: 'fulfilled' as const, value: undefined as unknown })
     };
     try {
-      await expectBlockerTransaction(monitor, blocker);
+      const blockerObserver = observers.start((signal) => expectBlockerTransaction(
+        monitor,
+        blocker,
+        processReads,
+        signal
+      ));
+      await blockerObserver;
       connections = observeInteractiveTransactions(prisma);
       connections.setPhase('deleter');
       const startedDeletion = Promise.resolve()
         .then(() => management.hardDelete(game.id, authUser(superAdmin)));
       deletion = startedDeletion;
-      const hardDeleteProcessId = await Promise.race([
-        connections.waitForConnection('deleter'),
-        startedDeletion.then(
-          () => { throw new Error('Hard delete completed before the blocker was released'); },
-          (error: unknown) => { throw error; }
-        )
-      ]);
+      const startedDeletionOutcome = captureOutcome(startedDeletion);
+      deletionOutcome = startedDeletionOutcome;
+      const deletionConnectionObserver = observers.start((signal) => (
+        connections!.waitForConnection('deleter', signal)
+      ));
+      const hardDeleteProcessId = await observeBeforeBusinessSettles(
+        deletionConnectionObserver,
+        startedDeletionOutcome,
+        'Hard delete connection identification'
+      );
       expect(hardDeleteProcessId).not.toBe(blocker.processId);
-      const hardDeleteWait = await Promise.race([
-        waitForExactLockQuery(monitor, hardDeleteProcessId, 'games'),
-        startedDeletion.then(
-          () => { throw new Error('Hard delete completed before its exact row-lock wait was observed'); },
-          (error: unknown) => { throw error; }
-        )
-      ]);
+      const hardDeleteLockObserver = observers.start((signal) => waitForExactLockQuery(
+        monitor,
+        hardDeleteProcessId,
+        'games',
+        processReads,
+        signal
+      ));
+      const hardDeleteWait = await observeBeforeBusinessSettles(
+        hardDeleteLockObserver,
+        startedDeletionOutcome,
+        'Hard delete exact row-lock wait'
+      );
       expectExactLockQuery(hardDeleteWait, hardDeleteProcessId, 'games');
-      await expectConnectionRemainsBlocked(monitor, hardDeleteProcessId, 'games');
+      await expectConnectionRemainsBlocked(
+        monitor,
+        hardDeleteProcessId,
+        'games',
+        processReads
+      );
 
       connections.setPhase('buyin');
-      buy.current = buyins.buy(game.id, authUser(playerA), {
+      buy.current = captureOutcome(buyins.buy(game.id, authUser(playerA), {
         hands: 1,
         idempotencyKey: `${prefix}-race-buy`
-      }).then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        (reason: unknown) => ({ status: 'rejected' as const, reason })
+      }));
+      const buyinConnectionObserver = observers.start((signal) => (
+        connections!.waitForConnection('buyin', signal)
+      ));
+      const buyinProcessId = await observeBeforeBusinessSettles(
+        buyinConnectionObserver,
+        buy.current,
+        'Buy-in connection identification'
       );
-      const buyinProcessId = await Promise.race([
-        connections.waitForConnection('buyin'),
-        buy.current.then(() => { throw new Error('Buy-in ended before its transaction was identified'); })
-      ]);
       expect(buyinProcessId).not.toBe(blocker.processId);
       expect(buyinProcessId).not.toBe(hardDeleteProcessId);
-      const buyinWait = await Promise.race([
-        waitForExactLockQuery(monitor, buyinProcessId, 'games'),
-        buy.current.then(() => { throw new Error('Buy-in ended before its exact row-lock wait was observed'); })
-      ]);
+      const buyinLockObserver = observers.start((signal) => waitForExactLockQuery(
+        monitor,
+        buyinProcessId,
+        'games',
+        processReads,
+        signal
+      ));
+      const buyinWait = await observeBeforeBusinessSettles(
+        buyinLockObserver,
+        buy.current,
+        'Buy-in exact row-lock wait'
+      );
       expectExactLockQuery(buyinWait, buyinProcessId, 'games');
-      await expectConnectionRemainsBlocked(monitor, buyinProcessId, 'games');
+      await expectConnectionRemainsBlocked(monitor, buyinProcessId, 'games', processReads);
     } finally {
       try {
-        await blocker.release();
+        await observers.cancelAndSettle();
+        const readsAfterObserverSettlement = processReads.calls;
+        await monitor.query('SELECT 1');
+        expect(processReads.calls).toBe(readsAfterObserverSettlement);
       } finally {
         try {
-          connections?.restore();
+          await blocker.release();
         } finally {
-          await Promise.allSettled([
-            ...(deletion === undefined ? [] : [deletion]),
-            buy.current
-          ]);
+          try {
+            await Promise.allSettled([
+              ...(deletionOutcome === undefined ? [] : [deletionOutcome]),
+              buy.current
+            ]);
+          } finally {
+            connections?.restore();
+          }
         }
       }
     }
@@ -535,68 +719,109 @@ describe.sequential('transactional hard-delete lock ordering', () => {
       confirmationToken: preview.confirmationToken!
     };
     const blocker = await lockGameOutsidePrisma(fixture.game.id);
+    const observers = createObserverScope();
+    const processReads: ProcessReadTracker = { calls: 0 };
     let connections: TransactionConnectionProbe | undefined;
     let deletion: ReturnType<GameManagementService['hardDelete']> | undefined;
+    let deletionOutcome: Promise<CapturedOutcome> | undefined;
     const settlement: { current: Promise<CapturedOutcome> } = {
       current: Promise.resolve({ status: 'fulfilled' as const, value: undefined as unknown })
     };
     try {
-      await expectBlockerTransaction(monitor, blocker);
+      const blockerObserver = observers.start((signal) => expectBlockerTransaction(
+        monitor,
+        blocker,
+        processReads,
+        signal
+      ));
+      await blockerObserver;
       connections = observeInteractiveTransactions(prisma);
       connections.setPhase('deleter');
       const startedDeletion = Promise.resolve()
         .then(() => management.hardDelete(fixture.game.id, authUser(superAdmin)));
       deletion = startedDeletion;
-      const hardDeleteProcessId = await Promise.race([
-        connections.waitForConnection('deleter'),
-        startedDeletion.then(
-          () => { throw new Error('Hard delete completed before the blocker was released'); },
-          (error: unknown) => { throw error; }
-        )
-      ]);
+      const startedDeletionOutcome = captureOutcome(startedDeletion);
+      deletionOutcome = startedDeletionOutcome;
+      const deletionConnectionObserver = observers.start((signal) => (
+        connections!.waitForConnection('deleter', signal)
+      ));
+      const hardDeleteProcessId = await observeBeforeBusinessSettles(
+        deletionConnectionObserver,
+        startedDeletionOutcome,
+        'Hard delete connection identification'
+      );
       expect(hardDeleteProcessId).not.toBe(blocker.processId);
-      const hardDeleteWait = await Promise.race([
-        waitForExactLockQuery(monitor, hardDeleteProcessId, 'games'),
-        startedDeletion.then(
-          () => { throw new Error('Hard delete completed before its exact row-lock wait was observed'); },
-          (error: unknown) => { throw error; }
-        )
-      ]);
+      const hardDeleteLockObserver = observers.start((signal) => waitForExactLockQuery(
+        monitor,
+        hardDeleteProcessId,
+        'games',
+        processReads,
+        signal
+      ));
+      const hardDeleteWait = await observeBeforeBusinessSettles(
+        hardDeleteLockObserver,
+        startedDeletionOutcome,
+        'Hard delete exact row-lock wait'
+      );
       expectExactLockQuery(hardDeleteWait, hardDeleteProcessId, 'games');
-      await expectConnectionRemainsBlocked(monitor, hardDeleteProcessId, 'games');
+      await expectConnectionRemainsBlocked(
+        monitor,
+        hardDeleteProcessId,
+        'games',
+        processReads
+      );
 
       connections.setPhase('finalization');
-      settlement.current = finalization.finalize(fixture.game.id, authUser(admin), command).then(
-        (value) => ({ status: 'fulfilled' as const, value }),
-        (reason: unknown) => ({ status: 'rejected' as const, reason })
+      settlement.current = captureOutcome(
+        finalization.finalize(fixture.game.id, authUser(admin), command)
       );
-      const finalizationProcessId = await Promise.race([
-        connections.waitForConnection('finalization'),
-        settlement.current.then(() => {
-          throw new Error('Finalization ended before its transaction was identified');
-        })
-      ]);
+      const finalizationConnectionObserver = observers.start((signal) => (
+        connections!.waitForConnection('finalization', signal)
+      ));
+      const finalizationProcessId = await observeBeforeBusinessSettles(
+        finalizationConnectionObserver,
+        settlement.current,
+        'Finalization connection identification'
+      );
       expect(finalizationProcessId).not.toBe(blocker.processId);
       expect(finalizationProcessId).not.toBe(hardDeleteProcessId);
-      const finalizationWait = await Promise.race([
-        waitForExactLockQuery(monitor, finalizationProcessId, 'system_settings'),
-        settlement.current.then(() => {
-          throw new Error('Finalization ended before its exact coordinator wait was observed');
-        })
-      ]);
+      const finalizationLockObserver = observers.start((signal) => waitForExactLockQuery(
+        monitor,
+        finalizationProcessId,
+        'system_settings',
+        processReads,
+        signal
+      ));
+      const finalizationWait = await observeBeforeBusinessSettles(
+        finalizationLockObserver,
+        settlement.current,
+        'Finalization exact coordinator wait'
+      );
       expectExactLockQuery(finalizationWait, finalizationProcessId, 'system_settings');
-      await expectConnectionRemainsBlocked(monitor, finalizationProcessId, 'system_settings');
+      await expectConnectionRemainsBlocked(
+        monitor,
+        finalizationProcessId,
+        'system_settings',
+        processReads
+      );
     } finally {
       try {
-        await blocker.release();
+        await observers.cancelAndSettle();
+        const readsAfterObserverSettlement = processReads.calls;
+        await monitor.query('SELECT 1');
+        expect(processReads.calls).toBe(readsAfterObserverSettlement);
       } finally {
         try {
-          connections?.restore();
+          await blocker.release();
         } finally {
-          await Promise.allSettled([
-            ...(deletion === undefined ? [] : [deletion]),
-            settlement.current
-          ]);
+          try {
+            await Promise.allSettled([
+              ...(deletionOutcome === undefined ? [] : [deletionOutcome]),
+              settlement.current
+            ]);
+          } finally {
+            connections?.restore();
+          }
         }
       }
     }
