@@ -7,6 +7,7 @@ import {
   Inject,
   Param,
   Post,
+  Query,
   Res,
   UseGuards
 } from '@nestjs/common';
@@ -14,7 +15,8 @@ import {
   createGameSchema,
   type CreateGameRequest,
   type CurrentGamesResponse,
-  type GameSnapshotDto
+  type GameSnapshotDto,
+  type ManagedGamesResponseDto
 } from '@poker/contracts';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { CurrentUser } from '../common/auth/current-user.decorator.js';
@@ -23,6 +25,11 @@ import { RolesGuard } from '../common/auth/roles.guard.js';
 import { SessionGuard } from '../common/auth/session.guard.js';
 import { ZodValidationPipe } from '../common/validation/zod-validation.pipe.js';
 import { Role } from '../generated/prisma/client.js';
+import {
+  GameManagementService,
+  type ManagementQuery,
+  managementQuerySchema
+} from './game-management.service.js';
 import { GamesService } from './games.service.js';
 
 interface LocationResponse {
@@ -32,7 +39,10 @@ interface LocationResponse {
 @Controller('games')
 @UseGuards(SessionGuard, RolesGuard)
 export class GamesController {
-  constructor(@Inject(GamesService) private readonly games: GamesService) {}
+  constructor(
+    @Inject(GamesService) private readonly games: GamesService,
+    @Inject(GameManagementService) private readonly gameManagement: GameManagementService
+  ) {}
 
   @Post()
   @Roles(Role.ADMIN, Role.SUPER_ADMIN)
@@ -80,6 +90,14 @@ export class GamesController {
   @Get('current')
   current(): Promise<CurrentGamesResponse> {
     return this.games.current();
+  }
+
+  @Get('manage')
+  @Roles(Role.SUPER_ADMIN)
+  manage(
+    @Query(new ZodValidationPipe(managementQuerySchema)) query: ManagementQuery
+  ): Promise<ManagedGamesResponseDto> {
+    return this.gameManagement.list(query);
   }
 
   @Get(':id/snapshot')
