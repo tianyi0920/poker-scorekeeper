@@ -341,8 +341,11 @@ describe.sequential('atomic final settlement', () => {
     await expect(prisma.activePlayerLock.count({ where: { gameId: fixture.game.id } })).resolves.toBe(0);
     await expect(prisma.game.findUniqueOrThrow({ where: { id: fixture.game.id } }))
       .resolves.toMatchObject({ status: GameStatus.COMPLETED, settledById: admin.id });
+    const settlement = await prisma.settlement.findUniqueOrThrow({
+      where: { gameId: fixture.game.id }, select: { id: true }
+    });
     await expect(prisma.auditLog.count({
-      where: { action: 'SETTLEMENT_FINALIZED', entityType: 'SETTLEMENT' }
+      where: { action: 'SETTLEMENT_FINALIZED', entityType: 'SETTLEMENT', entityId: settlement.id }
     })).resolves.toBe(1);
   });
 
