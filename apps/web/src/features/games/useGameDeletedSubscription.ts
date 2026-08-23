@@ -55,8 +55,10 @@ export function useGameDeletedSubscription(
     if (gameId === '') return;
 
     const socket = socketFactory();
+    let disposed = false;
     const connect: GameSocketListener = () => {
       socket.emit('game.join', { gameId, knownVersion: 0 }, (value) => {
+        if (disposed) return;
         const acknowledgement = gameJoinAckSchema.safeParse(value);
         if (!acknowledgement.success) return;
         if (acknowledgement.data.ok) {
@@ -82,6 +84,7 @@ export function useGameDeletedSubscription(
     socket.connect();
 
     return () => {
+      disposed = true;
       if (socket.connected) socket.emit('game.leave', { gameId });
       socket.off('connect', connect);
       socket.off('game.deleted', receiveDeleted);

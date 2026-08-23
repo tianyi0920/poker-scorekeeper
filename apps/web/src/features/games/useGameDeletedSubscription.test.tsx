@@ -7,9 +7,11 @@ class FakeGameSocket implements GameSocketClient {
   connected = false;
   readonly emitted: Array<{ event: string; payload: unknown }> = [];
   joinAcknowledgement: unknown = { ok: true, gameId: 'game-1', version: 1, snapshotSent: false };
+  deferJoinAcknowledgements = false;
   connectCalls = 0;
   disconnectCalls = 0;
   private readonly listeners = new Map<string, Set<GameSocketListener>>();
+  private readonly deferredJoinAcknowledgements: Array<() => void> = [];
 
   on(event: string, listener: GameSocketListener): this {
     const listeners = this.listeners.get(event) ?? new Set<GameSocketListener>();
@@ -25,7 +27,12 @@ class FakeGameSocket implements GameSocketClient {
 
   emit(event: string, payload?: unknown, acknowledgement?: (value: unknown) => void): this {
     this.emitted.push({ event, payload });
-    if (event === 'game.join' && acknowledgement !== undefined) acknowledgement(this.joinAcknowledgement);
+    if (event === 'game.join' && acknowledgement !== undefined) {
+      const value = this.joinAcknowledgement;
+      const deliverAcknowledgement = () => acknowledgement(value);
+      if (this.deferJoinAcknowledgements) this.deferredJoinAcknowledgements.push(deliverAcknowledgement);
+      else deliverAcknowledgement();
+    }
     return this;
   }
 
@@ -48,6 +55,12 @@ class FakeGameSocket implements GameSocketClient {
 
   listenerCount(): number {
     return [...this.listeners.values()].reduce((count, listeners) => count + listeners.size, 0);
+  }
+
+  acknowledgeDeferredJoin(): void {
+    const acknowledgement = this.deferredJoinAcknowledgements.shift();
+    if (acknowledgement === undefined) throw new Error('No deferred game.join acknowledgement');
+    acknowledgement();
   }
 }
 
@@ -166,4 +179,42 @@ it('does not turn an initially missing game or malformed protocol data into a de
   expect(onDeleted).not.toHaveBeenCalled();
   unmount();
   expect(socket.listenerCount()).toBe(0);
+});
+
+it('ignores a strict NOT_FOUND acknowledgement that arrives after the hook unmounts', () => {
+  // Break caught: a released settlement effect lets its late join ACK hijack navigation after normal departure.
+  const socket = new FakeGameSocket();
+  const onDeleted = vi.fn();
+  const { unmount } = renderHook(() => useGameDeletedSubscription('game-1', onDeleted, () => socket));
+  socket.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+  socket.deferJoinAcknowledgements = true;
+  act(() => socket.fire('connect'));
+
+  unmount();
+  act(() => socket.acknowledgeDeferredJoin());
+
+  expect(onDeleted).not.toHaveBeenCalled();
+});
+
+it('ignores a deferred acknowledgement from an earlier same-game route effect', () => {
+  // Break caught: game-1 → game-2 → game-1 lets the first game-1 ACK delete the fresh game-1 route instance.
+  const first = new FakeGameSocket();
+  const second = new FakeGameSocket();
+  const third = new FakeGameSocket();
+  const sockets = [first, second, third];
+  const onDeleted = vi.fn();
+  const socketFactory = () => sockets.shift()!;
+  const { rerender } = renderHook(
+    ({ gameId }) => useGameDeletedSubscription(gameId, onDeleted, socketFactory),
+    { initialProps: { gameId: 'game-1' } }
+  );
+  first.joinAcknowledgement = { ok: false, code: 'NOT_FOUND' };
+  first.deferJoinAcknowledgements = true;
+  act(() => first.fire('connect'));
+
+  rerender({ gameId: 'game-2' });
+  rerender({ gameId: 'game-1' });
+  act(() => first.acknowledgeDeferredJoin());
+
+  expect(onDeleted).not.toHaveBeenCalled();
 });
