@@ -6,8 +6,15 @@ import { validateCiTestEnvironment } from '../../../scripts/database/ci-test-env
 
 const requireFromApi = createRequire(resolve('apps/api/package.json'));
 const { parse } = requireFromApi('dotenv') as { parse(source: string): Record<string, string> };
+interface TestDatabaseConnection {
+  beginTransaction(): Promise<void>;
+  query(sql: string, parameters?: unknown[]): Promise<unknown>;
+  commit(): Promise<void>;
+  rollback(): Promise<void>;
+  end(): Promise<void>;
+}
 const mariadb = requireFromApi('mariadb') as {
-  createConnection(options: Record<string, unknown>): Promise<any>;
+  createConnection(options: Record<string, unknown>): Promise<TestDatabaseConnection>;
 };
 
 export interface TestDatabaseEnvironment {
@@ -49,6 +56,54 @@ export async function openTestDatabase() {
     database: url.pathname.slice(1),
     connectTimeout: 10_000
   });
+}
+
+export interface GameGraphCounts {
+  settlementFeeAllocations: number;
+  settlementResults: number;
+  settlements: number;
+  settlementDrafts: number;
+  buyinEvents: number;
+  activePlayerLocks: number;
+  gamePlayers: number;
+  games: number;
+  hardDeleteAudits: number;
+}
+
+export async function readGameGraphCounts(gameId: string): Promise<GameGraphCounts> {
+  const connection = await openTestDatabase();
+  try {
+    const count = async (sql: string, parameters: unknown[]): Promise<number> => {
+      const rows = await connection.query(sql, parameters) as Array<{ count: number | bigint }>;
+      const [row] = rows;
+      if (row === undefined || rows.length !== 1) {
+        throw new Error('Expected exactly one target graph count row');
+      }
+      return Number(row.count);
+    };
+    return {
+      settlementFeeAllocations: await count(
+        'SELECT COUNT(*) AS count FROM settlement_fee_allocations WHERE settlement_id IN (SELECT id FROM settlements WHERE game_id = ?)',
+        [gameId]
+      ),
+      settlementResults: await count(
+        'SELECT COUNT(*) AS count FROM settlement_results WHERE settlement_id IN (SELECT id FROM settlements WHERE game_id = ?)',
+        [gameId]
+      ),
+      settlements: await count('SELECT COUNT(*) AS count FROM settlements WHERE game_id = ?', [gameId]),
+      settlementDrafts: await count('SELECT COUNT(*) AS count FROM settlement_drafts WHERE game_id = ?', [gameId]),
+      buyinEvents: await count('SELECT COUNT(*) AS count FROM buyin_events WHERE game_id = ?', [gameId]),
+      activePlayerLocks: await count('SELECT COUNT(*) AS count FROM active_player_locks WHERE game_id = ?', [gameId]),
+      gamePlayers: await count('SELECT COUNT(*) AS count FROM game_players WHERE game_id = ?', [gameId]),
+      games: await count('SELECT COUNT(*) AS count FROM games WHERE id = ?', [gameId]),
+      hardDeleteAudits: await count(
+        'SELECT COUNT(*) AS count FROM audit_logs WHERE action = ? AND entity_type = ? AND entity_id = ?',
+        ['GAME_HARD_DELETED', 'GAME', gameId]
+      )
+    };
+  } finally {
+    await connection.end();
+  }
 }
 
 export async function cleanupTaskGame(gameId: string): Promise<void> {
