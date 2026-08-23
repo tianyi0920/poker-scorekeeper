@@ -23,7 +23,9 @@ function authUser(user: User): AuthUser {
     username: user.username,
     nickname: user.nickname,
     role: user.role,
-    mustChangePassword: user.mustChangePassword
+    mustChangePassword: user.mustChangePassword,
+    avatarKind: user.avatarKind,
+    avatarValue: user.avatarValue
   };
 }
 

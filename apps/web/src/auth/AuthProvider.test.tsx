@@ -9,7 +9,15 @@ const csrfToken = 'a'.repeat(64);
 
 function session(username: string): AuthSessionResponse {
   return {
-    user: { id: username, username, nickname: username, role: 'USER', mustChangePassword: false },
+    user: {
+      id: username,
+      username,
+      nickname: username,
+      role: 'USER',
+      mustChangePassword: false,
+      avatarKind: 'PRESET',
+      avatarValue: 'preset-01'
+    },
     csrfToken
   };
 }

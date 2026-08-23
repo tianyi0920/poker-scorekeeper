@@ -6,6 +6,8 @@ export interface AuthUser {
   nickname: string;
   role: Role;
   mustChangePassword: boolean;
+  avatarKind: 'PRESET' | 'UPLOAD';
+  avatarValue: string;
 }
 
 export interface AuthenticatedSession {

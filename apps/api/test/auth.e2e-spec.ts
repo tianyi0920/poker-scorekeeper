@@ -7,7 +7,7 @@ import type { RequestWithAuth } from '../src/common/auth/auth-user.js';
 import { ROLES_KEY } from '../src/common/auth/roles.decorator.js';
 import { RolesGuard } from '../src/common/auth/roles.guard.js';
 import { SessionGuard } from '../src/common/auth/session.guard.js';
-import { Role, type User } from '../src/generated/prisma/client.js';
+import { AvatarKind, Role, type User } from '../src/generated/prisma/client.js';
 import { createApp } from '../src/main.js';
 import { PrismaService } from '../src/prisma/prisma.service.js';
 import { SessionService } from '../src/auth/session.service.js';
@@ -211,6 +211,10 @@ describe.sequential('session authentication', () => {
 
   it('logs in with an Argon2id password, stores only the token hash, and returns the forced-change state', async () => {
     const startedAt = Date.now();
+    await prisma.user.update({
+      where: { id: users.forced.id },
+      data: { avatarKind: AvatarKind.PRESET, avatarValue: 'preset-13' }
+    });
     const response = await login(users.forced).expect(201);
     const serializedCookie = serializedCookieFrom(response);
     const cookie = cookieFrom(response);
@@ -228,7 +232,9 @@ describe.sequential('session authentication', () => {
       username: users.forced.username,
       nickname: users.forced.nickname,
       role: 'USER',
-      mustChangePassword: true
+      mustChangePassword: true,
+      avatarKind: 'PRESET',
+      avatarValue: 'preset-13'
     });
 
     const stored = await prisma.authSession.findUniqueOrThrow({ where: { tokenHash } });
@@ -258,13 +264,17 @@ describe.sequential('session authentication', () => {
       .expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
   });
 
-  it('returns the current database role on every authenticated request', async () => {
+  it('returns the current database role and uploaded avatar on every authenticated request', async () => {
     const loginResponse = await login(users.standard).expect(201);
     const cookie = cookieFrom(loginResponse);
 
     await prisma.user.update({
       where: { id: users.standard.id },
-      data: { role: Role.ADMIN }
+      data: {
+        role: Role.ADMIN,
+        avatarKind: AvatarKind.UPLOAD,
+        avatarValue: 'standard-current-upload.webp'
+      }
     });
 
     await request(app.getHttpServer())
@@ -274,6 +284,8 @@ describe.sequential('session authentication', () => {
       .expect(({ body }) => {
         expect(body.user.id).toBe(users.standard.id);
         expect(body.user.role).toBe('ADMIN');
+        expect(body.user.avatarKind).toBe('UPLOAD');
+        expect(body.user.avatarValue).toBe('standard-current-upload.webp');
         expect(body.csrfToken).toMatch(/^[a-f0-9]{64}$/);
       });
   });
@@ -487,6 +499,13 @@ describe.sequential('session authentication', () => {
   });
 
   it('changes the password, clears forced-change state, and revokes every other session', async () => {
+    await prisma.user.update({
+      where: { id: users.change.id },
+      data: {
+        avatarKind: AvatarKind.UPLOAD,
+        avatarValue: 'change-password-upload.webp'
+      }
+    });
     const primaryLogin = await login(users.change).expect(201);
     const secondaryLogin = await login(users.change).expect(201);
     const primaryCookie = cookieFrom(primaryLogin);
@@ -500,7 +519,11 @@ describe.sequential('session authentication', () => {
       .set('X-CSRF-Token', primaryLogin.body.csrfToken)
       .send({ currentPassword: fixturePassword, newPassword: changedPassword })
       .expect(200)
-      .expect(({ body }) => expect(body.user.mustChangePassword).toBe(false));
+      .expect(({ body }) => expect(body.user).toMatchObject({
+        mustChangePassword: false,
+        avatarKind: 'UPLOAD',
+        avatarValue: 'change-password-upload.webp'
+      }));
 
     const [updatedUser, primarySession, secondarySession] = await Promise.all([
       prisma.user.findUniqueOrThrow({ where: { id: users.change.id } }),
@@ -543,7 +566,9 @@ describe.sequential('session authentication', () => {
         username: users.forced.username,
         nickname: users.forced.nickname,
         role: Role.USER,
-        mustChangePassword: false
+        mustChangePassword: false,
+        avatarKind: 'PRESET',
+        avatarValue: 'preset-01'
       }
     };
     const context = guardContext(authRequest, handler, RestrictedController);

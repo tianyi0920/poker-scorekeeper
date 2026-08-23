@@ -39,3 +39,41 @@ describe('session cookie transport security', () => {
     expect(service.cookieOptions().secure).toBe(true);
   });
 });
+
+describe('session authentication avatar mapping', () => {
+  it('returns an uploaded avatar filename exactly as stored on the authenticated user', async () => {
+    const rawToken = 'a'.repeat(64);
+    const now = new Date();
+    const service = new SessionService(
+      {
+        authSession: {
+          findUnique: async () => ({
+            id: 'session-1',
+            revokedAt: null,
+            expiresAt: new Date(now.getTime() + 60_000),
+            absoluteExpiresAt: new Date(now.getTime() + 120_000),
+            user: {
+              id: 'user-1',
+              username: 'avatar-user',
+              nickname: '头像用户',
+              role: 'USER',
+              mustChangePassword: false,
+              isActive: true,
+              deletedAt: null,
+              avatarKind: 'UPLOAD',
+              avatarValue: 'user-1-1710000000000.webp'
+            }
+          })
+        }
+      } as unknown as PrismaService,
+      { createToken: () => 'csrf-token' } as unknown as CsrfService
+    );
+
+    await expect(service.authenticateRawToken(rawToken)).resolves.toMatchObject({
+      user: {
+        avatarKind: 'UPLOAD',
+        avatarValue: 'user-1-1710000000000.webp'
+      }
+    });
+  });
+});

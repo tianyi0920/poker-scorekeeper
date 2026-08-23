@@ -7,7 +7,9 @@ export const authUserSchema = z.object({
   username: z.string(),
   nickname: z.string(),
   role: authRoleSchema,
-  mustChangePassword: z.boolean()
+  mustChangePassword: z.boolean(),
+  avatarKind: z.enum(['PRESET', 'UPLOAD']),
+  avatarValue: z.string()
 });
 
 export const loginRequestSchema = z.object({

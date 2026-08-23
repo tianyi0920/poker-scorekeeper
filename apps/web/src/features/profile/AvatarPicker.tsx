@@ -1,4 +1,4 @@
-import type { PresetAvatarId } from '@poker/contracts';
+import type { SelectablePresetAvatarId } from '@poker/contracts';
 import { useCallback, useEffect, useRef, useState, type ChangeEvent } from 'react';
 import { mutationMessage, scorekeeperApi, uploadAvatar, type AvatarMutationResponse, type PresetAvatarDto } from '../../api/resources.js';
 import { Toast } from '../../components/Toast.js';
@@ -84,7 +84,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     setBusy(true);
     setError(null);
     try {
-      const response = await scorekeeperApi.selectPresetAvatar({ presetId: id as PresetAvatarId });
+      const response = await scorekeeperApi.selectPresetAvatar({ presetId: id as SelectablePresetAvatarId });
       applyServerAvatar(response);
     } catch (reason) {
       setError(mutationMessage(reason, '头像保存失败'));

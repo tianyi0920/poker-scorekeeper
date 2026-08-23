@@ -7,7 +7,9 @@ const actor = {
   username: 'admin',
   nickname: 'Admin',
   role: 'SUPER_ADMIN',
-  mustChangePassword: false
+  mustChangePassword: false,
+  avatarKind: 'PRESET',
+  avatarValue: 'preset-01'
 } as const;
 
 describe('production acceptance ownership headers', () => {
