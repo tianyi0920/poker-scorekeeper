@@ -77,6 +77,12 @@ class FakeGameSocket implements GameSocketClient {
     if (acknowledgement === undefined) throw new Error('No deferred game.join acknowledgement');
     acknowledgement();
   }
+
+  acknowledgeLatestDeferredJoin(): void {
+    const acknowledgement = this.deferredJoinAcknowledgements.pop();
+    if (acknowledgement === undefined) throw new Error('No deferred game.join acknowledgement');
+    acknowledgement();
+  }
 }
 
 function players(count: number): GameSnapshotDto['players'] {
@@ -332,6 +338,46 @@ it('ignores a stale valid join acknowledgement after disconnecting from active p
 
   socket.deferJoinAcknowledgements = false;
   act(() => { socket.fire('connect'); });
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
+  fetchMock.mockClear();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(0);
+});
+
+it('ignores a stale valid join acknowledgement after server.error fails the current attempt', async () => {
+  // Break caught: a failed join can still accept its ACK before its already-scheduled retry runs.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+  fetchMock.mockClear();
+
+  socket.deferJoinAcknowledgements = true;
+  act(() => {
+    socket.connected = true;
+    socket.fire('connect');
+    socket.fire('server.error', { code: 'INTERNAL_ERROR' });
+    socket.acknowledgeDeferredJoin();
+  });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(socket.joined).toHaveLength(3);
+  await act(async () => { await vi.advanceTimersByTimeAsync(25_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(3);
+
+  act(() => { socket.acknowledgeLatestDeferredJoin(); });
   expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
   fetchMock.mockClear();
 

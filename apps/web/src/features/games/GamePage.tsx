@@ -138,68 +138,85 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   useEffect(() => {
     if (!hasSnapshot) return;
     const socket = socketFactory();
+    type JoinAttempt = { generation: number; timeout: number; acknowledged: boolean };
     let disposed = false;
-    let joinTimeout: number | undefined;
+    let activeJoin: JoinAttempt | undefined;
     let retryTimeout: number | undefined;
+    let retryGeneration: number | undefined;
     let joinGeneration = 0;
     setSocketReady(true);
 
     const clearJoinTimers = () => {
-      if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
+      if (activeJoin !== undefined) window.clearTimeout(activeJoin.timeout);
       if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
-      joinTimeout = undefined;
+      activeJoin = undefined;
       retryTimeout = undefined;
+      retryGeneration = undefined;
     };
     const scheduleJoinRetry = (generation: number) => {
-      if (disposed || !socket.connected) return;
-      if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
+      if (disposed || !socket.connected || generation !== joinGeneration || retryGeneration !== generation || retryTimeout !== undefined) return;
       const retry = window.setTimeout(() => {
-        if (disposed || generation !== joinGeneration || retryTimeout !== retry) return;
+        if (disposed || generation !== joinGeneration || retryGeneration !== generation || retryTimeout !== retry) return;
         retryTimeout = undefined;
+        retryGeneration = undefined;
         attemptJoin();
       }, 5_000);
       retryTimeout = retry;
     };
-    const failJoin = (generation: number) => {
-      if (disposed || generation !== joinGeneration) return;
-      if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
-      joinTimeout = undefined;
+    const beginJoinRetry = () => {
+      if (disposed || retryGeneration !== undefined) return;
+      const nextRetryGeneration = joinGeneration + 1;
+      joinGeneration = nextRetryGeneration;
+      retryGeneration = nextRetryGeneration;
       ensureFallbackGrace();
-      scheduleJoinRetry(generation);
+      scheduleJoinRetry(nextRetryGeneration);
+    };
+    const failJoin = (attempt: JoinAttempt | undefined) => {
+      if (disposed || attempt === undefined || activeJoin !== attempt || attempt.generation !== joinGeneration) return;
+      attempt.acknowledged = true;
+      window.clearTimeout(attempt.timeout);
+      activeJoin = undefined;
+      beginJoinRetry();
+    };
+    const failCurrentJoin = () => {
+      if (activeJoin !== undefined) {
+        failJoin(activeJoin);
+        return;
+      }
+      beginJoinRetry();
     };
     const attemptJoin = () => {
       if (disposed || !socket.connected) return;
       const generation = joinGeneration + 1;
       joinGeneration = generation;
-      if (joinTimeout !== undefined) window.clearTimeout(joinTimeout);
+      if (activeJoin !== undefined) window.clearTimeout(activeJoin.timeout);
+      activeJoin = undefined;
       if (retryTimeout !== undefined) window.clearTimeout(retryTimeout);
       retryTimeout = undefined;
+      retryGeneration = undefined;
       setRoomSynchronized(false);
-      let acknowledged = false;
+      const attempt = { generation, timeout: 0, acknowledged: false };
       const timeout = window.setTimeout(() => {
-        if (disposed || generation !== joinGeneration || acknowledged) return;
-        acknowledged = true;
-        if (joinTimeout === timeout) joinTimeout = undefined;
-        failJoin(generation);
+        if (disposed || activeJoin !== attempt || generation !== joinGeneration || attempt.acknowledged) return;
+        failJoin(attempt);
       }, 3_000);
-      joinTimeout = timeout;
+      attempt.timeout = timeout;
+      activeJoin = attempt;
       socket.emit('game.join', {
         gameId,
         knownVersion: snapshotRef.current?.version ?? 0
       }, (value) => {
-        if (disposed || generation !== joinGeneration || !socket.connected || acknowledged) return;
-        acknowledged = true;
-        if (joinTimeout === timeout) {
-          window.clearTimeout(timeout);
-          joinTimeout = undefined;
-        }
+        if (disposed || activeJoin !== attempt || generation !== joinGeneration || !socket.connected || attempt.acknowledged) return;
         const acknowledgement = gameJoinAckSchema.safeParse(value);
         if (!acknowledgement.success
           || !acknowledgement.data.ok
           || acknowledgement.data.gameId !== gameId) {
-          failJoin(generation);
+          failJoin(attempt);
           return;
         }
+        attempt.acknowledged = true;
+        window.clearTimeout(timeout);
+        activeJoin = undefined;
         stopFallback();
         setRoomSynchronized(true);
       });
@@ -237,11 +254,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (playerRakeUpdatedEventSchema.safeParse(value).success) void loadSnapshot(true);
     };
     const socketError = () => {
-      failJoin(joinGeneration);
+      failCurrentJoin();
     };
     const receiveServerError = (value: unknown) => {
       if (serverErrorEventSchema.safeParse(value).success) {
-        failJoin(joinGeneration);
+        failCurrentJoin();
       }
     };
 
