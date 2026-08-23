@@ -1,7 +1,6 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { Button } from '../../components/Button.js';
-
-const integerFormatter = new Intl.NumberFormat('zh-CN');
+import { formatSignedMoney } from '../../components/money-format.js';
 
 export function PurchaseTimeline({
   purchases,
@@ -50,7 +49,7 @@ export function PurchaseTimeline({
               <div className="timeline-meta">
                 <span>操作：{purchase.actorNickname}</span>
                 <b className={financialAmount > 0n ? 'money--positive' : 'money--negative'}>
-                  {financialAmount > 0n ? '+' : financialAmount < 0n ? '-' : ''}¥{integerFormatter.format(financialAmount < 0n ? -financialAmount : financialAmount)}
+                  {formatSignedMoney(financialAmount.toString())}
                 </b>
               </div>
               {canAdjust && isLatestSelf && selfPlayerId !== undefined && (

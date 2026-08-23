@@ -54,7 +54,7 @@ it('shows the complete financial identity on every compact twelve-player seat', 
   expect(screen.getByRole('img', { name: '牌友1的头像' })).toBeInTheDocument();
   expect(screen.getByText('牌友1')).toBeInTheDocument();
   expect(screen.getByText('1手')).toBeInTheDocument();
-  expect(screen.getByText('-¥300')).toBeInTheDocument();
+  expect(screen.getByText('−¥300')).toBeInTheDocument();
 });
 
 it('keeps the bottom self seat clear of the fixed purchase dock', () => {

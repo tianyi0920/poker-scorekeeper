@@ -1,7 +1,6 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import type { CSSProperties } from 'react';
-
-const integerFormatter = new Intl.NumberFormat('zh-CN');
+import { formatSignedMoney, formatUnsignedMoney } from '../../components/money-format.js';
 
 export function Seat({
   player,
@@ -16,7 +15,9 @@ export function Seat({
   self: boolean;
   compact: boolean;
 }) {
-  const amount = integerFormatter.format(BigInt(player.buyInAmount));
+  const amount = -BigInt(player.buyInAmount);
+  const formattedAmount = formatSignedMoney(amount.toString());
+  const ariaAmount = formatUnsignedMoney(player.buyInAmount).slice(1);
   return (
     <article
       className={`table-seat${self ? ' table-seat--self' : ''}${compact ? ' table-seat--compact' : ''}`}
@@ -24,13 +25,13 @@ export function Seat({
       data-testid="table-seat"
       data-position={positionKey}
       data-anchor={self ? 'bottom' : undefined}
-      aria-label={`${player.nickname}，${player.effectiveHands}手，买入负${amount}元`}
+      aria-label={`${player.nickname}，${player.effectiveHands}手，买入负${ariaAmount}元`}
     >
       {self && <span className="visually-hidden" data-testid="seat-self" data-anchor="bottom">我的座位</span>}
       <img src={player.avatarUrl} alt={`${player.nickname}的头像`} />
       <strong title={player.nickname}>{player.nickname}</strong>
       <span>{player.effectiveHands}手</span>
-      <b>-¥{amount}</b>
+      <b>{formattedAmount}</b>
     </article>
   );
 }

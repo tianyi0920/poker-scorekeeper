@@ -190,6 +190,7 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   const user = userEvent.setup();
   await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
   expect(screen.getByText('购买 1 手')).toBeInTheDocument();
+  expect(screen.getByText('−¥300')).toHaveClass('money--negative');
   expect(screen.getByRole('button', { name: '更正我的最后一笔购买' })).toBeInTheDocument();
 });
 
