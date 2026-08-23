@@ -44,12 +44,16 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   const acceptedAvatarRef = useRef<AvatarReference | null>(null);
   const presetSaveVersionRef = useRef(0);
   const activePresetSaveRef = useRef<number | null>(null);
+  const uploadVersionRef = useRef(0);
+  const activeUploadRef = useRef<number | null>(null);
   const [savedAvatar, setSavedAvatar] = useState(currentAvatar);
   const [pendingPreset, setPendingPreset] = useState<string | null>(null);
   const [presets, setPresets] = useState<PresetAvatarDto[]>([]);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropRect | null>(null);
+  const [croppedBlob, setCroppedBlob] = useState<Blob | null>(null);
+  const [uploadFailed, setUploadFailed] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [progress, setProgress] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -57,6 +61,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
 
   useLayoutEffect(() => {
     presetSaveVersionRef.current += 1;
+    uploadVersionRef.current += 1;
     setSavedAvatar(currentAvatar);
     setPendingPreset(null);
     setError(null);
@@ -70,7 +75,9 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     return () => {
       mountedRef.current = false;
       presetSaveVersionRef.current += 1;
+      uploadVersionRef.current += 1;
       activePresetSaveRef.current = null;
+      activeUploadRef.current = null;
     };
   }, []);
   useEffect(() => {
@@ -86,23 +93,40 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     sourceUrlRef.current = null;
   }, []);
 
-  const closeCrop = useCallback(() => {
-    uploadAbortRef.current?.abort();
-    uploadAbortRef.current = null;
+  const releaseSourceUrl = useCallback(() => {
     if (sourceUrlRef.current !== null) URL.revokeObjectURL(sourceUrlRef.current);
     sourceUrlRef.current = null;
+  }, []);
+
+  const closeCrop = useCallback(() => {
+    uploadVersionRef.current += 1;
+    activeUploadRef.current = null;
+    uploadAbortRef.current?.abort();
+    uploadAbortRef.current = null;
+    releaseSourceUrl();
     setSourceUrl(null);
     setImage(null);
     setCrop(null);
+    setCroppedBlob(null);
+    setUploadFailed(false);
     setProgress(0);
     setIsSaving(false);
+    setError(null);
     if (inputRef.current !== null) inputRef.current.value = '';
-  }, []);
+  }, [releaseSourceUrl]);
 
   function applyServerAvatar(response: AvatarMutationResponse) {
     const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
     acceptedAvatarRef.current = next;
     setSavedAvatar(next);
+    setPendingPreset(null);
+    setSuccess('头像已保存');
+    onChanged(next);
+  }
+
+  function acceptUploadedAvatar(response: AvatarMutationResponse) {
+    const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
+    acceptedAvatarRef.current = next;
     setPendingPreset(null);
     setSuccess('头像已保存');
     onChanged(next);
@@ -118,6 +142,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   function choosePreset(id: string) {
     if (isSaving || !online) return;
     setPendingPreset(id === savedPreset ? null : id);
+    setUploadFailed(false);
     setError(null);
     setSuccess(null);
   }
@@ -163,12 +188,18 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
       event.target.value = '';
       return;
     }
+    releaseSourceUrl();
+    setSourceUrl(null);
+    setImage(null);
+    setCrop(null);
+    setCroppedBlob(null);
+    setUploadFailed(false);
+    setProgress(0);
     const url = URL.createObjectURL(file);
     sourceUrlRef.current = url;
     const nextImage = new Image();
     nextImage.onload = () => {
       if (!mountedRef.current || sourceUrlRef.current !== url) {
-        URL.revokeObjectURL(url);
         return;
       }
       const size = Math.min(nextImage.naturalWidth, nextImage.naturalHeight);
@@ -182,47 +213,73 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
       });
     };
     nextImage.onerror = () => {
-      URL.revokeObjectURL(url);
       if (!mountedRef.current || sourceUrlRef.current !== url) return;
-      sourceUrlRef.current = null;
+      releaseSourceUrl();
       setError('图片无法读取，请换一张图片');
       event.target.value = '';
     };
     nextImage.src = url;
   }
 
-  async function confirmUpload() {
-    if (image === null || crop === null) return;
+  const isCurrentUpload = (uploadVersion: number, controller: AbortController) => mountedRef.current
+    && activeUploadRef.current === uploadVersion
+    && uploadVersionRef.current === uploadVersion
+    && !controller.signal.aborted;
+
+  async function saveUpload(retainedBlob: Blob | null) {
+    if (image === null || crop === null || isSaving || activeUploadRef.current !== null || !online) return;
+    const uploadVersion = ++uploadVersionRef.current;
+    activeUploadRef.current = uploadVersion;
     setIsSaving(true);
     setProgress(0);
     setError(null);
     setSuccess(null);
+    setUploadFailed(false);
     const controller = new AbortController();
     uploadAbortRef.current?.abort();
     uploadAbortRef.current = controller;
     try {
-      const blob = await cropAvatar(image, crop);
+      const blob = retainedBlob ?? await cropAvatar(image, crop);
       if (blob.size > MAX_AVATAR_BYTES) throw new Error('AVATAR_TOO_LARGE');
-      if (controller.signal.aborted) return;
+      if (!isCurrentUpload(uploadVersion, controller)) return;
+      setCroppedBlob(blob);
       const response = await uploadAvatar(blob, (nextProgress) => {
-        if (mountedRef.current && !controller.signal.aborted) setProgress(nextProgress);
+        if (isCurrentUpload(uploadVersion, controller)) setProgress(nextProgress);
       }, controller.signal);
-      if (!mountedRef.current || controller.signal.aborted) return;
-      applyServerAvatar(response);
+      if (!isCurrentUpload(uploadVersion, controller)) return;
+      acceptUploadedAvatar(response);
       closeCrop();
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') return;
-      if (!mountedRef.current) return;
+      if (!isCurrentUpload(uploadVersion, controller)) return;
       const message = reason instanceof Error && reason.message === 'AVATAR_ENCODE_FAILED'
         ? '头像编码失败，请换一张图片'
         : reason instanceof Error && reason.message === 'AVATAR_TOO_LARGE'
           ? '裁剪后的图片不能超过 5 MiB'
-          : mutationMessage(reason, '头像上传失败，请稍后重试');
+          : '上传失败，请重试';
+      setUploadFailed(message === '上传失败，请重试');
       setError(message);
     } finally {
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null;
-      if (mountedRef.current) setIsSaving(false);
+      if (mountedRef.current && activeUploadRef.current === uploadVersion) {
+        activeUploadRef.current = null;
+        setIsSaving(false);
+      }
     }
+  }
+
+  function openFilePicker() {
+    if (isSaving || !online) return;
+    if (inputRef.current !== null) {
+      inputRef.current.value = '';
+      inputRef.current.click();
+    }
+  }
+
+  function reselectPhoto() {
+    if (isSaving || !online) return;
+    closeCrop();
+    inputRef.current?.click();
   }
 
   return <div className="avatar-picker">
@@ -242,8 +299,12 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
       <button className="button button--primary" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>保存头像</button>
       <button className="button button--secondary" type="button" disabled={isSaving} onClick={cancelPreset}>取消修改</button>
     </div>}
-    {error !== null && hasPendingPreset && <button className="button button--secondary avatar-retry" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>重试保存</button>}
-    <label className="upload-label" htmlFor="avatar-file">上传自定义头像<input ref={inputRef} id="avatar-file" aria-label="上传自定义头像" type="file" accept="image/jpeg,image/png,image/webp" disabled={isSaving || !online} onChange={chooseFile} /><span>JPG / PNG / WebP，最大 5 MiB</span></label>
-    {image !== null && sourceUrl !== null && crop !== null && <AvatarCropDialog sourceUrl={sourceUrl} image={image} crop={crop} busy={isSaving} progress={progress} onCropChange={setCrop} onConfirm={() => void confirmUpload()} onClose={closeCrop} />}
+    {error !== null && hasPendingPreset && !uploadFailed && <button className="button button--secondary avatar-retry" type="button" disabled={isSaving || !online} onClick={() => void savePreset()}>重试保存</button>}
+    <div className="avatar-upload-picker">
+      <button className="button button--secondary avatar-album-button" type="button" disabled={isSaving || !online} onClick={openFilePicker}>从相册选择</button>
+      <input ref={inputRef} className="visually-hidden-file-input" id="avatar-file" aria-label="从相册选择文件" tabIndex={-1} type="file" accept="image/jpeg,image/png,image/webp" disabled={isSaving || !online} onChange={chooseFile} />
+      <span>JPG / PNG / WebP，最大 5 MiB</span>
+    </div>
+    {image !== null && sourceUrl !== null && crop !== null && <AvatarCropDialog sourceUrl={sourceUrl} image={image} crop={crop} busy={isSaving} progress={progress} uploadFailed={uploadFailed} onCropChange={setCrop} onConfirm={() => void saveUpload(null)} onRetry={() => void saveUpload(croppedBlob)} onReselect={reselectPhoto} onClose={closeCrop} />}
   </div>;
 }

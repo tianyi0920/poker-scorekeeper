@@ -50,6 +50,7 @@ it('reports upload progress and sends the CSRF token with same-origin credential
   const promise = uploadAvatar(new Blob(['avatar'], { type: 'image/webp' }), onProgress);
   const xhr = FakeXhr.latest!;
 
+  expect(onProgress).not.toHaveBeenCalled();
   xhr.progress(5, 10);
   xhr.onload?.();
 

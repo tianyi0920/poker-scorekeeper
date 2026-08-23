@@ -31,3 +31,23 @@ it('routes Escape and the visible close button through upload cancellation', () 
   fireEvent.click(screen.getByRole('button', { name: '关闭' }));
   expect(onClose).toHaveBeenCalledTimes(2);
 });
+
+it('announces exact progress and disables crop writes while uploading', () => {
+  // Break caught: upload status is inaccessible or crop coordinates can mutate after the Blob is encoded.
+  render(<AvatarCropDialog
+    sourceUrl="blob:avatar"
+    image={largeImage()}
+    crop={{ x: 500, y: 250, width: 2000, height: 2000 }}
+    busy
+    progress={42}
+    onCropChange={vi.fn()}
+    onConfirm={vi.fn()}
+    onClose={vi.fn()}
+  />);
+
+  expect(screen.getByRole('status')).toHaveAttribute('aria-live', 'polite');
+  expect(screen.getByRole('status')).toHaveTextContent('正在上传 42%');
+  expect(screen.getByRole('progressbar', { name: '头像上传进度' })).toHaveAttribute('value', '42');
+  expect(screen.getByLabelText('水平位置')).toBeDisabled();
+  expect(screen.getByLabelText('垂直位置')).toBeDisabled();
+});
