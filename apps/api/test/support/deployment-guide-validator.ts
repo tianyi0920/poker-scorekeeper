@@ -291,6 +291,7 @@ interface YamlSnippet {
   failClosed: boolean;
   allowTopLevelProse: boolean;
   startOffset?: number;
+  sourceId?: number;
 }
 
 const yamlFenceLanguages = new Set([
@@ -348,93 +349,97 @@ function stripIndentedCodePrefix(line: string): string {
 
 function findYamlSnippets(content: string): YamlSnippet[] {
   const normalizedContent = content.replace(/\r\n?/g, "\n");
-  const lines = normalizedContent.split("\n");
-  const lineOffsets: number[] = [];
-  let nextLineOffset = 0;
-  for (const line of lines) {
-    lineOffsets.push(nextLineOffset);
-    nextLineOffset += line.length + 1;
-  }
-  const outsideFence = [...lines];
   const snippets: YamlSnippet[] = [];
+  let nextSourceId = 0;
 
-  for (let index = 0; index < lines.length; index += 1) {
-    const fence = readMarkdownFenceOpening(lines[index]!);
-    if (!fence) continue;
-
-    let end = index + 1;
-    while (end < lines.length && !isMarkdownFenceClosing(lines[end]!, fence)) {
-      end += 1;
+  function collectMarkdownSource(
+    sourceContent: string,
+    allowTopLevelProse: boolean,
+  ): void {
+    const sourceId = nextSourceId;
+    nextSourceId += 1;
+    const lines = sourceContent.split("\n");
+    const lineOffsets: number[] = [];
+    let nextLineOffset = 0;
+    for (const line of lines) {
+      lineOffsets.push(nextLineOffset);
+      nextLineOffset += line.length + 1;
     }
-    const isClosed = end < lines.length;
-    const isYamlFence = yamlFenceLanguages.has(fence.language);
-    const isUnlabelledFence = fence.language === "";
-    if (isYamlFence || isUnlabelledFence) {
+    const outsideFence = [...lines];
+
+    for (let index = 0; index < lines.length; index += 1) {
+      const fence = readMarkdownFenceOpening(lines[index]!);
+      if (!fence) continue;
+
+      let end = index + 1;
+      while (
+        end < lines.length &&
+        !isMarkdownFenceClosing(lines[end]!, fence)
+      ) {
+        end += 1;
+      }
+      const fencedContent = lines
+        .slice(index + 1, end)
+        .map((line) => stripFenceIndentation(line, fence.indentation))
+        .join("\n");
       snippets.push({
-        content: lines
-          .slice(index + 1, end)
-          .map((line) => stripFenceIndentation(line, fence.indentation))
-          .join("\n"),
-        failClosed: isYamlFence,
+        content: fencedContent,
+        failClosed: yamlFenceLanguages.has(fence.language),
         allowTopLevelProse: false,
       });
+      collectMarkdownSource(fencedContent, false);
       outsideFence.fill("", index, Math.min(end + 1, lines.length));
       index = end;
-      continue;
     }
-    if (isClosed) {
-      outsideFence.fill("", index, end + 1);
-      index = end;
-    } else {
-      outsideFence[index] = "";
+
+    for (let index = 0; index < outsideFence.length; index += 1) {
+      if (
+        !isIndentedCodeLine(outsideFence[index]!) ||
+        (index > 0 && outsideFence[index - 1]!.trim() !== "")
+      ) {
+        continue;
+      }
+
+      let end = index;
+      while (
+        end < outsideFence.length &&
+        (outsideFence[end]!.trim() === "" ||
+          isIndentedCodeLine(outsideFence[end]!))
+      ) {
+        end += 1;
+      }
+      snippets.push({
+        content: outsideFence
+          .slice(index, end)
+          .map((line) =>
+            line.trim() === "" ? "" : stripIndentedCodePrefix(line),
+          )
+          .join("\n"),
+        failClosed: false,
+        allowTopLevelProse: false,
+      });
+      outsideFence.fill("", index, end);
+      index = end - 1;
+    }
+
+    for (let index = 0; index < outsideFence.length; index += 1) {
+      const line = outsideFence[index]!;
+      const indentation = /^ */u.exec(line)?.[0].length ?? 0;
+      if (line.trim() === "" || line.startsWith("\t") || indentation > 3) {
+        continue;
+      }
+
+      snippets.push({
+        content: outsideFence.slice(index).join("\n"),
+        failClosed: false,
+        allowTopLevelProse,
+        startOffset: lineOffsets[index],
+        sourceId,
+      });
     }
   }
 
-  for (let index = 0; index < outsideFence.length; index += 1) {
-    if (
-      !isIndentedCodeLine(outsideFence[index]!) ||
-      (index > 0 && outsideFence[index - 1]!.trim() !== "")
-    ) {
-      continue;
-    }
-
-    let end = index;
-    while (
-      end < outsideFence.length &&
-      (outsideFence[end]!.trim() === "" ||
-        isIndentedCodeLine(outsideFence[end]!))
-    ) {
-      end += 1;
-    }
-    snippets.push({
-      content: outsideFence
-        .slice(index, end)
-        .map((line) =>
-          line.trim() === "" ? "" : stripIndentedCodePrefix(line),
-        )
-        .join("\n"),
-      failClosed: false,
-      allowTopLevelProse: false,
-    });
-    outsideFence.fill("", index, end);
-    index = end - 1;
-  }
-
-  for (let index = 0; index < outsideFence.length; index += 1) {
-    const line = outsideFence[index]!;
-    const indentation = /^ */u.exec(line)?.[0].length ?? 0;
-    if (line.trim() === "" || line.startsWith("\t") || indentation > 3) {
-      continue;
-    }
-
-    snippets.push({
-      content: outsideFence.slice(index).join("\n"),
-      failClosed: false,
-      allowTopLevelProse: true,
-      startOffset: lineOffsets[index],
-    });
-  }
-
+  collectMarkdownSource(normalizedContent, true);
   return snippets;
 }
 
@@ -684,11 +689,12 @@ function hasSingleLineYamlRoot(
 }
 
 function validateYamlComposeStructures(content: string, name: string): void {
-  let validatedOutsideThrough = -1;
+  const validatedOutsideThrough = new Map<number, number>();
   for (const snippet of findYamlSnippets(content)) {
+    const sourceId = snippet.sourceId ?? -1;
     if (
       snippet.startOffset !== undefined &&
-      snippet.startOffset <= validatedOutsideThrough
+      snippet.startOffset <= (validatedOutsideThrough.get(sourceId) ?? -1)
     ) {
       continue;
     }
@@ -737,9 +743,12 @@ function validateYamlComposeStructures(content: string, name: string): void {
         sections.length > 0 &&
         document.range !== undefined
       ) {
-        validatedOutsideThrough = Math.max(
-          validatedOutsideThrough,
-          snippet.startOffset + document.range[2] - 1,
+        validatedOutsideThrough.set(
+          sourceId,
+          Math.max(
+            validatedOutsideThrough.get(sourceId) ?? -1,
+            snippet.startOffset + document.range[2] - 1,
+          ),
         );
       }
     }

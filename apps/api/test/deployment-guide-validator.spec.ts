@@ -281,6 +281,33 @@ const unsafeMarkdownYamlBlocks = [
   ],
 ] as const;
 
+const unsafeUnknownFenceBodies = [
+  [
+    "unknown-language fence with direct environment YAML",
+    "```text\nservices:\n  app:\n    environment:\n      PORT: 3000\n```",
+  ],
+  [
+    "unknown-language fence with direct ports YAML",
+    "```text\nservices:\n  app:\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n```",
+  ],
+  [
+    "shorter inner fence hiding environment YAML",
+    "````text\n```text\nservices:\n  app:\n    environment:\n      PORT: 3000\n```\n````",
+  ],
+  [
+    "shorter inner fence hiding ports YAML",
+    "````text\n```text\nservices:\n  app:\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n```\n````",
+  ],
+  [
+    "backtick fence hiding environment YAML inside a tilde fence",
+    "~~~~text\n```text\nservices:\n  app:\n    environment:\n      PORT: 3000\n```\n~~~~",
+  ],
+  [
+    "crossed inner closure hiding ports YAML",
+    "````text\n```text\nservices:\n  app:\n    ports:\n      - published: 3000\n        target: 80\n        host_ip: 0.0.0.0\n````",
+  ],
+] as const;
+
 const validEnvironmentSyntax = [
   ["dotenv PORT", "PORT=80"],
   ["export with quoted PORT", 'export PORT = "80" # listen internally'],
@@ -408,6 +435,26 @@ const validYamlDocuments = [
     "safe tilde YAML fence",
     "~~~yaml\nenvironment:\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\n~~~",
   ],
+  [
+    "ordinary prose in an unknown-language fence",
+    "```text\nProduction deployment variables are discussed below.\n```",
+  ],
+  [
+    "safe environment YAML in an unknown-language fence",
+    "```text\nenvironment:\n  PORT: 80\n  PUBLIC_ORIGIN: https://safe.example\n```",
+  ],
+  [
+    "safe ports YAML inside nested unknown-language fences",
+    "````text\n```text\nports:\n  - published: 3000\n    target: 80\n    host_ip: 127.0.0.1\n```\n````",
+  ],
+  [
+    "ordinary prose inside nested unknown-language fences",
+    "````text\n```text\nProduction deployment variables are discussed below.\n```\n````",
+  ],
+  [
+    "ordinary prose with crossed unknown fence closure",
+    "````text\n```text\nProduction deployment variables are discussed below.\n````",
+  ],
 ] as const;
 
 describe("secure backend deployment guide validator", () => {
@@ -443,6 +490,12 @@ describe("secure backend deployment guide validator", () => {
 
   it.each(unsafeMarkdownYamlBlocks)("rejects %s", (_label, yaml) => {
     expect(() => validate(yaml)).toThrow(
+      /permits an insecure public application backend/,
+    );
+  });
+
+  it.each(unsafeUnknownFenceBodies)("rejects %s", (_label, fencedBody) => {
+    expect(() => validate(fencedBody)).toThrow(
       /permits an insecure public application backend/,
     );
   });
