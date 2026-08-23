@@ -94,6 +94,10 @@ function expectNoEvent(socket: Socket, event: string, duration = 250): Promise<v
   });
 }
 
+function waitForStabilityWindow(duration = 100): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, duration));
+}
+
 describe.sequential('realtime game rooms', () => {
   let app: INestApplication;
   let prisma: PrismaService;
@@ -468,10 +472,9 @@ describe.sequential('realtime game rooms', () => {
     });
 
     const deleted = waitForContractEvent(socket, 'game.deleted', gameDeletedEventSchema);
-    const serverError = waitForContractEvent(socket, 'server.error', serverErrorEventSchema).then(
-      (value) => ({ status: 'fulfilled' as const, value }),
-      (reason) => ({ status: 'rejected' as const, reason })
-    );
+    const serverErrors: Array<{ code: string }> = [];
+    const receiveServerError = (payload: unknown) => serverErrors.push(serverErrorEventSchema.parse(payload));
+    socket.on('server.error', receiveServerError);
     const snapshots: unknown[] = [];
     socket.on('game.snapshot', (snapshot: unknown) => snapshots.push(snapshot));
     const switchAck = emitWithExactlyOneAck<GameJoinAck>(socket, 'game.join', {
@@ -488,7 +491,9 @@ describe.sequential('realtime game rooms', () => {
 
     await expect(deleted).resolves.toEqual({ gameId: targetGame.id, reason: 'HARD_DELETED' });
     await expect(switchAck).resolves.toEqual({ ok: false, code: 'NOT_FOUND' });
-    await expect(serverError).resolves.toEqual({ status: 'fulfilled', value: { code: 'NOT_FOUND' } });
+    await waitForStabilityWindow();
+    expect(serverErrors).toEqual([{ code: 'NOT_FOUND' }]);
+    socket.off('server.error', receiveServerError);
     expect(snapshots).toEqual([]);
     expect(await spectatorIds(firstGame.id)).toContain(viewer.id);
 
