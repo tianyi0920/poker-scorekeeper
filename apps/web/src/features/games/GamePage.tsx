@@ -1,5 +1,6 @@
 import {
   gameJoinAckSchema,
+  gameDeletedEventSchema,
   gameSnapshotSchema,
   gameSnapshotEventSchema,
   gameUpdatedEventSchema,
@@ -23,6 +24,7 @@ import { GameTimer } from './GameTimer.js';
 import { PurchaseTimeline } from './PurchaseTimeline.js';
 import { RoundTable } from './RoundTable.js';
 import { SpectatorBar } from './SpectatorBar.js';
+import { GAME_DELETED_NOTICE } from './useGameDeletedSubscription.js';
 
 type GameTab = 'table' | 'purchases';
 type SocketFactory = () => GameSocketClient;
@@ -57,7 +59,18 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [endOpen, setEndOpen] = useState(false);
   const [ending, setEnding] = useState(false);
   const [endError, setEndError] = useState<string | null>(null);
+  const requestGenerationRef = useRef(0);
+  const loadAbortControllersRef = useRef(new Set<AbortController>());
+  const endAbortRef = useRef<AbortController | null>(null);
+  const deletedRef = useRef(false);
   const hasSnapshot = snapshot?.id === gameId;
+
+  const abortPageRequests = useCallback(() => {
+    for (const controller of loadAbortControllersRef.current) controller.abort();
+    loadAbortControllersRef.current.clear();
+    endAbortRef.current?.abort();
+    endAbortRef.current = null;
+  }, []);
 
   const applySnapshot = useCallback((candidate: unknown): boolean => {
     const parsed = gameSnapshotSchema.safeParse(candidate);
@@ -71,17 +84,21 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
 
   const loadSnapshot = useCallback(async (background = false) => {
     const requestedGameId = gameId;
+    const generation = requestGenerationRef.current;
+    const controller = new AbortController();
+    loadAbortControllersRef.current.add(controller);
     if (!background) setLoadError(null);
     try {
-      const response = await scorekeeperApi.gameSnapshot(requestedGameId);
-      if (activeGameIdRef.current !== requestedGameId) return;
+      const response = await scorekeeperApi.gameSnapshot(requestedGameId, controller.signal);
+      if (controller.signal.aborted || deletedRef.current || requestGenerationRef.current !== generation || activeGameIdRef.current !== requestedGameId) return;
       if (!applySnapshot(response)) throw new Error('Invalid game snapshot');
     } catch {
-      if (!background && activeGameIdRef.current === requestedGameId) {
+      if (!controller.signal.aborted && !deletedRef.current && requestGenerationRef.current === generation && !background && activeGameIdRef.current === requestedGameId) {
         setLoadError('对局暂时无法加载，请稍后重试');
       }
     } finally {
-      if (!background && activeGameIdRef.current === requestedGameId) setLoading(false);
+      loadAbortControllersRef.current.delete(controller);
+      if (!controller.signal.aborted && !deletedRef.current && requestGenerationRef.current === generation && !background && activeGameIdRef.current === requestedGameId) setLoading(false);
     }
   }, [applySnapshot, gameId]);
 
@@ -105,12 +122,35 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setRoomSynchronized(false);
   }, [stopFallback]);
 
+  const receiveDeletedGame = useCallback((value: unknown) => {
+    const parsed = gameDeletedEventSchema.safeParse(value);
+    if (!parsed.success || parsed.data.gameId !== activeGameIdRef.current || deletedRef.current) return;
+    deletedRef.current = true;
+    requestGenerationRef.current += 1;
+    abortPageRequests();
+    stopFallback();
+    snapshotRef.current = null;
+    setSnapshot(null);
+    setLoading(false);
+    setLoadError(null);
+    setTab('table');
+    setBuyOpen(false);
+    setAdjustment(null);
+    setEndOpen(false);
+    setEnding(false);
+    setEndError(null);
+    navigate('/', { replace: true, state: { notice: GAME_DELETED_NOTICE } });
+  }, [abortPageRequests, navigate, stopFallback]);
+
   const ensureFallbackGrace = useCallback(() => {
     if (fallbackTimeoutRef.current !== undefined || pollingIntervalRef.current !== undefined) return;
     startFallbackGrace();
   }, [startFallbackGrace]);
 
   useEffect(() => {
+    abortPageRequests();
+    requestGenerationRef.current += 1;
+    deletedRef.current = false;
     snapshotRef.current = null;
     setSnapshot(null);
     setLoading(true);
@@ -125,7 +165,12 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       return;
     }
     void loadSnapshot();
-  }, [gameId, loadSnapshot]);
+    const generation = requestGenerationRef.current;
+    return () => {
+      if (requestGenerationRef.current === generation) requestGenerationRef.current += 1;
+      abortPageRequests();
+    };
+  }, [abortPageRequests, gameId, loadSnapshot]);
 
   useEffect(() => {
     if (snapshot !== null && snapshot.status !== 'ACTIVE') {
@@ -268,6 +313,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       ['connect_error', socketError],
       ['game.snapshot', receiveSnapshot],
       ['game.updated', receiveGameUpdate],
+      ['game.deleted', receiveDeletedGame],
       ['presence.updated', receivePresence],
       ['rake-settings.updated', refreshRakeSettings],
       ['player-rake.updated', refreshPlayerRake],
@@ -286,7 +332,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setSocketReady(false);
       setRoomSynchronized(false);
     };
-  }, [applySnapshot, ensureFallbackGrace, gameId, hasSnapshot, loadSnapshot, socketFactory, startFallbackGrace, stopFallback]);
+  }, [applySnapshot, ensureFallbackGrace, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, startFallbackGrace, stopFallback]);
 
   useEffect(() => {
     if (!socketReady || roomSynchronized) {
@@ -335,18 +381,26 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
 
   const beginSettlement = async () => {
     if (!active || !canManage || ending) return;
+    const requestedGameId = snapshot.id;
+    const generation = requestGenerationRef.current;
+    const controller = new AbortController();
+    endAbortRef.current?.abort();
+    endAbortRef.current = controller;
     setEnding(true);
     setEndError(null);
     try {
-      const next = await scorekeeperApi.beginSettlement(snapshot.id);
+      const next = await scorekeeperApi.beginSettlement(requestedGameId, controller.signal);
+      if (controller.signal.aborted || deletedRef.current || requestGenerationRef.current !== generation || activeGameIdRef.current !== requestedGameId) return;
       if (!applySnapshot(next)) throw new Error('Invalid game snapshot');
       setEndOpen(false);
-      navigate(`/games/${encodeURIComponent(snapshot.id)}/settlement`, { replace: true });
+      navigate(`/games/${encodeURIComponent(requestedGameId)}/settlement`, { replace: true });
     } catch (reason) {
+      if (controller.signal.aborted || deletedRef.current || requestGenerationRef.current !== generation || activeGameIdRef.current !== requestedGameId) return;
       setEndError(mutationMessage(reason, '暂时无法结束对局，请刷新后重试'));
       void loadSnapshot(true);
     } finally {
-      setEnding(false);
+      if (endAbortRef.current === controller) endAbortRef.current = null;
+      if (!deletedRef.current && requestGenerationRef.current === generation && activeGameIdRef.current === requestedGameId) setEnding(false);
     }
   };
 

@@ -9,6 +9,11 @@ import { useOnlineStatus } from '../../hooks/useOnlineStatus.js';
 import { CashOutStep } from './CashOutStep.js';
 import { ExpenseStep } from './ExpenseStep.js';
 import { SettlementBreakdown } from './SettlementBreakdown.js';
+import {
+  GAME_DELETED_NOTICE,
+  useGameDeletedSubscription,
+  type GameDeletedSocketFactory
+} from '../games/useGameDeletedSubscription.js';
 
 type Step = 'cashout' | 'expense' | 'preview';
 type SaveState = 'saved' | 'saving' | 'conflict';
@@ -17,10 +22,33 @@ interface PreviewBinding extends OperationContext { revision: number; draftVersi
 interface WizardSession {
   generation: number; gameId: string; revision: number; draft: SettlementDraftDto | null; saved: SettlementDraftDto | null;
   pending: SettlementDraftPayload | null; timer?: number; runner: Promise<void> | null;
-  saveAbort: AbortController | null; previewAbort: AbortController | null; finalizeAbort: AbortController | null; binding: PreviewBinding | null;
+  loadAbort: AbortController | null; saveAbort: AbortController | null; previewAbort: AbortController | null;
+  finalizeAbort: AbortController | null; takeOverAbort: AbortController | null; binding: PreviewBinding | null;
 }
 function createSession(generation: number, gameId: string): WizardSession {
-  return { generation, gameId, revision: 0, draft: null, saved: null, pending: null, runner: null, saveAbort: null, previewAbort: null, finalizeAbort: null, binding: null };
+  return {
+    generation, gameId, revision: 0, draft: null, saved: null, pending: null, runner: null,
+    loadAbort: null, saveAbort: null, previewAbort: null, finalizeAbort: null, takeOverAbort: null, binding: null
+  };
+}
+
+function abortSession(session: WizardSession): void {
+  if (session.timer !== undefined) window.clearTimeout(session.timer);
+  session.timer = undefined;
+  session.loadAbort?.abort();
+  session.saveAbort?.abort();
+  session.previewAbort?.abort();
+  session.finalizeAbort?.abort();
+  session.takeOverAbort?.abort();
+  session.loadAbort = null;
+  session.saveAbort = null;
+  session.previewAbort = null;
+  session.finalizeAbort = null;
+  session.takeOverAbort = null;
+  session.pending = null;
+  session.binding = null;
+  session.draft = null;
+  session.saved = null;
 }
 
 function latestDraft(error: ApiError): SettlementDraftDto | null {
@@ -33,11 +61,12 @@ function sameBinding(left: PreviewBinding | null, right: PreviewBinding | null):
   return left !== null && right !== null && left.gameId === right.gameId && left.generation === right.generation && left.revision === right.revision && left.draftVersion === right.draftVersion;
 }
 
-export function SettlementWizardPage() {
+export function SettlementWizardPage({ socketFactory }: { socketFactory?: GameDeletedSocketFactory } = {}) {
   const { id: gameId = '' } = useParams(); const navigate = useNavigate(); const online = useOnlineStatus();
   const [draft, setDraft] = useState<SettlementDraftDto | null>(null); const [preview, setPreview] = useState<SettlementPreviewDto | null>(null); const [step, setStep] = useState<Step>('cashout'); const [saveState, setSaveState] = useState<SaveState>('saved');
   const [conflictMessage, setConflictMessage] = useState<string | null>(null); const [loadError, setLoadError] = useState<string | null>(null); const [previewError, setPreviewError] = useState<string | null>(null); const [settingsConflict, setSettingsConflict] = useState(false); const [finalizing, setFinalizing] = useState(false);
   const sessionRef = useRef<WizardSession>(createSession(0, ''));
+  const deletedGameRef = useRef<string | null>(null);
   const current = useCallback((context: OperationContext) => sessionRef.current.gameId === context.gameId && sessionRef.current.generation === context.generation, []);
   const clearPreview = useCallback(() => { const session = sessionRef.current; session.previewAbort?.abort(); session.previewAbort = null; session.binding = null; setPreview(null); setSettingsConflict(false); }, []);
 
@@ -76,14 +105,45 @@ export function SettlementWizardPage() {
     return current(context) && session.pending === null ? session.saved : null;
   }, [current, runSaveQueue]);
 
+  const exitDeletedGame = useCallback(() => {
+    const previous = sessionRef.current;
+    if (deletedGameRef.current === gameId) return;
+    deletedGameRef.current = gameId;
+    abortSession(previous);
+    sessionRef.current = createSession(previous.generation + 1, '');
+    setDraft(null);
+    setPreview(null);
+    setStep('cashout');
+    setSaveState('saved');
+    setConflictMessage(null);
+    setLoadError(null);
+    setPreviewError(null);
+    setSettingsConflict(false);
+    setFinalizing(false);
+    navigate('/', { replace: true, state: { notice: GAME_DELETED_NOTICE } });
+  }, [gameId, navigate]);
+
+  useGameDeletedSubscription(gameId, exitDeletedGame, socketFactory);
+
   useEffect(() => {
-    const previous = sessionRef.current; if (previous.timer !== undefined) window.clearTimeout(previous.timer); previous.saveAbort?.abort(); previous.previewAbort?.abort(); previous.finalizeAbort?.abort();
+    const previous = sessionRef.current;
+    abortSession(previous);
     const session = createSession(previous.generation + 1, gameId); sessionRef.current = session; const context = { gameId, generation: session.generation };
+    deletedGameRef.current = null;
     setDraft(null); setPreview(null); setStep('cashout'); setLoadError(null); setConflictMessage(null); setPreviewError(null); setSettingsConflict(false); setFinalizing(false);
     if (gameId === '') { setLoadError('对局不存在'); return; }
     const controller = new AbortController();
-    void scorekeeperApi.settlementDraft(gameId, controller.signal).then((next) => { if (!current(context) || controller.signal.aborted) return; session.draft = next; session.saved = next; setDraft(next); setPreview(next); setSaveState('saved'); }).catch(() => { if (current(context) && !controller.signal.aborted) setLoadError('结算草稿暂时无法加载，请稍后重试'); });
-    return () => { controller.abort(); if (sessionRef.current === session) { if (session.timer !== undefined) window.clearTimeout(session.timer); session.saveAbort?.abort(); session.previewAbort?.abort(); session.finalizeAbort?.abort(); sessionRef.current = createSession(session.generation + 1, ''); } };
+    session.loadAbort = controller;
+    void scorekeeperApi.settlementDraft(gameId, controller.signal)
+      .then((next) => { if (!current(context) || controller.signal.aborted) return; session.draft = next; session.saved = next; setDraft(next); setPreview(next); setSaveState('saved'); })
+      .catch(() => { if (current(context) && !controller.signal.aborted) setLoadError('结算草稿暂时无法加载，请稍后重试'); })
+      .finally(() => { if (session.loadAbort === controller) session.loadAbort = null; });
+    return () => {
+      if (sessionRef.current === session) {
+        abortSession(session);
+        sessionRef.current = createSession(session.generation + 1, '');
+      }
+    };
   }, [current, gameId]);
 
   const updatePayload = (payload: SettlementDraftPayload) => {
@@ -112,9 +172,10 @@ export function SettlementWizardPage() {
 
   const takeOver = async () => {
     const session = sessionRef.current; const context = { gameId, generation: session.generation }; if (!online || gameId === '' || !current(context)) return;
-    const controller = new AbortController();
+    const controller = new AbortController(); session.takeOverAbort?.abort(); session.takeOverAbort = controller;
     try { const next = await scorekeeperApi.takeOverSettlementDraft(gameId, controller.signal); if (current(context) && !controller.signal.aborted) { session.draft = next; session.saved = next; clearPreview(); setDraft(next); setConflictMessage(null); } }
     catch { if (current(context) && !controller.signal.aborted) setConflictMessage('暂时无法接管草稿，请稍后重试。'); }
+    finally { if (session.takeOverAbort === controller) session.takeOverAbort = null; }
   };
 
   const finalize = async () => {

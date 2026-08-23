@@ -1,10 +1,27 @@
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
-import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
+import type { GameSocketClient, GameSocketListener } from '../../api/game-socket.js';
 import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
 import { SettlementWizardPage } from './SettlementWizardPage.js';
+
+class FakeGameSocket implements GameSocketClient {
+  connected = false;
+  readonly emitted: Array<{ event: string; payload: unknown }> = [];
+  disconnectCalls = 0;
+  private readonly listeners = new Map<string, Set<GameSocketListener>>();
+  on(event: string, listener: GameSocketListener): this { const set = this.listeners.get(event) ?? new Set<GameSocketListener>(); set.add(listener); this.listeners.set(event, set); return this; }
+  off(event: string, listener: GameSocketListener): this { this.listeners.get(event)?.delete(listener); return this; }
+  emit(event: string, payload?: unknown): this { this.emitted.push({ event, payload }); return this; }
+  connect(): this { this.connected = true; this.fire('connect'); return this; }
+  disconnect(): this { this.disconnectCalls += 1; this.connected = false; return this; }
+  fire(event: string, value?: unknown): void { for (const listener of this.listeners.get(event) ?? []) listener(value); }
+  listenerCount(): number { return [...this.listeners.values()].reduce((count, listeners) => count + listeners.size, 0); }
+}
+
+const createUnusedSocket = () => new FakeGameSocket();
 
 const players = [
   { playerId: 'player-1', nickname: '天一', avatarKind: 'PRESET', avatarValue: 'a', seatNo: 1, buyIn: '1000', cashOut: '2500', rawProfit: '1500', roomFeeShare: '190', otherFeeShare: '0', afterFeeProfit: '1310', rakeEligible: true, rakeAmount: '131', finalAmount: '1179' },
@@ -37,6 +54,23 @@ function deferred<T>() {
 }
 function RouteControl() { const navigate = useNavigate(); return <button onClick={() => navigate('/games/game-2/settlement')}>切换到第二局</button>; }
 
+function DeletedGameDestination({ onRender }: { onRender?: () => void }) {
+  const location = useLocation();
+  onRender?.();
+  return <div>
+    已返回首页
+    <span data-testid="deleted-navigation-type">{useNavigationType()}</span>
+    <span data-testid="deleted-navigation-state">{JSON.stringify(location.state)}</span>
+  </div>;
+}
+
+function renderDeletionWizard(socket: FakeGameSocket, onHomeRender?: () => void) {
+  return render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes>
+    <Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={() => socket} />} />
+    <Route path="/" element={<DeletedGameDestination onRender={onHomeRender} />} />
+  </Routes></MemoryRouter></AuthProvider>);
+}
+
 function renderWizard(response = draft()) {
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
@@ -46,7 +80,7 @@ function renderWizard(response = draft()) {
     if (url.endsWith('/api/games/game-1/settlement-finalize')) return jsonResponse(response);
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   }));
-  return render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  return render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
 }
 
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); Object.defineProperty(navigator, 'onLine', { configurable: true, value: true }); });
@@ -71,7 +105,7 @@ it('saves changed cash-outs after 400 ms and uses the server-balanced response a
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
-  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const input = await screen.findByLabelText('天一的带走金额');
   vi.useFakeTimers();
   fireEvent.change(input, { target: { value: '2400' } });
@@ -94,7 +128,7 @@ it('replaces local state with the latest editor draft on a version conflict and 
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
-  const view = render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  const view = render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const input = await screen.findByLabelText('天一的带走金额');
   vi.useFakeTimers();
   fireEvent.change(input, { target: { value: '2400' } });
@@ -114,7 +148,7 @@ it('shows every candidate raw profit, preselects the server winner, and keeps ro
     if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(draft()); void init; return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
-  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
   expect(screen.getByLabelText('房费：天一，牌局盈亏 +¥1,500')).toBeChecked();
@@ -137,7 +171,7 @@ it('requires a fresh preview after SETTINGS_VERSION_CONFLICT and disables writes
     if (url.endsWith('/api/games/game-1/settlement-finalize')) return jsonResponse({ code: 'SETTINGS_VERSION_CONFLICT' }, 409);
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   }));
-  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
   await user.click(screen.getByRole('button', { name: '进入核对' }));
@@ -168,7 +202,7 @@ it('ignores a deferred preview from revision A after revision B clears its confi
     return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
   });
   vi.stubGlobal('fetch', fetchMock);
-  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
   await user.click(screen.getByRole('button', { name: '进入核对' }));
@@ -192,7 +226,7 @@ it('serializes A then B saves with the returned version and previews only saved 
     return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
   });
   vi.stubGlobal('fetch', fetchMock);
-  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const input = await screen.findByLabelText('天一的带走金额');
   vi.useFakeTimers();
   fireEvent.change(input, { target: { value: '2400' } });
@@ -221,7 +255,7 @@ it('does not let a late game A save mutate game B after route switch', async () 
     if (url.endsWith('/api/games/game-2/settlement-draft')) return Promise.resolve(jsonResponse(gameB));
     return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
   }));
-  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><RouteControl /><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><RouteControl /><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   fireEvent.change(await screen.findByLabelText('天一的带走金额'), { target: { value: '2400' } });
   await new Promise((resolve) => window.setTimeout(resolve, 425));
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '切换到第二局' })); await Promise.resolve(); await Promise.resolve(); });
@@ -241,7 +275,7 @@ it('starts an independent B save after an in-flight A save is abandoned by a rou
     if (url.endsWith('/api/games/game-2/settlement-draft')) return Promise.resolve(jsonResponse(gameB));
     return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
   });
-  vi.stubGlobal('fetch', fetchMock); render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><RouteControl /><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  vi.stubGlobal('fetch', fetchMock); render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><RouteControl /><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const gameAInput = await screen.findByLabelText('天一的带走金额'); vi.useFakeTimers(); fireEvent.change(gameAInput, { target: { value: '2400' } }); await act(async () => { vi.advanceTimersByTime(400); await Promise.resolve(); });
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '切换到第二局' })); await Promise.resolve(); await Promise.resolve(); });
   fireEvent.change(screen.getByLabelText('天一的带走金额'), { target: { value: '1100' } }); await act(async () => { vi.advanceTimersByTime(400); await Promise.resolve(); });
@@ -256,9 +290,176 @@ it('retains a transiently failed payload for an explicit retry instead of losing
     if (url.endsWith('/api/games/game-1/settlement-draft') && init?.method === 'PUT') return attempts++ === 0 ? jsonResponse({ code: 'TEMPORARY' }, 500) : jsonResponse(draft({ version: 4, draftVersion: 4, payload: { ...draft().payload, cashOutByPlayerId: { 'player-1': '2400', 'player-2': '500' } } }));
     if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse(draft()); return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
-  vi.stubGlobal('fetch', fetchMock); render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage />} /></Routes></MemoryRouter></AuthProvider>);
+  vi.stubGlobal('fetch', fetchMock); render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1/settlement']}><Routes><Route path="/games/:id/settlement" element={<SettlementWizardPage socketFactory={createUnusedSocket} />} /></Routes></MemoryRouter></AuthProvider>);
   const retryInput = await screen.findByLabelText('天一的带走金额'); vi.useFakeTimers(); fireEvent.change(retryInput, { target: { value: '2400' } }); await act(async () => { vi.advanceTimersByTime(400); await Promise.resolve(); });
   expect(screen.getByRole('button', { name: '重试保存草稿' })).toBeInTheDocument(); expect(screen.getByLabelText('天一的带走金额')).toHaveValue('2400');
   await act(async () => { fireEvent.click(screen.getByRole('button', { name: '重试保存草稿' })); await Promise.resolve(); await Promise.resolve(); });
   expect(attempts).toBe(2);
+});
+
+it('aborts initial loading and redirects once only for a matching deletion event', async () => {
+  // Break caught: a settlement page accepts malformed/foreign events or lets a late initial draft revive a deleted session.
+  const socket = new FakeGameSocket();
+  const loading = deferred<Response>();
+  let loadSignal: AbortSignal | undefined;
+  const exitOrder: string[] = [];
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) { loadSignal = init?.signal ?? undefined; return loading.promise; }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  renderDeletionWizard(socket, () => exitOrder.push('navigate'));
+  await act(async () => { await Promise.resolve(); });
+  expect(socket.emitted).toContainEqual({ event: 'game.join', payload: { gameId: 'game-1', knownVersion: 0 } });
+  expect(loadSignal).toBeDefined();
+  loadSignal?.addEventListener('abort', () => exitOrder.push('abort'), { once: true });
+
+  act(() => {
+    socket.fire('game.deleted', { gameId: 'game-2', reason: 'HARD_DELETED' });
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'SOFT_DELETED' });
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED', extra: true });
+  });
+  expect(screen.queryByText('已返回首页')).not.toBeInTheDocument();
+
+  act(() => {
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' });
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' });
+  });
+  expect(loadSignal?.aborted).toBe(true);
+  expect(exitOrder.slice(0, 2)).toEqual(['abort', 'navigate']);
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.getByTestId('deleted-navigation-type')).toHaveTextContent('REPLACE');
+  expect(screen.getByTestId('deleted-navigation-state')).toHaveTextContent('{"notice":"该对局已由超级管理员删除"}');
+  expect(socket.listenerCount()).toBe(0);
+  expect(socket.disconnectCalls).toBe(1);
+
+  await act(async () => { loading.resolve(jsonResponse(draft())); await Promise.resolve(); });
+  expect(screen.queryByText('结算向导')).not.toBeInTheDocument();
+});
+
+it('invalidates pending draft state and aborts an in-flight save before redirecting', async () => {
+  // Break caught: deletion leaves the debounce/session runner able to persist or display a stale draft.
+  const socket = new FakeGameSocket();
+  const saving = deferred<Response>();
+  let saveSignal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft') && init?.method === 'PUT') { saveSignal = init.signal ?? undefined; return saving.promise; }
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft()));
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  renderDeletionWizard(socket);
+  const input = await screen.findByLabelText('天一的带走金额');
+  vi.useFakeTimers();
+  fireEvent.change(input, { target: { value: '2400' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(400); });
+  expect(saveSignal).toBeDefined();
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+  expect(saveSignal?.aborted).toBe(true);
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  await act(async () => { saving.resolve(jsonResponse(draft({ version: 4 }))); await Promise.resolve(); });
+  expect(screen.queryByText('草稿已保存')).not.toBeInTheDocument();
+});
+
+it('clears an unsent pending edit and debounce timer before redirecting', async () => {
+  // Break caught: a queued edit starts its PUT after the hard-deleted settlement page has already exited.
+  const socket = new FakeGameSocket();
+  const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft()));
+    void init;
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  renderDeletionWizard(socket);
+  const input = await screen.findByLabelText('天一的带走金额');
+  vi.useFakeTimers();
+  fireEvent.change(input, { target: { value: '2400' } });
+  await act(async () => { await vi.advanceTimersByTimeAsync(399); });
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/settlement-draft') && (init as RequestInit | undefined)?.method === 'PUT')).toHaveLength(0);
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+  await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(fetchMock.mock.calls.filter(([url, init]) => String(url).endsWith('/settlement-draft') && (init as RequestInit | undefined)?.method === 'PUT')).toHaveLength(0);
+});
+
+it('aborts an in-flight preview and clears its confirmation binding before redirecting', async () => {
+  // Break caught: a late preview restores a token after the backing game was hard deleted.
+  const socket = new FakeGameSocket();
+  const preview = deferred<Response>();
+  let previewSignal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft()));
+    if (url.endsWith('/api/games/game-1/settlement-preview')) { previewSignal = init?.signal ?? undefined; return preview.promise; }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  renderDeletionWizard(socket);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
+  await user.click(screen.getByRole('button', { name: '进入核对' }));
+  expect(previewSignal).toBeDefined();
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+  expect(previewSignal?.aborted).toBe(true);
+  await act(async () => { preview.resolve(jsonResponse(previewResponse())); await Promise.resolve(); });
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '确认结算' })).not.toBeInTheDocument();
+});
+
+it('aborts an in-flight finalization before deletion can race the history navigation', async () => {
+  // Break caught: a late finalization response replaces the required deleted-game home notice with history.
+  const socket = new FakeGameSocket();
+  const finalizing = deferred<Response>();
+  let finalizeSignal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft()));
+    if (url.endsWith('/api/games/game-1/settlement-preview')) return Promise.resolve(jsonResponse(previewResponse()));
+    if (url.endsWith('/api/games/game-1/settlement-finalize')) { finalizeSignal = init?.signal ?? undefined; return finalizing.promise; }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  renderDeletionWizard(socket);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '下一步：费用分摊' }));
+  await user.click(screen.getByRole('button', { name: '进入核对' }));
+  await user.click(await screen.findByRole('button', { name: '确认结算' }));
+  expect(finalizeSignal).toBeDefined();
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+  expect(finalizeSignal?.aborted).toBe(true);
+  await act(async () => { finalizing.resolve(jsonResponse(draft())); await Promise.resolve(); });
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.queryByText(/历史/)).not.toBeInTheDocument();
+});
+
+it('aborts an in-flight takeover and clears the read-only settlement state before redirecting', async () => {
+  // Break caught: a late takeover response reactivates an editor session after hard deletion.
+  const socket = new FakeGameSocket();
+  const takingOver = deferred<Response>();
+  let takeoverSignal: AbortSignal | undefined;
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/settlement-draft/takeover')) { takeoverSignal = init?.signal ?? undefined; return takingOver.promise; }
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return Promise.resolve(jsonResponse(draft({ canEdit: false, canTakeOver: true, editorNickname: '老王' })));
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  renderDeletionWizard(socket);
+  await userEvent.setup().click(await screen.findByRole('button', { name: '接管结算草稿' }));
+  expect(takeoverSignal).toBeDefined();
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+  expect(takeoverSignal?.aborted).toBe(true);
+  await act(async () => { takingOver.resolve(jsonResponse(draft())); await Promise.resolve(); });
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: '接管结算草稿' })).not.toBeInTheDocument();
 });

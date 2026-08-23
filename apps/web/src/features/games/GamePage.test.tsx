@@ -1,7 +1,7 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
-import { MemoryRouter, Route, Routes, useNavigate, useNavigationType } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
@@ -68,7 +68,8 @@ class FakeGameSocket implements GameSocketClient {
     for (const listener of this.listeners.get(event) ?? []) listener(...args);
   }
 
-  listenerCount(): number {
+  listenerCount(event?: string): number {
+    if (event !== undefined) return this.listeners.get(event)?.size ?? 0;
     return [...this.listeners.values()].reduce((total, listeners) => total + listeners.size, 0);
   }
 
@@ -111,6 +112,13 @@ function snapshot(overrides: Partial<GameSnapshotDto> = {}): GameSnapshotDto {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
+  return { promise, resolve, reject };
+}
+
 function renderGame(
   socket: FakeGameSocket,
   game = snapshot(),
@@ -135,6 +143,7 @@ function renderGame(
         <Routes>
           <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
           <Route path="/games/:id/settlement" element={<SettlementDestination />} />
+          <Route path="/" element={<DeletedGameDestination />} />
         </Routes>
       </MemoryRouter>
     </AuthProvider>
@@ -144,6 +153,15 @@ function renderGame(
 
 function SettlementDestination() {
   return <div>已进入结算页 <span data-testid="settlement-navigation-type">{useNavigationType()}</span></div>;
+}
+
+function DeletedGameDestination() {
+  const location = useLocation();
+  return <div>
+    已返回首页
+    <span data-testid="deleted-navigation-type">{useNavigationType()}</span>
+    <span data-testid="deleted-navigation-state">{JSON.stringify(location.state)}</span>
+  </div>;
 }
 
 function SwitchableGame({ socketFactory }: { socketFactory: () => GameSocketClient }) {
@@ -585,6 +603,121 @@ it('ignores malformed realtime events and reacts only to shared-contract payload
   expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
   await act(async () => { await vi.advanceTimersByTimeAsync(5_100); });
   expect(screen.getByRole('status', { name: '实时连接状态' })).toBeInTheDocument();
+});
+
+it('redirects once for a matching shared deletion event, closes the end dialog, and stops page activity', async () => {
+  // Break caught: malformed, duplicate, or another table's deletion redirects this page or leaves its fallback/listeners alive.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }), 'ADMIN');
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.listenerCount('game.updated')).toBe(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeInTheDocument();
+  await userEvent.setup({ advanceTimers: vi.advanceTimersByTime }).click(screen.getByRole('button', { name: '结束对局' }));
+  expect(screen.getByRole('dialog', { name: '确认结束对局' })).toBeInTheDocument();
+
+  act(() => {
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'SOFT_DELETED' });
+    socket.fire('game.deleted', { gameId: 'other-game', reason: 'HARD_DELETED' });
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED', extra: true });
+  });
+  expect(screen.queryByText('已返回首页')).not.toBeInTheDocument();
+
+  fetchMock.mockClear();
+  act(() => {
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' });
+    socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' });
+  });
+
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.getByTestId('deleted-navigation-type')).toHaveTextContent('REPLACE');
+  expect(screen.getByTestId('deleted-navigation-state')).toHaveTextContent('{"notice":"该对局已由超级管理员删除"}');
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+  expect(socket.listenerCount()).toBe(0);
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+it.each([
+  ['购买弹层', async () => {
+    await userEvent.setup().click(screen.getByRole('button', { name: '购买筹码' }));
+    expect(screen.getByRole('dialog', { name: '购买筹码' })).toBeInTheDocument();
+  }],
+  ['调整弹窗', async () => {
+    const user = userEvent.setup();
+    await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
+    await user.click(screen.getByRole('button', { name: '更正我的最后一笔购买' }));
+    expect(screen.getByRole('dialog', { name: '更正最后一笔购买' })).toBeInTheDocument();
+  }]
+])('closes the open %s when the current game is deleted', async (_label, openDialog) => {
+  // Break caught: a destructive event leaves stale buy-in controls mounted during the exit.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }), 'USER');
+  await screen.findByTestId('round-table');
+  await openDialog();
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+});
+
+it('aborts an in-flight fallback load and end request before deletion navigation', async () => {
+  // Break caught: late HTTP responses repopulate deleted game state or navigate onward to settlement.
+  const backgroundSnapshot = deferred<Response>();
+  const beginSettlement = deferred<Response>();
+  let snapshotReads = 0;
+  let backgroundSignal: AbortSignal | undefined;
+  let endingSignal: AbortSignal | undefined;
+  let beginCalls = 0;
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request, init?: RequestInit) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session('ADMIN')));
+    if (url.endsWith('/api/games/game-1/snapshot')) {
+      snapshotReads += 1;
+      if (snapshotReads === 1) return Promise.resolve(jsonResponse(snapshot({ players: players(1) })));
+      backgroundSignal = init?.signal ?? undefined;
+      return backgroundSnapshot.promise;
+    }
+    if (url.endsWith('/api/games/game-1/begin-settlement')) {
+      beginCalls += 1;
+      endingSignal = init?.signal ?? undefined;
+      return beginSettlement.promise;
+    }
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes>
+    <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
+    <Route path="/games/:id/settlement" element={<SettlementDestination />} />
+    <Route path="/" element={<DeletedGameDestination />} />
+  </Routes></MemoryRouter></AuthProvider>);
+  const user = userEvent.setup();
+  await screen.findByTestId('round-table');
+  act(() => socket.fire('rake-settings.updated', { version: 2 }));
+  await waitFor(() => expect(snapshotReads).toBe(2));
+  await user.click(screen.getByRole('button', { name: '结束对局' }));
+  await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
+  await waitFor(() => expect(beginCalls).toBe(1));
+
+  act(() => socket.fire('game.deleted', { gameId: 'game-1', reason: 'HARD_DELETED' }));
+
+  expect(backgroundSignal?.aborted).toBe(true);
+  expect(endingSignal?.aborted).toBe(true);
+  expect(screen.getByText('已返回首页')).toBeInTheDocument();
+  await act(async () => {
+    backgroundSnapshot.resolve(jsonResponse(snapshot({ version: 8, players: players(1) })));
+    beginSettlement.resolve(jsonResponse(snapshot({ status: 'SETTLING', version: 9, players: players(1) })));
+    await Promise.resolve();
+  });
+  expect(screen.queryByText('已进入结算页')).not.toBeInTheDocument();
+  expect(screen.getAllByText('已返回首页')).toHaveLength(1);
 });
 
 it('keeps write controls out of settling games', async () => {

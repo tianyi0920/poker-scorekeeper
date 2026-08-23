@@ -60,7 +60,7 @@ async function validatedSettlementDraft(gameId: string, path: string, init?: Req
 
 export const scorekeeperApi = {
   currentGames: () => apiFetch<CurrentGamesResponse>('/games/current'),
-  gameSnapshot: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`),
+  gameSnapshot: (id: string, signal?: AbortSignal) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`, { signal }),
   buyIn: (gameId: string, body: BuyHandsRequest) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/buyins`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
@@ -87,7 +87,7 @@ export const scorekeeperApi = {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   startGame: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/start`, { method: 'POST' }),
-  beginSettlement: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/begin-settlement`, { method: 'POST' }),
+  beginSettlement: (id: string, signal?: AbortSignal) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/begin-settlement`, { method: 'POST', signal }),
   managedGames: (limit = 50, cursor?: string): Promise<ManagedGamesResponseDto> => validatedApiFetch(
     managedGamesResponseSchema,
     `/games/manage?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`

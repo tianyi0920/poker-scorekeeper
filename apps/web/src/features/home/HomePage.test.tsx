@@ -1,7 +1,11 @@
-import { screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
+import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
 import { App } from '../../app/App.js';
+import { AuthProvider } from '../../auth/AuthProvider.js';
 import { currentGame, jsonResponse, renderAt, session } from '../../test/app-fixtures.js';
+import { HomePage } from './HomePage.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -20,6 +24,26 @@ function expectOnlyCurrentRequests(fetchMock: ReturnType<typeof vi.fn>) {
   expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
     '/api/auth/session', '/api/games/current'
   ]);
+}
+
+function HistoryControls() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  return <>
+    <button type="button" onClick={() => navigate('/away')}>离开首页</button>
+    <button type="button" onClick={() => navigate(-1)}>返回上一页</button>
+    <output data-testid="location-state">{JSON.stringify(location.state)}</output>
+  </>;
+}
+
+function renderHomeState(state: unknown) {
+  return render(<AuthProvider><MemoryRouter initialEntries={[{ pathname: '/', state }]}>
+    <HistoryControls />
+    <Routes>
+      <Route path="/" element={<HomePage />} />
+      <Route path="/away" element={<p>其他页面</p>} />
+    </Routes>
+  </MemoryRouter></AuthProvider>);
 }
 
 it('requests only current games and omits personal summaries and recent results', async () => {
@@ -60,4 +84,33 @@ it('shows the current-games error without loading history', async () => {
 
   expect(await screen.findByText('当前对局暂时无法加载，请稍后重试')).toBeInTheDocument();
   expectOnlyCurrentRequests(fetchMock);
+});
+
+it('shows the hard-delete notice once, clears the same history state, and does not repeat it after back navigation', async () => {
+  // Break caught: the deletion notice disappears with history-state cleanup or reappears whenever the user returns home.
+  mockHomeFetch({ games: [] });
+  renderHomeState({ notice: '该对局已由超级管理员删除' });
+
+  expect(await screen.findByRole('status', { name: '对局删除提示' })).toHaveTextContent('该对局已由超级管理员删除');
+  await waitFor(() => expect(screen.getByTestId('location-state')).toHaveTextContent('null'));
+
+  const user = userEvent.setup();
+  await user.click(screen.getByRole('button', { name: '离开首页' }));
+  expect(screen.getByText('其他页面')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '返回上一页' }));
+  expect(await screen.findByText('当前没有进行中的对局')).toBeInTheDocument();
+  expect(screen.queryByRole('status', { name: '对局删除提示' })).not.toBeInTheDocument();
+});
+
+it.each([
+  null,
+  { notice: '普通通知' },
+  { notice: '该对局已由超级管理员删除', extra: true },
+  { from: '/games/game-1' }
+])('does not render ordinary navigation state as a deletion notice: %j', async (state) => {
+  // Break caught: arbitrary router state becomes a trusted user-visible deletion message.
+  mockHomeFetch({ games: [] });
+  renderHomeState(state);
+  expect(await screen.findByText('当前没有进行中的对局')).toBeInTheDocument();
+  expect(screen.queryByRole('status', { name: '对局删除提示' })).not.toBeInTheDocument();
 });
