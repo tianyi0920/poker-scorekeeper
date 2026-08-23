@@ -236,6 +236,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     setSuccess(null);
     setUploadFailed(false);
     const controller = new AbortController();
+    let uploadStarted = false;
     uploadAbortRef.current?.abort();
     uploadAbortRef.current = controller;
     try {
@@ -243,6 +244,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
       if (blob.size > MAX_AVATAR_BYTES) throw new Error('AVATAR_TOO_LARGE');
       if (!isCurrentUpload(uploadVersion, controller)) return;
       setCroppedBlob(blob);
+      uploadStarted = true;
       const response = await uploadAvatar(blob, (nextProgress) => {
         if (isCurrentUpload(uploadVersion, controller)) setProgress(nextProgress);
       }, controller.signal);
@@ -256,8 +258,8 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
         ? '头像编码失败，请换一张图片'
         : reason instanceof Error && reason.message === 'AVATAR_TOO_LARGE'
           ? '裁剪后的图片不能超过 5 MiB'
-          : '上传失败，请重试';
-      setUploadFailed(message === '上传失败，请重试');
+          : mutationMessage(reason, '上传失败，请重试');
+      setUploadFailed(uploadStarted);
       setError(message);
     } finally {
       if (uploadAbortRef.current === controller) uploadAbortRef.current = null;

@@ -1,6 +1,7 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
+import { ApiError } from '../../api/http-client.js';
 import * as avatarResources from '../../api/resources.js';
 import { AvatarPicker, cropAvatar } from './AvatarPicker.js';
 
@@ -33,7 +34,10 @@ function stubPresetFetch() {
   })));
 }
 
-function installCropHarness(croppedBlob = new Blob(['cropped-avatar'], { type: 'image/webp' })) {
+function installCropHarness(
+  croppedBlob = new Blob(['cropped-avatar'], { type: 'image/webp' }),
+  canvasAvailable = true
+) {
   class LoadedImage {
     naturalWidth = 1600;
     naturalHeight = 1200;
@@ -54,7 +58,7 @@ function installCropHarness(croppedBlob = new Blob(['cropped-avatar'], { type: '
     if (tagName === 'canvas') return {
       width: 0,
       height: 0,
-      getContext: () => ({ drawImage: vi.fn() }),
+      getContext: () => canvasAvailable ? { drawImage: vi.fn() } : null,
       toBlob: encodeCrop
     } as unknown as HTMLCanvasElement;
     return originalCreateElement(tagName, options);
@@ -455,6 +459,43 @@ it('keeps the same cropped blob and preview after failure and releases them only
   expect(harness.encodeCrop).toHaveBeenCalledOnce();
   await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ kind: 'UPLOAD', value: 'saved.webp' }));
   expect(harness.revokeObjectUrl).toHaveBeenCalledWith('blob:avatar-source-1');
+});
+
+it('preserves a structured avatar API error while retaining retry actions and the preview', async () => {
+  // Break caught: authentication, CSRF, format or server messages are flattened into a generic upload error.
+  stubPresetFetch();
+  const harness = installCropHarness();
+  vi.spyOn(avatarResources, 'uploadAvatar').mockRejectedValue(new ApiError(
+    415,
+    'AVATAR_UNSUPPORTED',
+    '仅支持 JPG、PNG 或 WebP 图片'
+  ));
+  renderPicker();
+
+  await chooseImage();
+  fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('仅支持 JPG、PNG 或 WebP 图片');
+  expect(screen.getByRole('button', { name: '重新上传' })).toBeEnabled();
+  expect(screen.getByRole('button', { name: '重新选择照片' })).toBeEnabled();
+  expect(screen.getByRole('img', { name: '待裁剪头像' })).toHaveAttribute('src', 'blob:avatar-source-1');
+  expect(harness.revokeObjectUrl).not.toHaveBeenCalled();
+});
+
+it('does not offer Blob retry when local crop encoding fails before upload starts', async () => {
+  // Break caught: retry is advertised without a retained Blob and silently performs a second crop.
+  stubPresetFetch();
+  installCropHarness(new Blob(['unused'], { type: 'image/webp' }), false);
+  const upload = vi.spyOn(avatarResources, 'uploadAvatar');
+  renderPicker();
+
+  await chooseImage();
+  fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent('上传失败，请重试');
+  expect(upload).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: '重新上传' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '裁剪并上传' })).toBeEnabled();
 });
 
 it('keeps the current avatar until the successful upload is echoed by the refreshed session', async () => {

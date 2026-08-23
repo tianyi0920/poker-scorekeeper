@@ -34,7 +34,7 @@ export function AvatarCropDialog({ sourceUrl, image, crop, busy, progress, uploa
   const stableClose = useCallback(onClose, [onClose]);
   const maxX = Math.max(0, image.naturalWidth - crop.width);
   const maxY = Math.max(0, image.naturalHeight - crop.height);
-  return <Modal title="裁剪头像" onClose={stableClose}><div className="modal-body">
+  return <Modal title="裁剪头像" onClose={stableClose} dismissible={!busy}><div className="modal-body">
     <div className="crop-preview"><img src={sourceUrl} alt="待裁剪头像" style={cropPreviewStyle(image, crop)} /></div>
     <label className="field" htmlFor="crop-x">水平位置<input id="crop-x" type="range" min="0" max={maxX} value={Math.min(crop.x, maxX)} disabled={busy || uploadFailed} onChange={(event) => onCropChange({ ...crop, x: Number(event.target.value) })} /></label>
     <label className="field" htmlFor="crop-y">垂直位置<input id="crop-y" type="range" min="0" max={maxY} value={Math.min(crop.y, maxY)} disabled={busy || uploadFailed} onChange={(event) => onCropChange({ ...crop, y: Number(event.target.value) })} /></label>

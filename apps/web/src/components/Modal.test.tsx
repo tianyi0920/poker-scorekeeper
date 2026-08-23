@@ -1,6 +1,6 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { useState } from 'react';
 import { Modal } from './Modal.js';
 
@@ -38,4 +38,30 @@ it('cycles Tab and Shift+Tab within the dialog controls', async () => {
   expect(confirm).toHaveFocus();
   await user.tab();
   expect(close).toHaveFocus();
+});
+
+it('disables every dismiss path when configured as non-dismissible', () => {
+  // Break caught: a busy mutation can be aborted locally while the server may still commit it.
+  const onClose = vi.fn();
+  const view = render(<Modal title="正在保存" dismissible={false} onClose={onClose}><button type="button">等待</button></Modal>);
+
+  expect(screen.getByRole('button', { name: '关闭' })).toBeDisabled();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  fireEvent.mouseDown(view.container.querySelector('.modal-backdrop')!);
+  fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('keeps close button, Escape and backdrop dismissal enabled by default', () => {
+  // Break caught: adding the mutation lock accidentally makes existing dialogs impossible to close.
+  const onClose = vi.fn();
+  const view = render(<Modal title="普通对话框" onClose={onClose}><button type="button">确认</button></Modal>);
+
+  expect(screen.getByRole('button', { name: '关闭' })).toBeEnabled();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  fireEvent.mouseDown(view.container.querySelector('.modal-backdrop')!);
+  fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+
+  expect(onClose).toHaveBeenCalledTimes(3);
 });

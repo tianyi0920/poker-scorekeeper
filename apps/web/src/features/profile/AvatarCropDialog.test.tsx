@@ -15,8 +15,8 @@ it('scales and offsets a non-origin crop rectangle into the 260px preview', () =
   });
 });
 
-it('routes Escape and the visible close button through upload cancellation', () => {
-  // Break caught: Modal close paths bypassed the upload cleanup handler while busy.
+it('blocks close button, Escape and backdrop dismissal while upload is busy', () => {
+  // Break caught: local cancellation unlocks a second write while the first request may commit remotely.
   const onClose = vi.fn();
   const props = {
     sourceUrl: 'blob:avatar', image: largeImage(),
@@ -25,11 +25,32 @@ it('routes Escape and the visible close button through upload cancellation', () 
   };
   const view = render(<AvatarCropDialog {...props} />);
 
+  expect(screen.getByRole('button', { name: '关闭' })).toBeDisabled();
   fireEvent.keyDown(document, { key: 'Escape' });
-  expect(onClose).toHaveBeenCalledOnce();
-  view.rerender(<AvatarCropDialog {...props} />);
+  fireEvent.mouseDown(view.container.querySelector('.modal-backdrop')!);
   fireEvent.click(screen.getByRole('button', { name: '关闭' }));
-  expect(onClose).toHaveBeenCalledTimes(2);
+  expect(onClose).not.toHaveBeenCalled();
+});
+
+it('restores every close path when upload is not busy', () => {
+  // Break caught: the busy lock remains stuck after the request settles.
+  const onClose = vi.fn();
+  const view = render(<AvatarCropDialog
+    sourceUrl="blob:avatar"
+    image={largeImage()}
+    crop={{ x: 500, y: 250, width: 2000, height: 2000 }}
+    busy={false}
+    progress={0}
+    onCropChange={vi.fn()}
+    onConfirm={vi.fn()}
+    onClose={onClose}
+  />);
+
+  expect(screen.getByRole('button', { name: '关闭' })).toBeEnabled();
+  fireEvent.keyDown(document, { key: 'Escape' });
+  fireEvent.mouseDown(view.container.querySelector('.modal-backdrop')!);
+  fireEvent.click(screen.getByRole('button', { name: '关闭' }));
+  expect(onClose).toHaveBeenCalledTimes(3);
 });
 
 it('announces exact progress and disables crop writes while uploading', () => {
