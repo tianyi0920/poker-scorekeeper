@@ -17,6 +17,10 @@ function avatarUrl(avatar: AvatarReference): string {
   return avatar.kind === 'PRESET' ? `/avatars/${avatar.value}.webp` : `/avatars/uploads/${avatar.value}`;
 }
 
+function sameAvatar(left: AvatarReference | null, right: AvatarReference | null): boolean {
+  return left?.kind === right?.kind && left?.value === right?.value;
+}
+
 export async function cropAvatar(image: HTMLImageElement, crop: CropRect): Promise<Blob> {
   const canvas = document.createElement('canvas');
   canvas.width = 512;
@@ -37,6 +41,9 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   const mountedRef = useRef(true);
   const sourceUrlRef = useRef<string | null>(null);
   const uploadAbortRef = useRef<AbortController | null>(null);
+  const acceptedAvatarRef = useRef<AvatarReference | null>(null);
+  const presetSaveVersionRef = useRef(0);
+  const activePresetSaveRef = useRef<number | null>(null);
   const [savedAvatar, setSavedAvatar] = useState(currentAvatar);
   const [pendingPreset, setPendingPreset] = useState<string | null>(null);
   const [presets, setPresets] = useState<PresetAvatarDto[]>([]);
@@ -49,8 +56,18 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   const [success, setSuccess] = useState<string | null>(null);
 
   useEffect(() => {
+    presetSaveVersionRef.current += 1;
+    if (activePresetSaveRef.current !== null) {
+      activePresetSaveRef.current = null;
+      setIsSaving(false);
+    }
     setSavedAvatar(currentAvatar);
     setPendingPreset(null);
+    setError(null);
+    if (!sameAvatar(currentAvatar, acceptedAvatarRef.current)) {
+      acceptedAvatarRef.current = null;
+      setSuccess(null);
+    }
   }, [currentAvatar?.kind, currentAvatar?.value]);
   useEffect(() => {
     let active = true;
@@ -81,6 +98,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
 
   function applyServerAvatar(response: AvatarMutationResponse) {
     const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
+    acceptedAvatarRef.current = next;
     setSavedAvatar(next);
     setPendingPreset(null);
     setSuccess('头像已保存');
@@ -106,16 +124,22 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
 
   async function savePreset() {
     if (!hasPendingPreset || pendingPreset === null || isSaving || !online) return;
+    const saveVersion = ++presetSaveVersionRef.current;
+    activePresetSaveRef.current = saveVersion;
     setIsSaving(true);
     setError(null);
     setSuccess(null);
     try {
       const response = await scorekeeperApi.selectPresetAvatar({ presetId: pendingPreset as SelectablePresetAvatarId });
+      if (activePresetSaveRef.current !== saveVersion) return;
       applyServerAvatar(response);
     } catch (reason) {
-      setError(mutationMessage(reason, '头像保存失败'));
+      if (activePresetSaveRef.current === saveVersion) setError(mutationMessage(reason, '头像保存失败'));
     } finally {
-      setIsSaving(false);
+      if (activePresetSaveRef.current === saveVersion) {
+        activePresetSaveRef.current = null;
+        setIsSaving(false);
+      }
     }
   }
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { AvatarPicker, cropAvatar } from './AvatarPicker.js';
@@ -92,6 +92,92 @@ it('saves the pending preset once and refreshes the saved selection', async () =
   expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
   expect(screen.queryByRole('button', { name: '保存头像' })).not.toBeInTheDocument();
   expect(screen.getByRole('radio', { name: '头像 14' })).toBeChecked();
+});
+
+it('ignores a delayed preset save after a newer session avatar arrives', async () => {
+  // Break caught: an old write response overwrites the newer session avatar and reports a stale change.
+  let resolveSelection!: (response: Response) => void;
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((resolve) => { resolveSelection = resolve; });
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  const { onChanged, rerender } = renderPicker();
+
+  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
+  await user.click(screen.getByRole('button', { name: '保存头像' }));
+  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
+  await waitFor(() => expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp'));
+
+  await act(async () => { resolveSelection(avatarResponse('preset-14')); });
+
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
+  expect(onChanged).not.toHaveBeenCalled();
+});
+
+it('clears saved feedback when an external session avatar replaces it', async () => {
+  // Break caught: a success message remains after another session update has superseded it.
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  const { rerender } = renderPicker();
+
+  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
+  await user.click(screen.getByRole('button', { name: '保存头像' }));
+  await screen.findByRole('status');
+  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={() => undefined} />);
+
+  await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
+});
+
+it('clears stale save errors when an external session avatar changes', async () => {
+  // Break caught: an obsolete mutation error survives after the session supplies a new avatar.
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/api/me/avatar/preset')) return new Response('{}', { status: 500, headers: { 'Content-Type': 'application/json' } });
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  const { rerender } = renderPicker();
+
+  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
+  await user.click(screen.getByRole('button', { name: '保存头像' }));
+  await screen.findByRole('alert');
+  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={() => undefined} />);
+
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+  expect(screen.queryByRole('button', { name: '重试保存' })).not.toBeInTheDocument();
+});
+
+it('keeps saved feedback when the session refresh echoes the accepted avatar', async () => {
+  // Break caught: the normal refresh after a successful save dismisses its confirmation immediately.
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  const { rerender } = renderPicker();
+
+  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
+  await user.click(screen.getByRole('button', { name: '保存头像' }));
+  await screen.findByRole('status');
+  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-14' }} onChanged={() => undefined} />);
+
+  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
 });
 
 it('cancels a pending preset without requesting and restores the saved radio', async () => {
