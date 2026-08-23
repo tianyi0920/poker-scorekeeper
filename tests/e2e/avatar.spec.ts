@@ -134,9 +134,8 @@ test('failed custom upload retains the crop and retries the same file before per
       };
       const captureProgressNode = (node: Node) => {
         if (node instanceof Text) {
-          if (node.parentElement?.closest('.avatar-upload-progress') !== null) {
-            recordProgress(node.textContent);
-          }
+          const progress = node.parentElement?.closest('.avatar-upload-progress');
+          if (progress !== null && progress !== undefined) recordProgress(progress.textContent);
           return;
         }
         if (!(node instanceof Element)) return;
@@ -251,6 +250,15 @@ test('failed custom upload retains the crop and retries the same file before per
     expect(uploadMutations.requests).toHaveLength(2);
     await sessionFetchReady;
     await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
+    for (const radio of await page.getByRole('radio').all()) await expect(radio).toBeDisabled();
+    await expect(page.getByRole('button', { name: '从相册选择', exact: true })).toBeDisabled();
+    await expect(fileInput).toBeDisabled();
+    await expect(cropDialog).toBeVisible();
+    await expect(horizontalPosition).toBeDisabled();
+    await expect(page.getByLabel('垂直位置')).toBeDisabled();
+    await expect(page.getByRole('button', { name: '裁剪并上传' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '取消' })).toBeDisabled();
+    await expect(cropDialog.getByRole('button', { name: '关闭' })).toBeDisabled();
     await expect.poll(() => page.evaluate(() => (
       (window as typeof window & { avatarProgressMessages?: string[] }).avatarProgressMessages ?? []
     ))).toContainEqual(expect.stringMatching(/^正在上传 (?:[1-9]\d?|100)%$/));
@@ -265,6 +273,9 @@ test('failed custom upload retains the crop and retries the same file before per
     await page.unroute('**/api/auth/session', gateSessionRefresh);
     gateSessionRefresh = null;
     await expect(currentAvatar).toHaveAttribute('src', uploadedUrl);
+    await expect(cropDialog).not.toBeVisible();
+    await expect(page.getByRole('button', { name: '从相册选择', exact: true })).toBeEnabled();
+    await expect(fileInput).toBeEnabled();
 
     await page.reload();
     await expect(page.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', uploadedUrl);

@@ -12,7 +12,7 @@ class FakeXhr {
   readonly send = vi.fn();
   readonly abort = vi.fn(() => this.onabort?.());
   status = 200;
-  responseText = JSON.stringify({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
+  responseText = JSON.stringify({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp', path: 'saved.webp' });
   withCredentials = false;
   onload: (() => void) | null = null;
   onerror: (() => void) | null = null;
@@ -54,9 +54,23 @@ it('reports upload progress and sends the CSRF token with same-origin credential
   xhr.progress(5, 10);
   xhr.onload?.();
 
-  await expect(promise).resolves.toEqual({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp' });
+  await expect(promise).resolves.toEqual({ avatarKind: 'UPLOAD', avatarValue: 'saved.webp', path: 'saved.webp' });
   expect(onProgress).toHaveBeenCalledWith(50);
   expect(xhr.open).toHaveBeenCalledWith('POST', '/api/me/avatar/upload');
   expect(xhr.withCredentials).toBe(true);
   expect(xhr.setRequestHeader).toHaveBeenCalledWith('X-CSRF-Token', 'csrf-123');
+});
+
+it('rejects a malformed successful upload response as a controlled API error', async () => {
+  // Break caught: a 2xx upload body with an unsafe filename becomes client avatar state.
+  vi.stubGlobal('XMLHttpRequest', FakeXhr);
+  const promise = uploadAvatar(new Blob(['avatar'], { type: 'image/webp' }), vi.fn());
+  const xhr = FakeXhr.latest!;
+  xhr.responseText = JSON.stringify({ avatarKind: 'UPLOAD', avatarValue: '../outside.webp', path: '../outside.webp' });
+
+  xhr.onload?.();
+
+  await expect(promise).rejects.toMatchObject({
+    name: 'ApiError', status: 502, code: 'HTTP_ERROR', message: '服务器返回了无效结果'
+  });
 });

@@ -1,6 +1,10 @@
-import type { SelectablePresetAvatarId } from '@poker/contracts';
+import type {
+  AvatarMutationResponse,
+  SelectablePresetAvatarCatalogItem,
+  SelectablePresetAvatarId
+} from '@poker/contracts';
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ChangeEvent } from 'react';
-import { mutationMessage, scorekeeperApi, uploadAvatar, type AvatarMutationResponse, type PresetAvatarDto } from '../../api/resources.js';
+import { mutationMessage, scorekeeperApi, uploadAvatar } from '../../api/resources.js';
 import { Toast } from '../../components/Toast.js';
 import { useOnlineStatus } from '../../hooks/useOnlineStatus.js';
 import { AvatarCropDialog, type CropRect } from './AvatarCropDialog.js';
@@ -35,7 +39,10 @@ export async function cropAvatar(image: HTMLImageElement, crop: CropRect): Promi
   ));
 }
 
-export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: AvatarReference | null; onChanged: (avatar: AvatarReference) => void }) {
+export function AvatarPicker({ currentAvatar, onChanged }: {
+  currentAvatar: AvatarReference | null;
+  onChanged: (avatar: AvatarReference) => Promise<void> | void;
+}) {
   const online = useOnlineStatus();
   const inputRef = useRef<HTMLInputElement>(null);
   const mountedRef = useRef(true);
@@ -47,8 +54,8 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
   const uploadVersionRef = useRef(0);
   const activeUploadRef = useRef<number | null>(null);
   const [savedAvatar, setSavedAvatar] = useState(currentAvatar);
-  const [pendingPreset, setPendingPreset] = useState<string | null>(null);
-  const [presets, setPresets] = useState<PresetAvatarDto[]>([]);
+  const [pendingPreset, setPendingPreset] = useState<SelectablePresetAvatarId | null>(null);
+  const [presets, setPresets] = useState<SelectablePresetAvatarCatalogItem[]>([]);
   const [image, setImage] = useState<HTMLImageElement | null>(null);
   const [sourceUrl, setSourceUrl] = useState<string | null>(null);
   const [crop, setCrop] = useState<CropRect | null>(null);
@@ -115,21 +122,29 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     if (inputRef.current !== null) inputRef.current.value = '';
   }, [releaseSourceUrl]);
 
-  function applyServerAvatar(response: AvatarMutationResponse) {
+  function applyServerAvatar(response: AvatarMutationResponse): AvatarReference {
     const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
     acceptedAvatarRef.current = next;
     setSavedAvatar(next);
     setPendingPreset(null);
     setSuccess('头像已保存');
-    onChanged(next);
+    return next;
   }
 
-  function acceptUploadedAvatar(response: AvatarMutationResponse) {
+  function acceptUploadedAvatar(response: AvatarMutationResponse): AvatarReference {
     const next: AvatarReference = { kind: response.avatarKind, value: response.avatarValue };
     acceptedAvatarRef.current = next;
     setPendingPreset(null);
     setSuccess('头像已保存');
-    onChanged(next);
+    return next;
+  }
+
+  async function synchronizeAcceptedAvatar(next: AvatarReference): Promise<void> {
+    try {
+      await onChanged(next);
+    } catch {
+      // The avatar mutation already succeeded. Session synchronization cannot turn it into a retryable write.
+    }
   }
 
   const savedPreset = savedAvatar?.kind === 'PRESET' ? savedAvatar.value : null;
@@ -139,7 +154,7 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     && activePresetSaveRef.current === saveVersion
     && presetSaveVersionRef.current === saveVersion;
 
-  function choosePreset(id: string) {
+  function choosePreset(id: SelectablePresetAvatarId) {
     if (isSaving || !online) return;
     setPendingPreset(id === savedPreset ? null : id);
     setUploadFailed(false);
@@ -161,9 +176,10 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
     setError(null);
     setSuccess(null);
     try {
-      const response = await scorekeeperApi.selectPresetAvatar({ presetId: pendingPreset as SelectablePresetAvatarId });
+      const response = await scorekeeperApi.selectPresetAvatar({ presetId: pendingPreset });
       if (!isCurrentPresetSave(saveVersion)) return;
-      applyServerAvatar(response);
+      const acceptedAvatar = applyServerAvatar(response);
+      await synchronizeAcceptedAvatar(acceptedAvatar);
     } catch (reason) {
       if (isCurrentPresetSave(saveVersion)) setError(mutationMessage(reason, '头像保存失败'));
     } finally {
@@ -249,8 +265,9 @@ export function AvatarPicker({ currentAvatar, onChanged }: { currentAvatar: Avat
         if (isCurrentUpload(uploadVersion, controller)) setProgress(nextProgress);
       }, controller.signal);
       if (!isCurrentUpload(uploadVersion, controller)) return;
-      acceptUploadedAvatar(response);
-      closeCrop();
+      const acceptedAvatar = acceptUploadedAvatar(response);
+      await synchronizeAcceptedAvatar(acceptedAvatar);
+      if (mountedRef.current && activeUploadRef.current === uploadVersion) closeCrop();
     } catch (reason) {
       if (reason instanceof DOMException && reason.name === 'AbortError') return;
       if (!isCurrentUpload(uploadVersion, controller)) return;

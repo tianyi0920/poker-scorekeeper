@@ -1,11 +1,14 @@
 import {
   allPlayerAggregationSchema,
+  avatarMutationResponseSchema,
   historyResponseSchema,
+  selectablePresetAvatarCatalogResponseSchema,
   settlementDetailSchema,
   settlementDraftResponseSchema,
   settlementPreviewResponseSchema,
   type AdjustLatestBuyinRequest,
   type AllPlayerAggregationDto,
+  type AvatarMutationResponse,
   type BuyHandsRequest,
   type BuyinEventResponse,
   type CreateGameRequest,
@@ -16,6 +19,7 @@ import {
   type HistoryResponseDto,
   type RakeSettingsDto,
   type SaveSettlementDraftRequest,
+  type SelectablePresetAvatarCatalogResponse,
   type SelectPresetAvatarRequest,
   type SettlementDetailDto,
   type SettlementDraftDto,
@@ -27,16 +31,6 @@ import {
 } from '@poker/contracts';
 import type { ZodType } from 'zod';
 import { ApiError, apiFetch, csrfTokenStore } from './http-client.js';
-
-export interface PresetAvatarDto {
-  id: string;
-  path: string;
-}
-
-export interface AvatarMutationResponse {
-  avatarKind: 'PRESET' | 'UPLOAD';
-  avatarValue: string;
-}
 
 function invalidApiResponse(): ApiError {
   return new ApiError(502, 'HTTP_ERROR', '服务器返回了无效结果');
@@ -104,13 +98,13 @@ export const scorekeeperApi = {
   resetPassword: (id: string, newPassword: string) => apiFetch<UserResponse>(`/users/${encodeURIComponent(id)}/reset-password`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newPassword })
   }),
-  resetAvatar: (id: string) => apiFetch<AvatarMutationResponse>(`/users/${encodeURIComponent(id)}/avatar/reset`, { method: 'POST' }),
+  resetAvatar: (id: string): Promise<AvatarMutationResponse> => validatedApiFetch(avatarMutationResponseSchema, `/users/${encodeURIComponent(id)}/avatar/reset`, { method: 'POST' }),
   getRakeSettings: () => apiFetch<RakeSettingsDto>('/settings/rake'),
   updateRakeSettings: (body: UpdateRakeSettingsRequest) => apiFetch<RakeSettingsDto>('/settings/rake', {
     method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
-  getPresetAvatars: () => apiFetch<{ presets: PresetAvatarDto[] }>('/avatars/presets'),
-  selectPresetAvatar: (body: SelectPresetAvatarRequest) => apiFetch<AvatarMutationResponse>('/me/avatar/preset', {
+  getPresetAvatars: (): Promise<SelectablePresetAvatarCatalogResponse> => validatedApiFetch(selectablePresetAvatarCatalogResponseSchema, '/avatars/presets'),
+  selectPresetAvatar: (body: SelectPresetAvatarRequest): Promise<AvatarMutationResponse> => validatedApiFetch(avatarMutationResponseSchema, '/me/avatar/preset', {
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   })
 };
@@ -156,9 +150,14 @@ export function uploadAvatar(blob: Blob, onProgress: (percent: number) => void, 
     request.onload = () => {
       if (request.status >= 200 && request.status < 300) {
         try {
-          resolveOnce(JSON.parse(request.responseText) as AvatarMutationResponse);
+          const parsed = avatarMutationResponseSchema.safeParse(JSON.parse(request.responseText) as unknown);
+          if (!parsed.success) {
+            rejectOnce(invalidApiResponse());
+            return;
+          }
+          resolveOnce(parsed.data);
         } catch {
-          rejectOnce(new ApiError(request.status, 'HTTP_ERROR', '服务器返回了无效结果'));
+          rejectOnce(invalidApiResponse());
         }
         return;
       }

@@ -8,8 +8,8 @@ export function ProfilePage() {
   const currentAvatar: AvatarReference | null = user
     ? { kind: user.avatarKind, value: user.avatarValue }
     : null;
-  const handleAvatarChanged = () => {
-    void refreshSession();
+  const handleAvatarChanged = async () => {
+    await refreshSession();
   };
   const isAdmin = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   return <div className="page-stack">

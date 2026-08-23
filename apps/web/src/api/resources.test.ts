@@ -34,3 +34,25 @@ it.each([
     name: 'ApiError', status: 502, code: 'HTTP_ERROR', message: '服务器返回了无效结果'
   });
 });
+
+it.each([
+  ['preset catalog', () => scorekeeperApi.getPresetAvatars(), {
+    presets: Array.from({ length: 12 }, (_, index) => {
+      const id = index === 0 ? 'preset-01' : `preset-${index + 13}`;
+      return { id, path: `/avatars/${id}.webp` };
+    })
+  }],
+  ['preset save', () => scorekeeperApi.selectPresetAvatar({ presetId: 'preset-14' }), {
+    avatarKind: 'PRESET', avatarValue: 'preset-01'
+  }],
+  ['administrator reset', () => scorekeeperApi.resetAvatar('user-1'), {
+    avatarKind: 'UPLOAD', avatarValue: '../outside.webp', path: '../outside.webp'
+  }]
+])('rejects malformed avatar %s responses as a controlled API error', async (_case, request, malformed) => {
+  // Break caught: hand-written avatar response types trust malformed catalog or mutation payloads.
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(malformed)));
+
+  await expect(request()).rejects.toMatchObject({
+    name: 'ApiError', status: 502, code: 'HTTP_ERROR', message: '服务器返回了无效结果'
+  });
+});
