@@ -604,6 +604,91 @@ const sourcePolicyBlockDiscoverySafeControls = [
   ],
 ] as const;
 
+function anchoredEnvironmentAfterSiblingFillers(
+  fillerCount: number,
+  port: number,
+): string {
+  return [
+    "```text",
+    "x-anchor: &anchor",
+    `  PORT: ${port}`,
+    ...Array.from(
+      { length: fillerCount },
+      (_, index) => `filler_${index}: safe`,
+    ),
+    "services:",
+    "  app:",
+    "    environment:",
+    "      <<: *anchor",
+    "trailing prose",
+    "```",
+  ].join("\n");
+}
+
+function anchoredEnvironmentAfterNestedFillers(
+  fillerCount: number,
+  port: number,
+): string {
+  return [
+    "```text",
+    "x-anchor: &anchor",
+    `  PORT: ${port}`,
+    ...Array.from(
+      { length: fillerCount },
+      (_, index) => `  nested_${index}: safe`,
+    ),
+    "services:",
+    "  app:",
+    "    environment:",
+    "      <<: *anchor",
+    "trailing prose",
+    "```",
+  ].join("\n");
+}
+
+const sourcePolicyUnboundedAnchorDiscovery = [
+  [
+    "rejects an unsafe anchor after thirty sibling boundaries",
+    anchoredEnvironmentAfterSiblingFillers(30, 3000),
+    true,
+  ],
+  [
+    "rejects an unsafe anchor after thirty-one sibling boundaries",
+    anchoredEnvironmentAfterSiblingFillers(31, 3000),
+    true,
+  ],
+  [
+    "accepts a safe anchor after thirty sibling boundaries",
+    anchoredEnvironmentAfterSiblingFillers(30, 80),
+    false,
+  ],
+  [
+    "accepts a safe anchor after thirty-one sibling boundaries",
+    anchoredEnvironmentAfterSiblingFillers(31, 80),
+    false,
+  ],
+  [
+    "rejects an unsafe anchor with services at source line 124",
+    anchoredEnvironmentAfterNestedFillers(122, 3000),
+    true,
+  ],
+  [
+    "rejects an unsafe anchor with services at source line 125",
+    anchoredEnvironmentAfterNestedFillers(123, 3000),
+    true,
+  ],
+  [
+    "accepts a safe anchor with services at source line 124",
+    anchoredEnvironmentAfterNestedFillers(122, 80),
+    false,
+  ],
+  [
+    "accepts a safe anchor with services at source line 125",
+    anchoredEnvironmentAfterNestedFillers(123, 80),
+    false,
+  ],
+] as const;
+
 describe("secure backend deployment guide validator", () => {
   it.each(insecureUrlTokens)("rejects %s", (_label, token) => {
     expect(() => validate(token)).toThrow(
@@ -717,14 +802,11 @@ describe("secure backend deployment guide validator", () => {
     },
   );
 
-  it.each(sourcePolicyBlockDiscoveryUnsafe)(
-    "%s",
-    (_label, fencedBody) => {
-      expect(() => validate(fencedBody)).toThrow(
-        /permits an insecure public application backend/,
-      );
-    },
-  );
+  it.each(sourcePolicyBlockDiscoveryUnsafe)("%s", (_label, fencedBody) => {
+    expect(() => validate(fencedBody)).toThrow(
+      /permits an insecure public application backend/,
+    );
+  });
 
   it.each(sourcePolicySafeTrailingProse)("%s", (_label, fencedBody) => {
     expect(() => validate(fencedBody)).not.toThrow();
@@ -734,6 +816,20 @@ describe("secure backend deployment guide validator", () => {
     "%s",
     (_label, fencedBody) => {
       expect(() => validate(fencedBody)).not.toThrow();
+    },
+  );
+
+  it.each(sourcePolicyUnboundedAnchorDiscovery)(
+    "%s",
+    (_label, fencedBody, rejects) => {
+      const validation = () => validate(fencedBody);
+      if (rejects) {
+        expect(validation).toThrow(
+          /permits an insecure public application backend/,
+        );
+      } else {
+        expect(validation).not.toThrow();
+      }
     },
   );
 });

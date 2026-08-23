@@ -353,9 +353,6 @@ function stripIndentedCodePrefix(line: string): string {
   return line.startsWith("\t") ? line.slice(1) : line.slice(4);
 }
 
-const maxYamlBlockBoundaries = 32;
-const maxYamlBlockLines = 128;
-
 function leadingIndentation(line: string): string {
   return /^[ \t]*/u.exec(line)?.[0] ?? "";
 }
@@ -371,16 +368,14 @@ function sourceLocalYamlBlocks(lines: string[]): Array<{
 
     const baseline = leadingIndentation(lines[start]!);
     const ends: number[] = [];
-    const searchEnd = Math.min(lines.length, start + maxYamlBlockLines);
-    for (let end = start + 1; end < searchEnd; end += 1) {
+    for (let end = start + 1; end < lines.length; end += 1) {
       if (lines[end]!.trim() === "") continue;
       if (leadingIndentation(lines[end]!).length <= baseline.length) {
         ends.push(end);
-        if (ends.length === maxYamlBlockBoundaries) break;
       }
     }
-    if (ends.length === 0 || ends[ends.length - 1] !== searchEnd) {
-      ends.push(searchEnd);
+    if (ends.length === 0 || ends[ends.length - 1] !== lines.length) {
+      ends.push(lines.length);
     }
 
     for (const end of ends) {
