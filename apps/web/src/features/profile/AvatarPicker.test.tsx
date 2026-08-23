@@ -111,11 +111,43 @@ it('ignores a delayed preset save after a newer session avatar arrives', async (
   await user.click(screen.getByRole('button', { name: '保存头像' }));
   rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
   await waitFor(() => expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp'));
+  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
+  expect(screen.getByLabelText('上传自定义头像')).toBeDisabled();
 
   await act(async () => { resolveSelection(avatarResponse('preset-14')); });
 
   expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
   expect(onChanged).not.toHaveBeenCalled();
+  expect(screen.getByRole('radio', { name: '头像 15' })).toBeEnabled();
+  expect(screen.getByLabelText('上传自定义头像')).toBeEnabled();
+});
+
+it('keeps avatar writes locked until a stale preset failure settles', async () => {
+  // Break caught: an external session update unlocks controls before the superseded request has settled.
+  let rejectSelection!: (reason: unknown) => void;
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
+    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((_resolve, reject) => { rejectSelection = reject; });
+    return new Response('{}', { status: 404 });
+  });
+  vi.stubGlobal('fetch', fetchMock);
+  const user = userEvent.setup();
+  const { onChanged, rerender } = renderPicker();
+
+  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
+  await user.click(screen.getByRole('button', { name: '保存头像' }));
+  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
+  await waitFor(() => expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp'));
+  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
+  expect(screen.getByLabelText('上传自定义头像')).toBeDisabled();
+
+  await act(async () => { rejectSelection(new Error('网络中断')); });
+
+  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+  expect(onChanged).not.toHaveBeenCalled();
+  expect(screen.getByRole('radio', { name: '头像 15' })).toBeEnabled();
+  expect(screen.getByLabelText('上传自定义头像')).toBeEnabled();
 });
 
 it('clears saved feedback when an external session avatar replaces it', async () => {
