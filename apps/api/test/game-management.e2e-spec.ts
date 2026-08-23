@@ -4,6 +4,7 @@ import * as argon2 from 'argon2';
 import { managedGamesResponseSchema } from '@poker/contracts';
 import request, { type Response } from 'supertest';
 import { vi } from 'vitest';
+import { AuditService } from '../src/audit/audit.service.js';
 import {
   BuyinEventType,
   FeeType,
@@ -34,6 +35,17 @@ interface GameGraphFixture {
   settlementId: string;
 }
 
+interface GameGraphCounts {
+  games: number;
+  gamePlayers: number;
+  buyinEvents: number;
+  activePlayerLocks: number;
+  settlementDrafts: number;
+  settlements: number;
+  settlementResults: number;
+  settlementFeeAllocations: number;
+}
+
 function normalize(value: string): string {
   return value.trim().normalize('NFKC').toLowerCase();
 }
@@ -53,6 +65,7 @@ describe.sequential('super-administrator game management list', () => {
   let app: INestApplication;
   let prisma: PrismaService;
   let gameManagement: GameManagementService;
+  let audit: AuditService;
   let passwordHash: string;
   let superUser: User;
   let adminUser: User;
@@ -272,8 +285,8 @@ describe.sequential('super-administrator game management list', () => {
     return { gameId: id, gameName, playerIds, settlementId };
   }
 
-  async function expectGameGraphCounts(fixture: GameGraphFixture): Promise<void> {
-    const counts = {
+  async function readGameGraphCounts(fixture: GameGraphFixture): Promise<GameGraphCounts> {
+    return {
       games: await prisma.game.count({ where: { id: fixture.gameId } }),
       gamePlayers: await prisma.gamePlayer.count({ where: { gameId: fixture.gameId } }),
       buyinEvents: await prisma.buyinEvent.count({ where: { gameId: fixture.gameId } }),
@@ -287,7 +300,10 @@ describe.sequential('super-administrator game management list', () => {
         where: { settlementId: fixture.settlementId }
       })
     };
-    expect(counts).toEqual({
+  }
+
+  async function expectGameGraphCounts(fixture: GameGraphFixture): Promise<void> {
+    await expect(readGameGraphCounts(fixture)).resolves.toEqual({
       games: 0,
       gamePlayers: 0,
       buyinEvents: 0,
@@ -336,6 +352,7 @@ describe.sequential('super-administrator game management list', () => {
     app = await createApp();
     prisma = app.get(PrismaService);
     gameManagement = app.get(GameManagementService);
+    audit = app.get(AuditService);
     await app.init();
     passwordHash = await argon2.hash(password, { type: argon2.argon2id });
     superUser = await seedUser('super', Role.SUPER_ADMIN);
@@ -439,6 +456,35 @@ describe.sequential('super-administrator game management list', () => {
     })).resolves.toBe(1);
   });
 
+  it('rolls back the complete graph when the hard-delete audit write fails', async () => {
+    const fixture = await seedGameGraph(GameStatus.COMPLETED);
+    const beforeCounts = await readGameGraphCounts(fixture);
+    expect(beforeCounts).toEqual({
+      games: 1,
+      gamePlayers: 2,
+      buyinEvents: 2,
+      activePlayerLocks: 2,
+      settlementDrafts: 1,
+      settlements: 1,
+      settlementResults: 2,
+      settlementFeeAllocations: 2
+    });
+    const auditFailure = vi.spyOn(audit, 'record')
+      .mockRejectedValueOnce(new Error('injected hard-delete audit failure'));
+    try {
+      await write(superAuth, `/api/games/${fixture.gameId}`).expect(500);
+      await expect(readGameGraphCounts(fixture)).resolves.toEqual(beforeCounts);
+      await expect(prisma.auditLog.count({
+        where: { action: 'GAME_GRAPH_SEEDED', entityId: fixture.gameId }
+      })).resolves.toBe(1);
+      await expect(prisma.auditLog.count({
+        where: { action: 'GAME_HARD_DELETED', entityId: fixture.gameId }
+      })).resolves.toBe(0);
+    } finally {
+      auditFailure.mockRestore();
+    }
+  });
+
   it.each([
     ['demoted', { role: Role.USER }],
     ['disabled', { isActive: false }],
@@ -448,27 +494,39 @@ describe.sequential('super-administrator game management list', () => {
     let serviceEntered!: () => void;
     const entered = new Promise<void>((resolve) => { serviceEntered = resolve; });
     const originalHardDelete = gameManagement.hardDelete.bind(gameManagement);
-    vi.spyOn(gameManagement, 'hardDelete').mockImplementation(async (id, actor) => {
+    const hardDeleteSpy = vi.spyOn(gameManagement, 'hardDelete').mockImplementation(async (id, actor) => {
       serviceEntered();
       return originalHardDelete(id, actor);
     });
+    let coordinatorLocked!: () => void;
+    const locked = new Promise<void>((resolve) => { coordinatorLocked = resolve; });
     let releaseCoordinator!: () => void;
     const release = new Promise<void>((resolve) => { releaseCoordinator = resolve; });
     const blocker = prisma.$transaction(async (transaction) => {
       await transaction.$queryRaw<Array<{ id: string }>>`
         SELECT id FROM system_settings WHERE id = 'singleton' FOR UPDATE
       `;
+      coordinatorLocked();
       await release;
     }, { timeout: 10_000, maxWait: 5_000 });
-
-    const deletion = write(superAuth, `/api/games/${fixture.gameId}`);
-    const response = deletion.then((value) => value);
-    await entered;
-    await prisma.user.update({ where: { id: superUser.id }, data });
-    releaseCoordinator();
-    await blocker;
-
+    let response: Promise<Response> | undefined;
     try {
+      try {
+        await Promise.race([
+          locked,
+          blocker.then(
+            () => { throw new Error('Coordinator blocker ended before the delete started'); },
+            (error: unknown) => { throw error; }
+          )
+        ]);
+        response = write(superAuth, `/api/games/${fixture.gameId}`).then((value) => value);
+        await entered;
+        await prisma.user.update({ where: { id: superUser.id }, data });
+      } finally {
+        releaseCoordinator();
+        await blocker;
+      }
+      expect(response).toBeDefined();
       await expect(response).resolves.toMatchObject({
         status: 403,
         body: { code: 'FORBIDDEN' }
@@ -478,10 +536,15 @@ describe.sequential('super-administrator game management list', () => {
         where: { action: 'GAME_HARD_DELETED', entityId: fixture.gameId }
       })).resolves.toBe(0);
     } finally {
-      superUser = await prisma.user.update({
-        where: { id: superUser.id },
-        data: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
-      });
+      try {
+        if (response !== undefined) await Promise.allSettled([response]);
+        superUser = await prisma.user.update({
+          where: { id: superUser.id },
+          data: { role: Role.SUPER_ADMIN, isActive: true, deletedAt: null }
+        });
+      } finally {
+        hardDeleteSpy.mockRestore();
+      }
     }
   });
 

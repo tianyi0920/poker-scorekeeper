@@ -1,12 +1,13 @@
 import type { INestApplication } from '@nestjs/common';
 import { randomBytes, randomUUID } from 'node:crypto';
 import mariadb, { type Connection } from 'mariadb';
-import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { BuyinsService } from '../src/buyins/buyins.service.js';
 import type { AuthUser } from '../src/common/auth/auth-user.js';
 import {
   BuyinEventType,
   GameStatus,
+  Prisma,
   Role,
   type Game,
   type GamePlayer,
@@ -32,7 +33,39 @@ interface SettlementFixture {
 }
 
 interface GameBlocker {
+  processId: number;
   release(): Promise<void>;
+}
+
+type TransactionPhase = 'deleter' | 'buyin' | 'finalization';
+
+interface ProcessRow {
+  processId: number | bigint;
+  command: string;
+  queryText: string | null;
+}
+
+interface ConnectionIdRow {
+  connectionId: number | bigint;
+}
+
+interface InteractiveTransactionOptions {
+  maxWait?: number;
+  timeout?: number;
+  isolationLevel?: Prisma.TransactionIsolationLevel;
+}
+
+interface InteractiveTransactionRunner {
+  $transaction<T>(
+    operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+    options?: InteractiveTransactionOptions
+  ): Promise<T>;
+}
+
+interface TransactionConnectionProbe {
+  setPhase(phase: TransactionPhase): void;
+  waitForConnection(phase: TransactionPhase): Promise<number>;
+  restore(): void;
 }
 
 type CapturedOutcome =
@@ -75,7 +108,6 @@ async function waitForCondition<T>(
   while (Date.now() < deadline) {
     const result = await read();
     if (result !== null) return result;
-    await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`Timed out waiting for ${description}`);
 }
@@ -85,8 +117,11 @@ async function lockGameOutsidePrisma(gameId: string): Promise<GameBlocker> {
   let released = false;
   try {
     await connection.beginTransaction();
+    const [identity] = await connection.query<ConnectionIdRow[]>('SELECT CONNECTION_ID() AS connectionId');
+    if (identity === undefined) throw new Error('Blocker connection has no connection ID');
     await connection.query('SELECT id FROM games WHERE id = ? FOR UPDATE', [gameId]);
     return {
+      processId: Number(identity.connectionId),
       async release() {
         if (released) return;
         released = true;
@@ -103,38 +138,120 @@ async function lockGameOutsidePrisma(gameId: string): Promise<GameBlocker> {
   }
 }
 
-async function executingLockQueryIds(
-  monitor: Connection,
-  tableName: 'games' | 'system_settings'
-): Promise<number[]> {
-  const rows = await monitor.query<Array<{ processId: number | bigint; queryText: string | null }>>(`
-    SELECT ID AS processId, INFO AS queryText
-    FROM information_schema.PROCESSLIST
-    WHERE DB = ?
-    ORDER BY ID
-  `, [databaseName]);
-  const fragment = `from ${tableName}`;
-  return rows
-    .filter(({ queryText }) => {
-      const normalized = queryText?.toLowerCase() ?? '';
-      return normalized.includes(fragment) && normalized.includes('for update');
-    })
-    .map(({ processId }) => Number(processId))
-    .sort((left, right) => left - right);
+function observeInteractiveTransactions(prisma: PrismaService): TransactionConnectionProbe {
+  const runner = prisma as unknown as InteractiveTransactionRunner;
+  const originalTransaction = runner.$transaction.bind(runner);
+  const observed = new Map<TransactionPhase, number>();
+  const waiters = new Map<TransactionPhase, (processId: number) => void>();
+  let currentPhase: TransactionPhase = 'deleter';
+  const transactionSpy = vi.spyOn(runner, '$transaction');
+  transactionSpy.mockImplementation(async <T>(
+    operation: (transaction: Prisma.TransactionClient) => Promise<T>,
+    options?: InteractiveTransactionOptions
+  ): Promise<T> => {
+    const phase = currentPhase;
+    return originalTransaction(async (transaction) => {
+      const [identity] = await transaction.$queryRaw<ConnectionIdRow[]>`
+        SELECT CONNECTION_ID() AS connectionId
+      `;
+      if (identity === undefined) throw new Error(`No connection ID for ${phase} transaction`);
+      const processId = Number(identity.connectionId);
+      if (!observed.has(phase)) {
+        observed.set(phase, processId);
+        waiters.get(phase)?.(processId);
+        waiters.delete(phase);
+      }
+      return operation(transaction);
+    }, options);
+  });
+  return {
+    setPhase(phase) {
+      currentPhase = phase;
+    },
+    waitForConnection(phase) {
+      const processId = observed.get(phase);
+      if (processId !== undefined) return Promise.resolve(processId);
+      return new Promise<number>((resolve) => { waiters.set(phase, resolve); });
+    },
+    restore() {
+      transactionSpy.mockRestore();
+    }
+  };
 }
 
-async function waitForExecutingLockQueries(
+async function readProcess(
   monitor: Connection,
+  processId: number
+): Promise<ProcessRow | null> {
+  const rows = await monitor.query<ProcessRow[]>(`
+    SELECT ID AS processId, COMMAND AS command, INFO AS queryText
+    FROM information_schema.PROCESSLIST
+    WHERE DB = ? AND ID = ?
+  `, [databaseName, processId]);
+  return rows[0] ?? null;
+}
+
+async function waitForExactLockQuery(
+  monitor: Connection,
+  processId: number,
   tableName: 'games' | 'system_settings',
-  minimumQueries: number
-): Promise<number[]> {
+): Promise<ProcessRow> {
   return waitForCondition(
-    `${minimumQueries} executing ${tableName} FOR UPDATE quer${minimumQueries === 1 ? 'y' : 'ies'}`,
+    `connection ${processId} executing ${tableName} FOR UPDATE`,
     async () => {
-      const ids = await executingLockQueryIds(monitor, tableName);
-      return ids.length >= minimumQueries ? ids : null;
+      const row = await readProcess(monitor, processId);
+      const normalized = row?.queryText?.toLowerCase() ?? '';
+      return row !== null && row.command === 'Execute'
+        && normalized.includes(`from ${tableName}`) && normalized.includes('for update')
+        ? row
+        : null;
     }
   );
+}
+
+async function expectBlockerTransaction(monitor: Connection, blocker: GameBlocker): Promise<void> {
+  const process = await waitForCondition(
+    `blocker connection ${blocker.processId}`,
+    () => readProcess(monitor, blocker.processId)
+  );
+  expect({
+    processId: Number(process.processId),
+    command: process.command,
+    queryText: process.queryText
+  }).toEqual({
+    processId: blocker.processId,
+    command: 'Sleep',
+    queryText: null
+  });
+  const transactions = await monitor.query<Array<{ processId: number | bigint }>>(`
+    SELECT trx_mysql_thread_id AS processId
+    FROM information_schema.INNODB_TRX
+    WHERE trx_mysql_thread_id = ?
+  `, [blocker.processId]);
+  expect(transactions.map(({ processId }) => Number(processId))).toEqual([blocker.processId]);
+}
+
+function expectExactLockQuery(
+  row: ProcessRow,
+  processId: number,
+  tableName: 'games' | 'system_settings'
+): void {
+  expect(Number(row.processId)).toBe(processId);
+  expect(row.command).toBe('Execute');
+  const normalized = row.queryText?.toLowerCase() ?? '';
+  expect(normalized).toContain(`from ${tableName}`);
+  expect(normalized).toContain('for update');
+}
+
+async function expectConnectionRemainsBlocked(
+  monitor: Connection,
+  processId: number,
+  tableName: 'games' | 'system_settings'
+): Promise<void> {
+  await monitor.query('SELECT 1');
+  const row = await readProcess(monitor, processId);
+  expect(row).not.toBeNull();
+  expectExactLockQuery(row!, processId, tableName);
 }
 
 describe.sequential('transactional hard-delete lock ordering', () => {
@@ -328,22 +445,37 @@ describe.sequential('transactional hard-delete lock ordering', () => {
     // Break caught: a buy-in commits after the target game and its descendants are deleted.
     const game = await seedActiveGame();
     const blocker = await lockGameOutsidePrisma(game.id);
-    const deletion = Promise.resolve().then(() => management.hardDelete(
-      game.id,
-      authUser(superAdmin)
-    ));
+    let connections: TransactionConnectionProbe | undefined;
+    let deletion: ReturnType<GameManagementService['hardDelete']> | undefined;
     const buy: { current: Promise<CapturedOutcome> } = {
       current: Promise.resolve({ status: 'fulfilled' as const, value: undefined as unknown })
     };
     try {
-      const [hardDeleteProcessId] = await Promise.race([
-        waitForExecutingLockQueries(monitor, 'games', 1),
-        deletion.then(
+      await expectBlockerTransaction(monitor, blocker);
+      connections = observeInteractiveTransactions(prisma);
+      connections.setPhase('deleter');
+      const startedDeletion = Promise.resolve()
+        .then(() => management.hardDelete(game.id, authUser(superAdmin)));
+      deletion = startedDeletion;
+      const hardDeleteProcessId = await Promise.race([
+        connections.waitForConnection('deleter'),
+        startedDeletion.then(
           () => { throw new Error('Hard delete completed before the blocker was released'); },
           (error: unknown) => { throw error; }
         )
       ]);
-      expect(hardDeleteProcessId).toBeDefined();
+      expect(hardDeleteProcessId).not.toBe(blocker.processId);
+      const hardDeleteWait = await Promise.race([
+        waitForExactLockQuery(monitor, hardDeleteProcessId, 'games'),
+        startedDeletion.then(
+          () => { throw new Error('Hard delete completed before its exact row-lock wait was observed'); },
+          (error: unknown) => { throw error; }
+        )
+      ]);
+      expectExactLockQuery(hardDeleteWait, hardDeleteProcessId, 'games');
+      await expectConnectionRemainsBlocked(monitor, hardDeleteProcessId, 'games');
+
+      connections.setPhase('buyin');
       buy.current = buyins.buy(game.id, authUser(playerA), {
         hands: 1,
         idempotencyKey: `${prefix}-race-buy`
@@ -351,12 +483,34 @@ describe.sequential('transactional hard-delete lock ordering', () => {
         (value) => ({ status: 'fulfilled' as const, value }),
         (reason: unknown) => ({ status: 'rejected' as const, reason })
       );
-      const queuedProcessIds = await waitForExecutingLockQueries(monitor, 'games', 2);
-      expect(queuedProcessIds).toContain(hardDeleteProcessId);
+      const buyinProcessId = await Promise.race([
+        connections.waitForConnection('buyin'),
+        buy.current.then(() => { throw new Error('Buy-in ended before its transaction was identified'); })
+      ]);
+      expect(buyinProcessId).not.toBe(blocker.processId);
+      expect(buyinProcessId).not.toBe(hardDeleteProcessId);
+      const buyinWait = await Promise.race([
+        waitForExactLockQuery(monitor, buyinProcessId, 'games'),
+        buy.current.then(() => { throw new Error('Buy-in ended before its exact row-lock wait was observed'); })
+      ]);
+      expectExactLockQuery(buyinWait, buyinProcessId, 'games');
+      await expectConnectionRemainsBlocked(monitor, buyinProcessId, 'games');
     } finally {
-      await blocker.release();
+      try {
+        await blocker.release();
+      } finally {
+        try {
+          connections?.restore();
+        } finally {
+          await Promise.allSettled([
+            ...(deletion === undefined ? [] : [deletion]),
+            buy.current
+          ]);
+        }
+      }
     }
 
+    if (deletion === undefined) throw new Error('Hard delete was not started');
     await expect(deletion).resolves.toEqual({ deletedGameId: game.id });
     await expect(buy.current).resolves.toMatchObject({
       status: 'rejected', reason: { code: 'NOT_FOUND' }
@@ -381,36 +535,73 @@ describe.sequential('transactional hard-delete lock ordering', () => {
       confirmationToken: preview.confirmationToken!
     };
     const blocker = await lockGameOutsidePrisma(fixture.game.id);
-    const deletion = Promise.resolve().then(() => management.hardDelete(
-      fixture.game.id,
-      authUser(superAdmin)
-    ));
+    let connections: TransactionConnectionProbe | undefined;
+    let deletion: ReturnType<GameManagementService['hardDelete']> | undefined;
     const settlement: { current: Promise<CapturedOutcome> } = {
       current: Promise.resolve({ status: 'fulfilled' as const, value: undefined as unknown })
     };
     try {
-      const [hardDeleteProcessId] = await Promise.race([
-        waitForExecutingLockQueries(monitor, 'games', 1),
-        deletion.then(
+      await expectBlockerTransaction(monitor, blocker);
+      connections = observeInteractiveTransactions(prisma);
+      connections.setPhase('deleter');
+      const startedDeletion = Promise.resolve()
+        .then(() => management.hardDelete(fixture.game.id, authUser(superAdmin)));
+      deletion = startedDeletion;
+      const hardDeleteProcessId = await Promise.race([
+        connections.waitForConnection('deleter'),
+        startedDeletion.then(
           () => { throw new Error('Hard delete completed before the blocker was released'); },
           (error: unknown) => { throw error; }
         )
       ]);
-      expect(hardDeleteProcessId).toBeDefined();
+      expect(hardDeleteProcessId).not.toBe(blocker.processId);
+      const hardDeleteWait = await Promise.race([
+        waitForExactLockQuery(monitor, hardDeleteProcessId, 'games'),
+        startedDeletion.then(
+          () => { throw new Error('Hard delete completed before its exact row-lock wait was observed'); },
+          (error: unknown) => { throw error; }
+        )
+      ]);
+      expectExactLockQuery(hardDeleteWait, hardDeleteProcessId, 'games');
+      await expectConnectionRemainsBlocked(monitor, hardDeleteProcessId, 'games');
+
+      connections.setPhase('finalization');
       settlement.current = finalization.finalize(fixture.game.id, authUser(admin), command).then(
         (value) => ({ status: 'fulfilled' as const, value }),
         (reason: unknown) => ({ status: 'rejected' as const, reason })
       );
-      const coordinatorWaiters = await waitForExecutingLockQueries(
-        monitor,
-        'system_settings',
-        1
-      );
-      expect(coordinatorWaiters).not.toContain(hardDeleteProcessId);
+      const finalizationProcessId = await Promise.race([
+        connections.waitForConnection('finalization'),
+        settlement.current.then(() => {
+          throw new Error('Finalization ended before its transaction was identified');
+        })
+      ]);
+      expect(finalizationProcessId).not.toBe(blocker.processId);
+      expect(finalizationProcessId).not.toBe(hardDeleteProcessId);
+      const finalizationWait = await Promise.race([
+        waitForExactLockQuery(monitor, finalizationProcessId, 'system_settings'),
+        settlement.current.then(() => {
+          throw new Error('Finalization ended before its exact coordinator wait was observed');
+        })
+      ]);
+      expectExactLockQuery(finalizationWait, finalizationProcessId, 'system_settings');
+      await expectConnectionRemainsBlocked(monitor, finalizationProcessId, 'system_settings');
     } finally {
-      await blocker.release();
+      try {
+        await blocker.release();
+      } finally {
+        try {
+          connections?.restore();
+        } finally {
+          await Promise.allSettled([
+            ...(deletion === undefined ? [] : [deletion]),
+            settlement.current
+          ]);
+        }
+      }
     }
 
+    if (deletion === undefined) throw new Error('Hard delete was not started');
     await expect(deletion).resolves.toEqual({ deletedGameId: fixture.game.id });
     await expect(settlement.current).resolves.toMatchObject({
       status: 'rejected', reason: { code: 'NOT_FOUND' }
