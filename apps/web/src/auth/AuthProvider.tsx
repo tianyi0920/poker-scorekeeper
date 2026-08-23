@@ -21,9 +21,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const authEpoch = useRef(0);
   const isMounted = useRef(false);
 
-  const beginAuthOperation = useCallback(() => {
+  const beginAuthOperation = useCallback((showLoading = true) => {
     const epoch = ++authEpoch.current;
-    if (isMounted.current) setIsLoading(true);
+    if (showLoading && isMounted.current) setIsLoading(true);
     return epoch;
   }, []);
 
@@ -53,7 +53,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, [isCurrentOperation]);
 
   const refreshSession = useCallback(async (): Promise<AuthUserContract | null> => {
-    const epoch = beginAuthOperation();
+    const epoch = beginAuthOperation(false);
     try {
       const session = await apiFetch<AuthSessionResponse>('/auth/session');
       return applySession(epoch, session);

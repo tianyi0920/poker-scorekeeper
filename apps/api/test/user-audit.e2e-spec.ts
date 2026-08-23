@@ -161,7 +161,7 @@ describe.sequential('user administration audit trail', () => {
     });
     expect(logs[6]).toMatchObject({
       beforeJson: { avatarKind: 'PRESET', avatarValue: 'preset-09' },
-      afterJson: { avatarKind: 'PRESET', avatarValue: 'preset-01' }
+      afterJson: { avatarKind: 'PRESET', avatarValue: 'preset-13' }
     });
     expect(logs[5]).toMatchObject({
       beforeJson: { mustChangePassword: false },

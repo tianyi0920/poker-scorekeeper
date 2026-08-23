@@ -33,12 +33,13 @@ function deferred<T>() {
 }
 
 function AuthProbe() {
-  const { user, isLoading, login, logout } = useAuth();
+  const { user, isLoading, login, logout, refreshSession } = useAuth();
   return <>
     <output aria-label="session-user">{user?.username ?? 'anonymous'}</output>
     <output aria-label="session-loading">{String(isLoading)}</output>
     <button type="button" onClick={() => void login({ username: 'new-user', password: 'secret' })}>登录</button>
     <button type="button" onClick={() => void logout()}>退出</button>
+    <button type="button" onClick={() => void refreshSession()}>刷新会话</button>
   </>;
 }
 
@@ -84,4 +85,29 @@ it('does not restore a stale successful refresh after logout', async () => {
   initialSession.resolve(jsonResponse(session('old-user')));
 
   await waitFor(() => expect(screen.getByLabelText('session-user')).toHaveTextContent('anonymous'));
+});
+
+it('keeps an established session rendered while a background refresh is pending', async () => {
+  // Break caught: refreshing the authoritative avatar unmounts the profile and discards its saved feedback.
+  const backgroundRefresh = deferred<Response>();
+  let sessionRequests = 0;
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    if (!String(input).endsWith('/api/auth/session')) return jsonResponse({});
+    sessionRequests += 1;
+    return sessionRequests === 1 ? jsonResponse(session('current-user')) : backgroundRefresh.promise;
+  }));
+  const user = userEvent.setup();
+  render(<AuthProvider><AuthProbe /></AuthProvider>);
+
+  await waitFor(() => expect(screen.getByLabelText('session-user')).toHaveTextContent('current-user'));
+  expect(screen.getByLabelText('session-loading')).toHaveTextContent('false');
+
+  await user.click(screen.getByRole('button', { name: '刷新会话' }));
+  await waitFor(() => expect(sessionRequests).toBe(2));
+
+  expect(screen.getByLabelText('session-user')).toHaveTextContent('current-user');
+  expect(screen.getByLabelText('session-loading')).toHaveTextContent('false');
+
+  await act(async () => { backgroundRefresh.resolve(jsonResponse(session('updated-user'))); });
+  await waitFor(() => expect(screen.getByLabelText('session-user')).toHaveTextContent('updated-user'));
 });
