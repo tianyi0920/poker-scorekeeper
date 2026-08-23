@@ -254,6 +254,69 @@ it('starts exactly one polling refresh every ten seconds after the fallback acti
     .toHaveLength(3);
 });
 
+it('keeps an active polling fallback visible and refreshing after a reconnect disconnects without an acknowledgement', async () => {
+  // Break caught: a second disconnect clears the active fallback before any room synchronization succeeds.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+  fetchMock.mockClear();
+
+  socket.joinAcknowledgement = () => undefined;
+  act(() => {
+    socket.connected = true;
+    socket.fire('connect');
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(3);
+});
+
+it.each([
+  ['error acknowledgement', () => ({ ok: false, code: 'FORBIDDEN' })],
+  ['wrong-game acknowledgement', () => ({ ok: true, gameId: 'other-game', version: 1, snapshotSent: false })],
+  ['timed-out acknowledgement', () => undefined]
+])('does not clear active polling for a %s', async (_kind, acknowledgement) => {
+  // Break caught: a transport reconnect treats a rejected, mismatched, or absent room ACK as synchronized.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+  fetchMock.mockClear();
+
+  socket.joinAcknowledgement = () => acknowledgement();
+  act(() => {
+    socket.connected = true;
+    socket.fire('connect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
+  expect(screen.getByRole('status', { name: '实时连接状态' })).toBeVisible();
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(3);
+});
+
 it('removes the polling warning and interval immediately after reconnecting', async () => {
   // Break caught: a recovered socket leaves the fallback warning or background polling active.
   vi.useFakeTimers({ shouldAdvanceTime: true });

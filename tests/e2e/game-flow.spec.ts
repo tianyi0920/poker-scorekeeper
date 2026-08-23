@@ -37,10 +37,13 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
   const admin = await loginContext(browser, 'admin');
   let gameId: string | undefined;
   let blockSocketEndpoint = true;
+  let dropForwardedSocketBeforeAck = false;
   let blockedSocket: WebSocketRoute | undefined;
   let blockedSocketStartedAt: number | undefined;
   let routedSocketCount = 0;
   let forwardedSocketCount = 0;
+  let droppedBeforeAckSocketCount = 0;
+  let droppedBeforeAckClose: Promise<void> | undefined;
   let mainFrameNavigationCount = 0;
   let primaryFailure: unknown;
   const routedSockets = new Set<WebSocketRoute>();
@@ -77,7 +80,19 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
         return;
       }
       const server = forward(socket);
-      if (server !== undefined) forwardedSocketCount += 1;
+      if (server !== undefined) {
+        forwardedSocketCount += 1;
+        if (dropForwardedSocketBeforeAck) {
+          server.onMessage((message) => {
+            if (!String(message).startsWith('43')) {
+              socket.send(message);
+              return;
+            }
+            droppedBeforeAckSocketCount += 1;
+            droppedBeforeAckClose = socket.close();
+          });
+        }
+      }
     });
 
     await admin.page.goto(`/games/${game.id}`);
@@ -100,10 +115,26 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
     if (originalRoundTable === null) throw new Error('Live table did not render before recovery');
     const mainFrameNavigationCountBeforeRecovery = mainFrameNavigationCount;
     blockSocketEndpoint = false;
+    dropForwardedSocketBeforeAck = true;
     if (blockedSocket === undefined) throw new Error('Socket.IO endpoint was not blocked');
     await blockedSocket.close();
     await expect.poll(() => routedSocketCount).toBeGreaterThanOrEqual(2);
     await expect.poll(() => forwardedSocketCount).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => droppedBeforeAckSocketCount).toBeGreaterThanOrEqual(1);
+    if (droppedBeforeAckClose === undefined) throw new Error('Forwarded Socket.IO connection was not closed before ACK');
+    await droppedBeforeAckClose;
+    await admin.page.waitForTimeout(500);
+    expect(await warning.count()).toBe(1);
+
+    const refreshesBeforeRejectedRecovery = snapshotRefreshes.length;
+    await expect.poll(() => snapshotRefreshes.length, { timeout: 12_000 })
+      .toBeGreaterThanOrEqual(refreshesBeforeRejectedRecovery + 1);
+
+    dropForwardedSocketBeforeAck = false;
+    await expect.poll(() => routedSocketCount, { timeout: 12_000 }).toBeGreaterThanOrEqual(3);
+    await expect.poll(() => forwardedSocketCount, { timeout: 12_000 }).toBeGreaterThanOrEqual(2);
+    await expect(warning).toHaveCount(0);
+    await admin.page.waitForTimeout(5_500);
     await expect(warning).toHaveCount(0);
     await expect.poll(() => mainFrameNavigationCount).toBe(mainFrameNavigationCountBeforeRecovery);
     expect(await originalRoundTable.evaluate((node) => node.isConnected)).toBeTruthy();

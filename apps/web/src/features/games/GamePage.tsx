@@ -197,7 +197,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     };
     const disconnect = () => {
       clearJoinTimers();
-      startFallbackGrace();
+      ensureFallbackGrace();
     };
     const receiveSnapshot = (value: unknown) => {
       const parsed = gameSnapshotEventSchema.safeParse(value);
