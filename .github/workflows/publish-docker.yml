@@ -184,7 +184,7 @@ jobs:
           DIGEST_IMAGE="${IMAGE_REPOSITORY}@${VERIFIED_DIGEST}"
           docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json
           node scripts/release/docker-publish-contract.mjs manifest raw-index.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$DIGEST_IMAGE" > amd64-image.json
+          docker buildx imagetools inspect --format '{{json .Image}}' "$DIGEST_IMAGE" > amd64-image.json
           jq -n \
             --slurpfile amd64 amd64-image.json \
             '[

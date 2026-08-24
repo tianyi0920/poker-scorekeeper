@@ -481,8 +481,11 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(raw).toBeGreaterThan(digestImage);
     expect(manifest).toBeGreaterThan(raw);
     expect(identity).toBeGreaterThan(manifest);
-    expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
-      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
+    // Break caught: an amd64-only index exposes .Image as one v1.Image, so indexing it as a
+    // platform map fails remotely with "can't index item of type v1.Image".
+    expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([]);
+    expect(lines.filter((line) => line.includes("{{json .Image}}"))).toEqual([
+      'docker buildx imagetools inspect --format \'{{json .Image}}\' "$DIGEST_IMAGE" > amd64-image.json',
     ]);
     expect(lines.some((line) => line.includes("$arm64"))).toBe(false);
     expect(lines.filter((line) => line.includes("imagetools inspect --raw"))).toEqual([
@@ -576,8 +579,10 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(identity).toBeGreaterThan(manifest);
     expect(shaDigest).toBeGreaterThan(identity);
     expect(digestEquality).toBeGreaterThan(shaDigest);
-    expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
-      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
+    // Break caught: recovery must use the same direct single-platform image shape as release.
+    expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([]);
+    expect(lines.filter((line) => line.includes("{{json .Image}}"))).toEqual([
+      'docker buildx imagetools inspect --format \'{{json .Image}}\' "$DIGEST_IMAGE" > amd64-image.json',
     ]);
     expect(lines.some((line) => line.includes("ARM64_REVISION") || line.includes("$arm64"))).toBe(false);
     const finalFixed = lineIndex(lines, /"\$FIXED_IMAGE" > fixed-manifest-final\.json$/);
