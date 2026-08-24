@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { canonicalPublicIdSchema } from './buyins.js';
+import { gameMessageSchema } from './game-messages.js';
 import { gameSnapshotSchema, gameSpectatorSnapshotSchema } from './games.js';
 
 export const gameJoinCommandSchema = z.object({
@@ -56,6 +57,8 @@ export const gameDeletedEventSchema = z.object({
   reason: z.literal('HARD_DELETED')
 }).strict();
 
+export const gameMessageCreatedEventSchema = gameMessageSchema;
+
 export const serverErrorEventSchema = z.object({ code: realtimeErrorCodeSchema }).strict();
 
 export const gameSnapshotEventSchema = gameSnapshotSchema.strict();
@@ -69,4 +72,5 @@ export type PresenceUpdatedEvent = z.infer<typeof presenceUpdatedEventSchema>;
 export type RakeSettingsUpdatedEvent = z.infer<typeof rakeSettingsUpdatedEventSchema>;
 export type PlayerRakeUpdatedEvent = z.infer<typeof playerRakeUpdatedEventSchema>;
 export type GameDeletedEvent = z.infer<typeof gameDeletedEventSchema>;
+export type GameMessageCreatedEvent = z.infer<typeof gameMessageCreatedEventSchema>;
 export type ServerErrorEvent = z.infer<typeof serverErrorEventSchema>;

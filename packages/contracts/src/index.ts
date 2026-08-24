@@ -2,6 +2,7 @@ export * from './auth.js';
 export * from './avatars.js';
 export * from './buyins.js';
 export * from './games.js';
+export * from './game-messages.js';
 export * from './history.js';
 export * from './money.js';
 export * from './realtime.js';
