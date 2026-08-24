@@ -26,7 +26,7 @@ export function seatPosition(index: number, count: number, selfIndex: number) {
     };
   }
   const angle = Math.PI / 2 + (rotated * Math.PI * 2) / count;
-  const left = 50 + Math.cos(angle) * 42;
+  const left = 50 + Math.cos(angle) * 40;
   const top = 50 + Math.sin(angle) * 30;
   return {
     left: `${left}%`,
@@ -65,9 +65,20 @@ export function RoundTable({
           {Array.from({ length: 5 }, (_, index) => <i key={index} />)}
         </span>
       </div>
-      <div className="table-center">{children}</div>
+      <div className="table-center">
+        {ordered.length === 0 ? <strong className="table-waiting">等待玩家入座</strong> : children}
+      </div>
       {ordered.map((player, index) => {
         const position = seatPosition(index, ordered.length, selfIndex);
+        const left = Number.parseFloat(position.left);
+        const top = Number.parseFloat(position.top);
+        const speechDirection = left <= 15
+          ? 'right'
+          : left >= 85
+            ? 'left'
+            : top <= 20
+              ? 'below'
+              : 'above';
         return (
           <Seat
             key={player.id}
@@ -76,6 +87,7 @@ export function RoundTable({
             positionKey={position.key}
             self={player.userId === selfUserId}
             compact={compact}
+            speechDirection={speechDirection}
             latestMessage={latestMessage?.userId === player.userId ? latestMessage : undefined}
           />
         );

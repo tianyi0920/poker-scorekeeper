@@ -30,7 +30,19 @@ function createFixture() {
     publishGameMessage: vi.fn(async () => undefined)
   } as unknown as GameEventsService;
   const service = new GameMessagesService(prisma, events);
-  return { service, events };
+  return { service, events, prisma };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => { resolve = next; });
+  return { promise, resolve };
+}
+
+function lifecycleTokenCount(service: GameMessagesService): number {
+  return (service as unknown as {
+    lifecycleTokensByGame: Map<string, unknown>;
+  }).lifecycleTokensByGame.size;
 }
 
 describe('GameMessagesService', () => {
@@ -50,7 +62,11 @@ describe('GameMessagesService', () => {
     expect(created.id).toMatch(/^[0-9a-f-]{36}$/);
     expect(created.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
     expect((await service.list('game-1', actor)).messages).toEqual([created]);
-    expect(events.publishGameMessage).toHaveBeenCalledExactlyOnceWith('game-1', created);
+    expect(events.publishGameMessage).toHaveBeenCalledExactlyOnceWith(
+      'game-1',
+      created,
+      expect.any(Function)
+    );
   });
 
   it('keeps only the latest fifty messages per game', async () => {
@@ -79,6 +95,21 @@ describe('GameMessagesService', () => {
     expect((await service.list('game-2', actor)).messages).toHaveLength(1);
   });
 
+  it('does not restore or publish a message when game cleanup wins an in-flight authorization race', async () => {
+    // Break caught: a sender that started before settlement can repopulate the cleared in-memory table afterward.
+    const { service, events, prisma } = createFixture();
+    const authorization = deferred<{ id: string; status: GameStatus; players: Array<{ userId: string }> }>();
+    vi.mocked(prisma.game.findUnique).mockReturnValueOnce(authorization.promise as never);
+
+    const sending = service.create('game-1', actor, { text: '迟到消息' });
+    service.clear('game-1');
+    authorization.resolve({ id: 'game-1', status: GameStatus.ACTIVE, players: [] });
+
+    await expect(sending).rejects.toMatchObject({ code: 'GAME_STATE_CONFLICT' });
+    expect(events.publishGameMessage).not.toHaveBeenCalled();
+    expect((await service.list('game-1', actor)).messages).toEqual([]);
+  });
+
   it('uses the current uploaded avatar and keeps a committed in-memory message if broadcast fails', async () => {
     // Break caught: old snapshot avatars are shown or a transient socket outage turns a successful send into failure.
     const { service, events } = createFixture();
@@ -103,5 +134,43 @@ describe('GameMessagesService', () => {
       gameId: 'settling-game',
       messages: []
     });
+  });
+
+  it('releases lifecycle tokens after missing, forbidden, and late non-active sends', async () => {
+    // Break caught: rejected sends recreate permanent per-game tokens after settlement cleanup.
+    const { service } = createFixture();
+
+    service.clear('settling-game');
+    await expect(service.create('settling-game', actor, { text: '迟到了' }))
+      .rejects.toMatchObject({ code: 'GAME_STATE_CONFLICT' });
+    await expect(service.create('missing-game', actor, { text: '有人吗' }))
+      .rejects.toMatchObject({ code: 'NOT_FOUND' });
+    await expect(service.create('draft-game', actor, { text: '看不到' }))
+      .rejects.toMatchObject({ code: 'FORBIDDEN' });
+
+    expect(lifecycleTokenCount(service)).toBe(0);
+  });
+
+  it('does not let one failed concurrent send invalidate another authorized send', async () => {
+    // Break caught: naïvely deleting a shared token on one rejection cancels another in-flight sender.
+    const { service, prisma } = createFixture();
+    const missingAuthorization = deferred<null>();
+    const activeAuthorization = deferred<{
+      id: string;
+      status: GameStatus;
+      players: Array<{ userId: string }>;
+    }>();
+    vi.mocked(prisma.game.findUnique)
+      .mockReturnValueOnce(missingAuthorization.promise as never)
+      .mockReturnValueOnce(activeAuthorization.promise as never);
+
+    const rejected = service.create('game-1', actor, { text: '失败请求' });
+    const accepted = service.create('game-1', actor, { text: '有效请求' });
+    missingAuthorization.resolve(null);
+    await expect(rejected).rejects.toMatchObject({ code: 'NOT_FOUND' });
+    activeAuthorization.resolve({ id: 'game-1', status: GameStatus.ACTIVE, players: [] });
+
+    await expect(accepted).resolves.toMatchObject({ text: '有效请求' });
+    expect(lifecycleTokenCount(service)).toBe(0);
   });
 });

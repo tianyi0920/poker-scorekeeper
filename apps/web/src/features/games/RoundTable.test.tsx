@@ -34,6 +34,13 @@ it('renders a portrait poker arena with five community-card slots', () => {
   expect(document.querySelector('.felt-betting-line')).toBeInTheDocument();
 });
 
+it('shows a clear waiting state inside an empty poker table', () => {
+  // Break caught: an empty felt renders as an unexplained blank oval.
+  render(<RoundTable players={[]} selfUserId="self" />);
+
+  expect(screen.getByText('等待玩家入座')).toBeInTheDocument();
+});
+
 it('shows only the newest speech beside its matching player seat', () => {
   // Break caught: one message appears on every avatar or beside the wrong player.
   render(<RoundTable players={makePlayers(2)} selfUserId="self" latestMessage={latestMessage} />);

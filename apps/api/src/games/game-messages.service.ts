@@ -18,6 +18,7 @@ const MAX_MESSAGES_PER_GAME = 50;
 @Injectable()
 export class GameMessagesService {
   private readonly messagesByGame = new Map<string, GameMessageDto[]>();
+  private readonly lifecycleTokensByGame = new Map<string, { token: symbol; pending: number }>();
 
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
@@ -39,29 +40,64 @@ export class GameMessagesService {
     actor: AuthUser,
     input: CreateGameMessageRequest
   ): Promise<GameMessageDto> {
-    const game = await this.authorizedGame(gameId, actor);
-    if (game.status !== GameStatus.ACTIVE) throw conflict('GAME_STATE_CONFLICT');
-    const parsed = createGameMessageRequestSchema.parse(input);
-    const message: GameMessageDto = {
-      id: randomUUID(),
-      gameId,
-      userId: actor.id,
-      nickname: actor.nickname,
-      avatarUrl: actor.avatarKind === 'PRESET'
-        ? `/avatars/${actor.avatarValue}.webp`
-        : `/avatars/uploads/${actor.avatarValue}`,
-      text: parsed.text,
-      createdAt: new Date().toISOString()
-    };
-    const messages = [...(this.messagesByGame.get(gameId) ?? []), message]
-      .slice(-MAX_MESSAGES_PER_GAME);
-    this.messagesByGame.set(gameId, messages);
-    await this.events.publishGameMessage(gameId, message).catch(() => undefined);
-    return message;
+    const lifecycleToken = this.acquireLifecycle(gameId);
+    try {
+      const game = await this.authorizedGame(gameId, actor);
+      if (game.status !== GameStatus.ACTIVE || !this.isCurrentLifecycle(gameId, lifecycleToken)) {
+        throw conflict('GAME_STATE_CONFLICT');
+      }
+      const parsed = createGameMessageRequestSchema.parse(input);
+      const message: GameMessageDto = {
+        id: randomUUID(),
+        gameId,
+        userId: actor.id,
+        nickname: actor.nickname,
+        avatarUrl: actor.avatarKind === 'PRESET'
+          ? `/avatars/${actor.avatarValue}.webp`
+          : `/avatars/uploads/${actor.avatarValue}`,
+        text: parsed.text,
+        createdAt: new Date().toISOString()
+      };
+      const messages = [...(this.messagesByGame.get(gameId) ?? []), message]
+        .slice(-MAX_MESSAGES_PER_GAME);
+      this.messagesByGame.set(gameId, messages);
+      await this.events.publishGameMessage(
+        gameId,
+        message,
+        () => this.isCurrentLifecycle(gameId, lifecycleToken)
+      ).catch(() => undefined);
+      if (!this.isCurrentLifecycle(gameId, lifecycleToken)) throw conflict('GAME_STATE_CONFLICT');
+      return message;
+    } finally {
+      this.releaseLifecycle(gameId, lifecycleToken);
+    }
   }
 
   clear(gameId: string): void {
     this.messagesByGame.delete(gameId);
+    this.lifecycleTokensByGame.delete(gameId);
+  }
+
+  private acquireLifecycle(gameId: string): symbol {
+    const current = this.lifecycleTokensByGame.get(gameId);
+    if (current !== undefined) {
+      current.pending += 1;
+      return current.token;
+    }
+    const token = Symbol(gameId);
+    this.lifecycleTokensByGame.set(gameId, { token, pending: 1 });
+    return token;
+  }
+
+  private releaseLifecycle(gameId: string, lifecycleToken: symbol): void {
+    const current = this.lifecycleTokensByGame.get(gameId);
+    if (current === undefined || current.token !== lifecycleToken) return;
+    current.pending -= 1;
+    if (current.pending === 0) this.lifecycleTokensByGame.delete(gameId);
+  }
+
+  private isCurrentLifecycle(gameId: string, lifecycleToken: symbol): boolean {
+    return this.lifecycleTokensByGame.get(gameId)?.token === lifecycleToken;
   }
 
   private async authorizedGame(gameId: string, actor: AuthUser) {

@@ -38,6 +38,21 @@ function totalBuyIn(snapshot: GameSnapshotDto): bigint {
   return snapshot.players.reduce((total, player) => total + BigInt(player.buyInAmount), 0n);
 }
 
+export function mergeGameMessageWindow(
+  authoritative: GameMessageDto[],
+  current: GameMessageDto[],
+  baselineIds: ReadonlySet<string>
+): GameMessageDto[] {
+  const byId = new Map<string, GameMessageDto>();
+  for (const message of authoritative) byId.set(message.id, message);
+  for (const message of current) {
+    if (!baselineIds.has(message.id) && !byId.has(message.id)) byId.set(message.id, message);
+  }
+  return [...byId.values()]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .slice(-50);
+}
+
 export function GamePage({ socketFactory = createGameSocket }: { socketFactory?: SocketFactory }) {
   const { id: gameId = '' } = useParams();
   const navigate = useNavigate();
@@ -60,6 +75,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const pollingIntervalRef = useRef<number | undefined>(undefined);
   const [tab, setTab] = useState<GameTab>('table');
   const [messages, setMessages] = useState<GameMessageDto[]>([]);
+  const messagesRef = useRef<GameMessageDto[]>([]);
   const [speechOpen, setSpeechOpen] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
   const [adjustment, setAdjustment] = useState<{ playerId: string; currentHands: number } | null>(null);
@@ -72,6 +88,16 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const writeAbortRef = useRef(new AbortController());
   const deletedRef = useRef(false);
   const hasSnapshot = snapshot?.id === gameId;
+
+  const updateMessages = useCallback((
+    updater: (current: GameMessageDto[]) => GameMessageDto[]
+  ) => {
+    setMessages((current) => {
+      const next = updater(current);
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
 
   const abortPageRequests = useCallback(() => {
     for (const controller of loadAbortControllersRef.current) controller.abort();
@@ -92,10 +118,10 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   }, []);
 
   const appendMessage = useCallback((message: GameMessageDto) => {
-    setMessages((current) => current.some(({ id }) => id === message.id)
+    updateMessages((current) => current.some(({ id }) => id === message.id)
       ? current
       : [...current, message].slice(-50));
-  }, []);
+  }, [updateMessages]);
 
   const loadSnapshot = useCallback(async (background = false) => {
     const requestedGameId = gameId;
@@ -120,6 +146,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const loadMessages = useCallback(async () => {
     const requestedGameId = gameId;
     const generation = requestGenerationRef.current;
+    const baselineIds = new Set(messagesRef.current.map(({ id }) => id));
     const controller = new AbortController();
     loadAbortControllersRef.current.add(controller);
     try {
@@ -130,16 +157,17 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         requestGenerationRef.current !== generation ||
         activeGameIdRef.current !== requestedGameId
       ) return;
-      setMessages((current) => {
-        const known = new Set(response.messages.map(({ id }) => id));
-        return [...response.messages, ...current.filter(({ id }) => !known.has(id))].slice(-50);
-      });
+      if (snapshotRef.current !== null && snapshotRef.current.status !== 'ACTIVE') {
+        updateMessages(() => []);
+        return;
+      }
+      updateMessages((current) => mergeGameMessageWindow(response.messages, current, baselineIds));
     } catch {
       // Snapshot availability is more important than the temporary, current-game message list.
     } finally {
       loadAbortControllersRef.current.delete(controller);
     }
-  }, [gameId]);
+  }, [gameId, updateMessages]);
 
   const stopFallback = useCallback(() => {
     if (fallbackTimeoutRef.current !== undefined) {
@@ -172,7 +200,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setLoading(false);
     setLoadError(null);
     setTab('table');
-    setMessages([]);
+    updateMessages(() => []);
     setSpeechOpen(false);
     setBuyOpen(false);
     setAdjustment(null);
@@ -180,7 +208,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setEnding(false);
     setEndError(null);
     navigate('/', { replace: true, state: { notice: GAME_DELETED_NOTICE } });
-  }, [abortPageRequests, navigate, stopFallback]);
+  }, [abortPageRequests, navigate, stopFallback, updateMessages]);
 
   const receiveDeletedGame = useCallback((value: unknown) => {
     const parsed = gameDeletedEventSchema.safeParse(value);
@@ -203,7 +231,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setLoading(true);
     setLoadError(null);
     setTab('table');
-    setMessages([]);
+    updateMessages(() => []);
     setSpeechOpen(false);
     setBuyOpen(false);
     setAdjustment(null);
@@ -220,7 +248,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (requestGenerationRef.current === generation) requestGenerationRef.current += 1;
       abortPageRequests();
     };
-  }, [abortPageRequests, gameId, loadMessages, loadSnapshot]);
+  }, [abortPageRequests, gameId, loadMessages, loadSnapshot, updateMessages]);
 
   useEffect(() => {
     if (snapshot !== null && snapshot.status !== 'ACTIVE') {
@@ -228,9 +256,9 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setAdjustment(null);
       setEndOpen(false);
       setSpeechOpen(false);
-      setMessages([]);
+      updateMessages(() => []);
     }
-  }, [snapshot]);
+  }, [snapshot, updateMessages]);
 
   useEffect(() => {
     if (!hasSnapshot) return;
@@ -346,7 +374,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     };
     const receiveMessage = (value: unknown) => {
       const parsed = gameMessageCreatedEventSchema.safeParse(value);
-      if (!parsed.success || parsed.data.gameId !== gameId) return;
+      if (
+        !parsed.success ||
+        parsed.data.gameId !== gameId ||
+        snapshotRef.current?.status !== 'ACTIVE'
+      ) return;
       appendMessage(parsed.data);
     };
     const receivePresence = (value: unknown) => {
@@ -506,6 +538,9 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   };
 
   const latestMessage = messages.at(-1);
+  const latestMessageHasVisibleSender = latestMessage === undefined ||
+    snapshot.players.some(({ userId }) => userId === latestMessage.userId) ||
+    snapshot.spectators.some(({ userId }) => userId === latestMessage.userId);
 
   return (
     <section className="game-page" aria-labelledby="game-title">
@@ -568,7 +603,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             <div><dt className="visually-hidden">每手</dt><dd>每手 ¥{moneyFormatter.format(BigInt(snapshot.handPrice))}</dd></div>
             <div className="game-table-summary__timer"><dt className="visually-hidden">已开局</dt><dd>已开局 <GameTimer startedAt={snapshot.startedAt} stoppedAt={snapshot.stoppedAt} serverNow={snapshot.serverNow} /></dd></div>
           </dl>
-          <SpectatorBar spectators={snapshot.spectators} latestMessage={latestMessage} />
+          <SpectatorBar
+            spectators={snapshot.spectators}
+            latestMessage={latestMessage}
+            fallbackMessage={latestMessage !== undefined && !latestMessageHasVisibleSender ? latestMessage : undefined}
+          />
           <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} latestMessage={latestMessage} />
         </div>
       ) : tab === 'purchases' ? (

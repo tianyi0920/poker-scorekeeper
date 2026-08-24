@@ -138,7 +138,9 @@ it('keeps the live arena within dynamic viewport and both narrow mobile boundari
   const css = readFileSync(resolve(process.cwd(), 'src/styles/global.css'), 'utf8');
 
   expect(css).toMatch(/\.app-shell--game\s*\{[^}]*100dvh/s);
-  expect(css).toMatch(/\.round-table\s*\{[^}]*62dvh/s);
+  expect(css).toMatch(/\.app-shell--game\s*\{[^}]*overflow:\s*hidden/s);
+  expect(css).toMatch(/\.battle-panel\s*\{[^}]*overflow:\s*hidden/s);
+  expect(css).toMatch(/\.round-table\s*\{[^}]*min-height:\s*0[^}]*flex:\s*1/s);
   expect(css).toContain('safe-area-inset-bottom');
   expect(css).toMatch(/\.game-tabs\s*\{[^}]*repeat\(3,/s);
   expect(css).toContain('@media (max-width: 420px)');

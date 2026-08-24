@@ -29,7 +29,8 @@ export async function readTestDatabaseEnvironment(): Promise<TestDatabaseEnviron
     return { values: { DATABASE_URL: databaseUrl }, url: new URL(databaseUrl) };
   }
 
-  const values = parse(await readFile('.env.local', 'utf8'));
+  const environmentFile = process.env.TASK18_ENV_FILE ?? '.env.local';
+  const values = parse(await readFile(environmentFile, 'utf8'));
   if (!values.DATABASE_URL) throw new Error('DATABASE_URL is missing from ignored .env.local');
   const url = new URL(values.DATABASE_URL);
   if (

@@ -25,3 +25,26 @@ it('shows the newest spectator speech only beside its matching avatar', () => {
   expect(screen.getByText('我先看看')).toHaveClass('spectator-speech');
   expect(screen.getByText('我先看看').closest('.spectator')).toHaveTextContent('小李');
 });
+
+it('places an offline latest sender before the horizontally scrolling spectator list', () => {
+  // Break caught: appending the fallback after several spectators makes the newest speech invisible at scrollLeft 0.
+  const offlineMessage = {
+    ...latestMessage,
+    userId: 'offline-user',
+    nickname: '刚离线的牌友',
+    text: '我先走了'
+  };
+  const { container } = render(
+    <SpectatorBar
+      spectators={[
+        ...spectators,
+        { userId: 'watcher-3', nickname: '小张', avatarUrl: '/avatars/preset-10.webp' }
+      ]}
+      latestMessage={offlineMessage}
+      fallbackMessage={offlineMessage}
+    />
+  );
+
+  expect(container.querySelector('.spectator-list')?.firstElementChild)
+    .toHaveAttribute('data-testid', 'arena-latest-message');
+});

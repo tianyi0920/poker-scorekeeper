@@ -8,6 +8,7 @@ export function Seat({
   positionKey,
   self,
   compact,
+  speechDirection,
   latestMessage
 }: {
   player: GameSnapshotDto['players'][number];
@@ -15,6 +16,7 @@ export function Seat({
   positionKey: string;
   self: boolean;
   compact: boolean;
+  speechDirection: 'above' | 'below' | 'left' | 'right';
   latestMessage?: GameMessageDto;
 }) {
   const amount = -BigInt(player.buyInAmount);
@@ -22,7 +24,7 @@ export function Seat({
   const ariaAmount = formatUnsignedMoney(player.buyInAmount).slice(1);
   return (
     <article
-      className={`table-seat${self ? ' table-seat--self' : ''}${compact ? ' table-seat--compact' : ''}`}
+      className={`table-seat${self ? ' table-seat--self' : ''}${compact ? ' table-seat--compact' : ''} table-seat--speech-${speechDirection}`}
       style={position as CSSProperties}
       data-testid="table-seat"
       data-position={positionKey}

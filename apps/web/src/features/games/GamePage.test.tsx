@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
 import type { GameSocketClient } from '../../api/game-socket.js';
-import { GamePage } from './GamePage.js';
+import { GamePage, mergeGameMessageWindow } from './GamePage.js';
 
 type Listener = (...args: unknown[]) => void;
 
@@ -283,6 +283,91 @@ it('accepts one strict realtime message for the current game and ignores duplica
   });
 
   expect(screen.getAllByText('马上到')).toHaveLength(1);
+});
+
+it('keeps the authoritative latest fifty messages in chronological order after a reconnect pull', () => {
+  // Break caught: m1 is appended after m51 and becomes the visible latest speech after a reconnect.
+  const makeWindowMessage = (index: number) => message({
+    id: `018f5d0d-43a8-7a7a-9b0b-${String(index).padStart(12, '0')}`,
+    text: `消息${index}`,
+    createdAt: new Date(Date.UTC(2026, 7, 24, 9, 0, index)).toISOString()
+  });
+  const current = Array.from({ length: 50 }, (_, index) => makeWindowMessage(index + 1));
+  const authoritative = Array.from({ length: 50 }, (_, index) => makeWindowMessage(index + 2));
+
+  const merged = mergeGameMessageWindow(
+    authoritative,
+    current,
+    new Set(current.map(({ id }) => id))
+  );
+
+  expect(merged).toHaveLength(50);
+  expect(merged.map(({ text }) => text)).toEqual(
+    Array.from({ length: 50 }, (_, index) => `消息${index + 2}`)
+  );
+  expect(merged.at(-1)?.text).toBe('消息51');
+});
+
+it('drops messages from before a pull while preserving only realtime messages that arrived during it', () => {
+  // Break caught: an API restart returns an empty authoritative window but stale browser messages remain forever.
+  const stale = message({ text: '重启前旧消息' });
+  expect(mergeGameMessageWindow([], [stale], new Set([stale.id]))).toEqual([]);
+
+  const sameTime = '2026-08-24T09:00:00.000Z';
+  const authoritative = Array.from({ length: 50 }, (_, index) => message({
+    id: `018f5d0d-43a8-7a7a-9b0b-${String(index + 100).padStart(12, '0')}`,
+    text: `权威${index + 1}`,
+    createdAt: sameTime
+  }));
+  const arrivedDuringPull = message({
+    id: '018f5d0d-43a8-7a7a-9b0b-000000000999',
+    text: '补拉期间的新消息',
+    createdAt: sameTime
+  });
+  const merged = mergeGameMessageWindow(
+    authoritative,
+    [stale, arrivedDuringPull],
+    new Set([stale.id])
+  );
+
+  expect(merged).toHaveLength(50);
+  expect(merged.some(({ text }) => text === '重启前旧消息')).toBe(false);
+  expect(merged.at(-1)?.text).toBe('补拉期间的新消息');
+});
+
+it('ignores delayed realtime speech when the loaded game is no longer active', async () => {
+  // Break caught: a late socket event repopulates messages after settlement has cleared the arena.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ status: 'SETTLING', stoppedAt: '2026-08-24T09:00:00.000Z' }), 'ADMIN');
+  const user = userEvent.setup();
+  await screen.findByRole('link', { name: '继续结算' });
+
+  act(() => { socket.fire('game.message.created', message({ text: '已经结束了' })); });
+  await user.click(screen.getByRole('tab', { name: '消息区' }));
+
+  expect(screen.queryByText('已经结束了')).not.toBeInTheDocument();
+  expect(screen.getByText('本场还没有消息')).toBeInTheDocument();
+});
+
+it('shows the latest sender beside the arena even after that spectator goes offline', async () => {
+  // Break caught: a valid current-game message exists but has no visible sender when presence changes first.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1), spectators: [] }));
+  await screen.findByTestId('round-table');
+
+  act(() => {
+    socket.fire('game.message.created', message({
+      userId: 'offline-watcher',
+      nickname: '刚离线的小王',
+      avatarUrl: '/avatars/preset-12.webp',
+      text: '我先走了'
+    }));
+  });
+
+  const fallback = screen.getByTestId('arena-latest-message');
+  expect(fallback).toHaveTextContent('刚离线的小王');
+  expect(fallback).toHaveTextContent('我先走了');
+  expect(screen.getByRole('img', { name: '刚离线的小王的头像' })).toBeInTheDocument();
 });
 
 it('puts player count, total buy-in, hand price, and timer in the compact table summary', async () => {

@@ -74,11 +74,16 @@ export class GameEventsService {
     });
   }
 
-  async publishGameMessage(gameId: string, message: GameMessageDto): Promise<void> {
+  async publishGameMessage(
+    gameId: string,
+    message: GameMessageDto,
+    isCurrent: () => boolean = () => true
+  ): Promise<void> {
+    if (!isCurrent()) return;
     const game = await this.prisma.game.findUnique({ where: { id: gameId }, include: snapshotInclude });
-    if (game === null || game.status !== GameStatus.ACTIVE) return;
+    if (game === null || game.status !== GameStatus.ACTIVE || !isCurrent()) return;
     await this.forEachAuthorizedSocket(gameId, game as SnapshotGameRecord, (socket) => {
-      socket.emit('game.message.created', message);
+      if (isCurrent()) socket.emit('game.message.created', message);
     });
   }
 

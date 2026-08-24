@@ -274,4 +274,42 @@ describe('GameEventsService.publishGameMessage', () => {
     expect(socket.emit).not.toHaveBeenCalled();
     expect(fixture.socketSessions.revalidate).not.toHaveBeenCalled();
   });
+
+  it('rechecks the message lifecycle after an asynchronous socket session revalidation', async () => {
+    // Break caught: settlement clears messages while socket revalidation is pending, then a delayed event is still emitted.
+    const fixture = createFixture();
+    const socket = fakeSocket('socket-1');
+    fixture.service.bindServer(fakeServer(
+      new Map([['game:game-1', new Set([socket.id])]]),
+      new Map([[socket.id, socket]])
+    ));
+    vi.mocked(fixture.prisma.game.findUnique).mockResolvedValue({
+      id: 'game-1',
+      status: GameStatus.ACTIVE,
+      players: [],
+      buyinEvents: []
+    } as never);
+    let resolveSession!: (session: AuthenticatedSession) => void;
+    vi.mocked(fixture.socketSessions.revalidate).mockReturnValue(new Promise((resolve) => {
+      resolveSession = resolve;
+    }));
+    let current = true;
+    const message: GameMessageDto = {
+      id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+      gameId: 'game-1',
+      userId: 'user-1',
+      nickname: '西西',
+      avatarUrl: '/avatars/preset-13.webp',
+      text: '马上到',
+      createdAt: '2026-08-24T09:00:00.000Z'
+    };
+
+    const publishing = fixture.service.publishGameMessage('game-1', message, () => current);
+    await vi.waitFor(() => expect(fixture.socketSessions.revalidate).toHaveBeenCalledOnce());
+    current = false;
+    resolveSession(authenticatedSession('user-1'));
+    await publishing;
+
+    expect(socket.emit).not.toHaveBeenCalled();
+  });
 });

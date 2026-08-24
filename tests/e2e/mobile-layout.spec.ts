@@ -3,12 +3,13 @@ import {
   apiBuyHands,
   apiLogin,
   apiLoginAccount,
+  apiWrite,
   closeApiSessions,
   createStartedGame,
   type ApiSession
 } from './support/api.js';
 import { cleanupTaskGame } from './support/database.js';
-import { tablePlayers } from './support/fixtures.js';
+import { fixtureAccount, tablePlayers } from './support/fixtures.js';
 
 for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table has no horizontal overflow, undersized actions, console errors, or hidden self seat`, async ({ page }, testInfo) => {
   const admin = await apiLogin('admin');
@@ -50,6 +51,51 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
 
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
     expect(overflow).toBeLessThanOrEqual(0);
+    const arenaGeometry = await page.evaluate(() => {
+      const table = document.querySelector<HTMLElement>('[data-testid="round-table"]');
+      const dock = document.querySelector<HTMLElement>('.game-action-dock');
+      const spectatorBar = document.querySelector<HTMLElement>('.spectator-bar');
+      if (!table || !dock || !spectatorBar) throw new Error('竞技区关键元素未渲染');
+      const tableRect = table.getBoundingClientRect();
+      const dockRect = dock.getBoundingClientRect();
+      const spectatorRect = spectatorBar.getBoundingClientRect();
+      const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]'))
+        .map((seat) => seat.getBoundingClientRect())
+        .map((rect) => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }));
+      const seatOverlaps: Array<[number, number]> = [];
+      for (let leftIndex = 0; leftIndex < seats.length; leftIndex += 1) {
+        for (let rightIndex = leftIndex + 1; rightIndex < seats.length; rightIndex += 1) {
+          const left = seats[leftIndex]!;
+          const right = seats[rightIndex]!;
+          if (left.left < right.right && left.right > right.left && left.top < right.bottom && left.bottom > right.top) {
+            seatOverlaps.push([leftIndex + 1, rightIndex + 1]);
+          }
+        }
+      }
+      return {
+        scrollHeight: document.documentElement.scrollHeight,
+        viewportHeight: window.innerHeight,
+        viewportWidth: window.innerWidth,
+        tableTop: tableRect.top,
+        tableBottom: tableRect.bottom,
+        dockTop: dockRect.top,
+        spectatorTop: spectatorRect.top,
+        spectatorBottom: spectatorRect.bottom,
+        seats,
+        seatOverlaps
+      };
+    });
+    expect(arenaGeometry.scrollHeight).toBeLessThanOrEqual(arenaGeometry.viewportHeight);
+    expect(arenaGeometry.spectatorTop).toBeGreaterThanOrEqual(0);
+    expect(arenaGeometry.spectatorBottom).toBeLessThanOrEqual(arenaGeometry.tableTop);
+    expect(arenaGeometry.tableBottom).toBeLessThanOrEqual(arenaGeometry.dockTop);
+    expect(arenaGeometry.seatOverlaps).toEqual([]);
+    expect(arenaGeometry.seats.every((seat) => (
+      seat.left >= 0 &&
+      seat.right <= arenaGeometry.viewportWidth &&
+      seat.top >= 0 &&
+      seat.bottom <= arenaGeometry.dockTop
+    ))).toBe(true);
     const undersized = await page.locator('button:visible, a:visible').evaluateAll((elements) => elements
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -162,10 +208,8 @@ test('four-seat table keeps sparse mobile geometry and reachable player cards at
       });
 
       expect(geometry.density).toContain('round-table--sparse');
-      expect(geometry.computedHeight).toBeGreaterThanOrEqual(280);
-      expect(geometry.computedHeight).toBeLessThanOrEqual(320);
-      expect(geometry.renderedHeight).toBeGreaterThanOrEqual(280);
-      expect(geometry.renderedHeight).toBeLessThanOrEqual(320);
+      expect(geometry.computedHeight).toBeGreaterThanOrEqual(240);
+      expect(geometry.renderedHeight).toBeGreaterThanOrEqual(240);
       expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
       expect(geometry.scrollY).toBe(positionedScrollY);
       expect(geometry.seatOverlaps, JSON.stringify({ width, ...geometry })).toEqual([]);
@@ -182,6 +226,104 @@ test('four-seat table keeps sparse mobile geometry and reachable player cards at
         ))),
         JSON.stringify({ width, ...geometry })
       ).toBe(true);
+    }
+  } finally {
+    await closeApiSessions(admin, ...playerSessions);
+    if (gameId) await cleanupTaskGame(gameId);
+  }
+});
+
+test('administrator end-game control and a long latest speech stay inside the fitted arena', async ({ page }, testInfo) => {
+  test.skip(
+    !['chromium-320x568', 'chromium-360x800', 'webkit-430x932'].includes(testInfo.project.name),
+    '只在最窄 Chromium 与较宽 iPhone WebKit 视口验证管理员完整几何。'
+  );
+
+  const admin = await apiLogin('admin');
+  const playerSessions: ApiSession[] = [];
+  let gameId: string | undefined;
+  try {
+    const adminAccount = fixtureAccount('admin');
+    await page.goto('/login');
+    await page.getByLabel('用户名').fill(adminAccount.username);
+    await page.getByLabel('密码').fill(adminAccount.password);
+    await page.getByRole('button', { name: '登录' }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    const game = await createStartedGame(
+      admin,
+      `管理员竞技区 ${testInfo.project.name}`,
+      '300',
+      (createdGameId) => { gameId = createdGameId; }
+    );
+    gameId = game.id;
+    for (const [index, account] of tablePlayers.entries()) {
+      const session = await apiLoginAccount(account);
+      playerSessions.push(session);
+      expect((await apiBuyHands(session, game.id, 1, `admin-layout-${testInfo.project.name}-${index}`)).status()).toBe(201);
+    }
+    await page.goto(`/games/${game.id}`);
+    await expect(page.getByTestId('table-seat')).toHaveCount(12);
+    await expect(page.getByRole('button', { name: '结束对局' })).toBeVisible();
+    const speechSenders = testInfo.project.name === 'chromium-320x568'
+      ? playerSessions
+      : [playerSessions[4]!];
+    for (const [senderIndex, sender] of speechSenders.entries()) {
+      const speechText = `第${senderIndex + 1}个座位发言，用来检查气泡不会遮挡其他牌友`;
+      expect((await apiWrite(
+        sender,
+        'post',
+        `/api/games/${encodeURIComponent(game.id)}/messages`,
+        { text: speechText }
+      )).status()).toBe(201);
+      await expect(page.getByText(speechText)).toBeVisible();
+
+      const geometry = await page.evaluate((currentSpeechText) => {
+        const table = document.querySelector<HTMLElement>('[data-testid="round-table"]');
+        const dock = document.querySelector<HTMLElement>('.game-action-dock');
+        const spectatorBar = document.querySelector<HTMLElement>('.spectator-bar');
+        const endButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+          .find((button) => button.textContent?.trim() === '结束对局');
+        const speechElement = Array.from(document.querySelectorAll<HTMLElement>('.seat-speech'))
+          .find((element) => element.textContent === currentSpeechText);
+        if (!table || !dock || !spectatorBar || !endButton || !speechElement) {
+          throw new Error('管理员竞技区关键元素未渲染');
+        }
+        const tableRect = table.getBoundingClientRect();
+        const dockRect = dock.getBoundingClientRect();
+        const spectatorRect = spectatorBar.getBoundingClientRect();
+        const endRect = endButton.getBoundingClientRect();
+        const speechRect = speechElement.getBoundingClientRect();
+        const ownSeat = speechElement.closest('[data-testid="table-seat"]');
+        const overlaps = (left: DOMRect, right: DOMRect) => (
+          left.left < right.right && left.right > right.left &&
+          left.top < right.bottom && left.bottom > right.top
+        );
+        const overlappingSeats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]'))
+          .filter((seat) => seat !== ownSeat && overlaps(speechRect, seat.getBoundingClientRect()))
+          .map((seat) => seat.getAttribute('aria-label'));
+        return {
+          horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+          verticalOverflow: document.documentElement.scrollHeight - window.innerHeight,
+          tableBottom: tableRect.bottom,
+          dockTop: dockRect.top,
+          endHeight: endRect.height,
+          speechLeft: speechRect.left,
+          speechRight: speechRect.right,
+          viewportWidth: window.innerWidth,
+          overlapsSpectatorBar: overlaps(speechRect, spectatorRect),
+          overlappingSeats
+        };
+      }, speechText);
+
+      expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
+      expect(geometry.verticalOverflow).toBeLessThanOrEqual(0);
+      expect(geometry.tableBottom).toBeLessThanOrEqual(geometry.dockTop);
+      expect(geometry.endHeight).toBeGreaterThanOrEqual(44);
+      expect(geometry.speechLeft).toBeGreaterThanOrEqual(0);
+      expect(geometry.speechRight).toBeLessThanOrEqual(geometry.viewportWidth);
+      expect(geometry.overlapsSpectatorBar, speechText).toBe(false);
+      expect(geometry.overlappingSeats, speechText).toEqual([]);
     }
   } finally {
     await closeApiSessions(admin, ...playerSessions);
