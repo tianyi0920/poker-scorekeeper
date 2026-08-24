@@ -162,7 +162,7 @@ describe('Task18 release harness safety', () => {
         name: `Task18 release drill ${runId}`,
         completedAt: '2026-08-19T00:00:00.000Z',
         settledByNickname: `Drill admin ${runId}`,
-        final: '-20'
+        myFinalAmount: '-300'
       }],
       nextCursor: null
     };
@@ -185,6 +185,10 @@ describe('Task18 release harness safety', () => {
     };
 
     expect(() => assertRestoredHistoryPayload(runId, list, detail)).not.toThrow();
+    expect(() => assertRestoredHistoryPayload(runId, {
+      ...list,
+      items: [{ ...list.items[0], myFinalAmount: '-20' }]
+    }, detail)).toThrow('Restored history list does not contain the exact drill settlement');
     expect(() => assertRestoredHistoryPayload(runId, list, {
       ...detail,
       totals: { ...detail.totals, final: '-19' }

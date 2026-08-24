@@ -25,7 +25,7 @@ export function assertRestoredHistoryPayload(runId, list, detail) {
   if (
     listItem?.name !== gameName
     || listItem?.settledByNickname !== `Drill admin ${runId}`
-    || listItem?.final !== '-20'
+    || listItem?.myFinalAmount !== '-300'
   ) {
     throw new Error('Restored history list does not contain the exact drill settlement');
   }
