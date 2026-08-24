@@ -2,6 +2,16 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { jsonResponse } from '../test/app-fixtures.js';
 import { scorekeeperApi } from './resources.js';
 
+const gameMessage = {
+  id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+  gameId: 'game-1',
+  userId: 'user-1',
+  nickname: '西西',
+  avatarUrl: '/avatars/preset-13.webp',
+  text: '马上到',
+  createdAt: '2026-08-24T09:00:00.000Z'
+};
+
 const payload = {
   cashOutByPlayerId: {}, roomFee: '0', roomPayerIds: [], otherFee: '0', otherFeeNote: '', otherPayerIds: []
 };
@@ -21,6 +31,49 @@ const detail = {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+it('encodes current-game message paths before strictly rejecting non-canonical responses', async () => {
+  // Break caught: a reserved game id alters the route or message responses bypass shared contracts.
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(jsonResponse({ gameId: 'game/1', messages: [] }))
+    .mockResolvedValueOnce(jsonResponse({ ...gameMessage, gameId: 'game/1' }));
+  vi.stubGlobal('fetch', fetchMock);
+
+  await expect(scorekeeperApi.gameMessages('game/1')).rejects.toMatchObject({ status: 502 });
+  await expect(scorekeeperApi.createGameMessage('game/1', { text: '马上到' }))
+    .rejects.toMatchObject({ status: 502 });
+
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    1,
+    '/api/games/game%2F1/messages',
+    expect.objectContaining({ credentials: 'same-origin' })
+  );
+  expect(fetchMock).toHaveBeenNthCalledWith(
+    2,
+    '/api/games/game%2F1/messages',
+    expect.objectContaining({
+      method: 'POST',
+      body: JSON.stringify({ text: '马上到' }),
+      credentials: 'same-origin'
+    })
+  );
+});
+
+it.each([
+  ['message list', () => scorekeeperApi.gameMessages('game-1'), {
+    gameId: 'game-1', messages: [{ ...gameMessage, extra: true }]
+  }],
+  ['created message', () => scorekeeperApi.createGameMessage('game-1', { text: '马上到' }), {
+    ...gameMessage, gameId: 'other-game'
+  }]
+])('rejects a malformed %s response as a controlled API error', async (_case, request, malformed) => {
+  // Break caught: arbitrary or cross-game server fields are rendered as trusted speech.
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(malformed)));
+
+  await expect(request()).rejects.toMatchObject({
+    name: 'ApiError', status: 502, code: 'HTTP_ERROR', message: '服务器返回了无效结果'
+  });
+});
 
 it('encodes managed-game pagination and hard-delete identifiers at the API boundary', async () => {
   // Break caught: opaque cursors or public IDs containing reserved URL characters alter the request path.

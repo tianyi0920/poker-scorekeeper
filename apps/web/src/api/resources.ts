@@ -4,6 +4,8 @@ import {
   historyResponseSchema,
   hardDeleteGameResponseSchema,
   managedGamesResponseSchema,
+  gameMessageSchema,
+  gameMessagesResponseSchema,
   selectablePresetAvatarCatalogResponseSchema,
   settlementDetailSchema,
   settlementDraftResponseSchema,
@@ -18,6 +20,9 @@ import {
   type CurrentGamesResponse,
   type FinalizeSettlementRequest,
   type GameSnapshotDto,
+  type CreateGameMessageRequest,
+  type GameMessageDto,
+  type GameMessagesResponseDto,
   type HistoryResponseDto,
   type HardDeleteGameResponseDto,
   type ManagedGamesResponseDto,
@@ -58,9 +63,48 @@ async function validatedSettlementDraft(gameId: string, path: string, init?: Req
   return draft;
 }
 
+async function validatedGameMessages(
+  gameId: string,
+  path: string,
+  init?: RequestInit
+): Promise<GameMessagesResponseDto> {
+  const response = await validatedApiFetch(gameMessagesResponseSchema, path, init);
+  if (response.gameId !== gameId) throw invalidApiResponse();
+  return response;
+}
+
+async function validatedGameMessage(
+  gameId: string,
+  path: string,
+  init?: RequestInit
+): Promise<GameMessageDto> {
+  const message = await validatedApiFetch(gameMessageSchema, path, init);
+  if (message.gameId !== gameId) throw invalidApiResponse();
+  return message;
+}
+
 export const scorekeeperApi = {
   currentGames: () => apiFetch<CurrentGamesResponse>('/games/current'),
   gameSnapshot: (id: string, signal?: AbortSignal) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`, { signal }),
+  gameMessages: (gameId: string, signal?: AbortSignal): Promise<GameMessagesResponseDto> => validatedGameMessages(
+    gameId,
+    `/games/${encodeURIComponent(gameId)}/messages`,
+    { signal }
+  ),
+  createGameMessage: (
+    gameId: string,
+    body: CreateGameMessageRequest,
+    signal?: AbortSignal
+  ): Promise<GameMessageDto> => validatedGameMessage(
+    gameId,
+    `/games/${encodeURIComponent(gameId)}/messages`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+      signal
+    }
+  ),
   buyIn: (gameId: string, body: BuyHandsRequest, signal?: AbortSignal) => apiFetch<BuyinEventResponse>(`/games/${encodeURIComponent(gameId)}/buyins`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal
   }),
