@@ -1,4 +1,4 @@
-import type { GameSnapshotDto } from '@poker/contracts';
+import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
@@ -6,7 +6,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../../auth/AuthProvider.js';
 import { jsonResponse, session } from '../../test/app-fixtures.js';
 import type { GameSocketClient } from '../../api/game-socket.js';
-import { GamePage } from './GamePage.js';
+import { GamePage, mergeGameMessageWindow } from './GamePage.js';
 
 type Listener = (...args: unknown[]) => void;
 
@@ -112,6 +112,19 @@ function snapshot(overrides: Partial<GameSnapshotDto> = {}): GameSnapshotDto {
   };
 }
 
+function message(overrides: Partial<GameMessageDto> = {}): GameMessageDto {
+  return {
+    id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+    gameId: 'game-1',
+    userId: 'user-1',
+    nickname: '阿明',
+    avatarUrl: '/avatars/preset-01.webp',
+    text: '马上到',
+    createdAt: '2026-08-24T09:00:00.000Z',
+    ...overrides
+  };
+}
+
 function deferred<T>() {
   let resolve!: (value: T) => void;
   let reject!: (reason?: unknown) => void;
@@ -124,7 +137,7 @@ function renderGame(
   game = snapshot(),
   role: 'SUPER_ADMIN' | 'ADMIN' | 'USER' = 'USER'
 ) {
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/api/auth/session')) return jsonResponse(session(role));
     if (url.endsWith('/api/games/game-1/snapshot')) return jsonResponse(game);
@@ -134,6 +147,13 @@ function renderGame(
       version: game.version + 1,
       stoppedAt: '2026-08-17T13:00:00.000Z'
     }));
+    if (url.endsWith('/api/games/game-1/messages')) {
+      if (init?.method === 'POST') {
+        const body = JSON.parse(String(init.body)) as { text: string };
+        return jsonResponse(message({ text: body.text.trim() }));
+      }
+      return jsonResponse({ gameId: 'game-1', messages: [] });
+    }
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -186,12 +206,168 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   expect(screen.getByText('总买入')).toBeInTheDocument();
   expect(screen.getByText('01:00:00')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '购买筹码' })).toBeInTheDocument();
+  const spectatorBar = screen.getByRole('region', { name: '观战区' });
+  expect(spectatorBar.compareDocumentPosition(screen.getByTestId('round-table')) & Node.DOCUMENT_POSITION_FOLLOWING)
+    .toBeTruthy();
 
   const user = userEvent.setup();
   await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
   expect(screen.getByText('购买 1 手')).toBeInTheDocument();
   expect(screen.getByText('−¥300')).toHaveClass('money--negative');
   expect(screen.getByRole('button', { name: '更正我的最后一笔购买' })).toBeInTheDocument();
+});
+
+it('shows three simple tabs and sends one current-game message from the speech sheet', async () => {
+  // Break caught: the approved message tab or send sheet is missing, or a successful send is duplicated.
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  const user = userEvent.setup();
+
+  expect(await screen.findByRole('tab', { name: '竞技区' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tab', { name: /^购买记录/ })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: '消息区' })).toBeInTheDocument();
+  expect(screen.queryByText(/未读/)).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: '发言' }));
+  expect(screen.getByRole('dialog', { name: '发言' })).toBeInTheDocument();
+  await user.type(screen.getByRole('textbox', { name: '发言内容' }), '  马上到  ');
+  await user.click(screen.getByRole('button', { name: '发送' }));
+
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '发言' })).not.toBeInTheDocument());
+  await user.click(screen.getByRole('tab', { name: '消息区' }));
+  expect(screen.getAllByText('马上到')).toHaveLength(1);
+  expect(fetchMock).toHaveBeenCalledWith(
+    '/api/games/game-1/messages',
+    expect.objectContaining({ method: 'POST', body: JSON.stringify({ text: '马上到' }) })
+  );
+});
+
+it('keeps the speech draft and offers a Chinese retry message after send failure', async () => {
+  // Break caught: a temporary send failure discards what the user typed or closes the only retry control.
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(1) }));
+  await screen.findByTestId('round-table');
+  const original = fetchMock.getMockImplementation();
+  fetchMock.mockImplementation(async (input, init) => {
+    if (String(input).endsWith('/api/games/game-1/messages') && init?.method === 'POST') {
+      return jsonResponse({ code: 'INTERNAL_ERROR', message: '暂时发送失败' }, 500);
+    }
+    return original!(input, init);
+  });
+  const user = userEvent.setup();
+
+  await user.click(screen.getByRole('button', { name: '发言' }));
+  await user.type(screen.getByRole('textbox', { name: '发言内容' }), '等我一下');
+  await user.click(screen.getByRole('button', { name: '发送' }));
+
+  expect(await screen.findByText('服务暂时不可用，请稍后重试')).toBeInTheDocument();
+  expect(screen.getByRole('textbox', { name: '发言内容' })).toHaveValue('等我一下');
+  expect(screen.getByRole('button', { name: '发送' })).toBeEnabled();
+});
+
+it('accepts one strict realtime message for the current game and ignores duplicates or other games', async () => {
+  // Break caught: socket retries duplicate speech, or malformed/cross-table payloads enter this table.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: '消息区' }));
+
+  act(() => {
+    socket.fire('game.message.created', message());
+    socket.fire('game.message.created', message());
+    socket.fire('game.message.created', { ...message(), id: 'not-a-uuid' });
+    socket.fire('game.message.created', {
+      ...message({ id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e02' }),
+      gameId: 'other-game'
+    });
+  });
+
+  expect(screen.getAllByText('马上到')).toHaveLength(1);
+});
+
+it('keeps the authoritative latest fifty messages in chronological order after a reconnect pull', () => {
+  // Break caught: m1 is appended after m51 and becomes the visible latest speech after a reconnect.
+  const makeWindowMessage = (index: number) => message({
+    id: `018f5d0d-43a8-7a7a-9b0b-${String(index).padStart(12, '0')}`,
+    text: `消息${index}`,
+    createdAt: new Date(Date.UTC(2026, 7, 24, 9, 0, index)).toISOString()
+  });
+  const current = Array.from({ length: 50 }, (_, index) => makeWindowMessage(index + 1));
+  const authoritative = Array.from({ length: 50 }, (_, index) => makeWindowMessage(index + 2));
+
+  const merged = mergeGameMessageWindow(
+    authoritative,
+    current,
+    new Set(current.map(({ id }) => id))
+  );
+
+  expect(merged).toHaveLength(50);
+  expect(merged.map(({ text }) => text)).toEqual(
+    Array.from({ length: 50 }, (_, index) => `消息${index + 2}`)
+  );
+  expect(merged.at(-1)?.text).toBe('消息51');
+});
+
+it('drops messages from before a pull while preserving only realtime messages that arrived during it', () => {
+  // Break caught: an API restart returns an empty authoritative window but stale browser messages remain forever.
+  const stale = message({ text: '重启前旧消息' });
+  expect(mergeGameMessageWindow([], [stale], new Set([stale.id]))).toEqual([]);
+
+  const sameTime = '2026-08-24T09:00:00.000Z';
+  const authoritative = Array.from({ length: 50 }, (_, index) => message({
+    id: `018f5d0d-43a8-7a7a-9b0b-${String(index + 100).padStart(12, '0')}`,
+    text: `权威${index + 1}`,
+    createdAt: sameTime
+  }));
+  const arrivedDuringPull = message({
+    id: '018f5d0d-43a8-7a7a-9b0b-000000000999',
+    text: '补拉期间的新消息',
+    createdAt: sameTime
+  });
+  const merged = mergeGameMessageWindow(
+    authoritative,
+    [stale, arrivedDuringPull],
+    new Set([stale.id])
+  );
+
+  expect(merged).toHaveLength(50);
+  expect(merged.some(({ text }) => text === '重启前旧消息')).toBe(false);
+  expect(merged.at(-1)?.text).toBe('补拉期间的新消息');
+});
+
+it('ignores delayed realtime speech when the loaded game is no longer active', async () => {
+  // Break caught: a late socket event repopulates messages after settlement has cleared the arena.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ status: 'SETTLING', stoppedAt: '2026-08-24T09:00:00.000Z' }), 'ADMIN');
+  const user = userEvent.setup();
+  await screen.findByRole('link', { name: '继续结算' });
+
+  act(() => { socket.fire('game.message.created', message({ text: '已经结束了' })); });
+  await user.click(screen.getByRole('tab', { name: '消息区' }));
+
+  expect(screen.queryByText('已经结束了')).not.toBeInTheDocument();
+  expect(screen.getByText('本场还没有消息')).toBeInTheDocument();
+});
+
+it('shows the latest sender beside the arena even after that spectator goes offline', async () => {
+  // Break caught: a valid current-game message exists but has no visible sender when presence changes first.
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1), spectators: [] }));
+  await screen.findByTestId('round-table');
+
+  act(() => {
+    socket.fire('game.message.created', message({
+      userId: 'offline-watcher',
+      nickname: '刚离线的小王',
+      avatarUrl: '/avatars/preset-12.webp',
+      text: '我先走了'
+    }));
+  });
+
+  const fallback = screen.getByTestId('arena-latest-message');
+  expect(fallback).toHaveTextContent('刚离线的小王');
+  expect(fallback).toHaveTextContent('我先走了');
+  expect(screen.getByRole('img', { name: '刚离线的小王的头像' })).toBeInTheDocument();
 });
 
 it('puts player count, total buy-in, hand price, and timer in the compact table summary', async () => {
@@ -213,17 +389,17 @@ it('puts player count, total buy-in, hand price, and timer in the compact table 
   expect(summary.compareDocumentPosition(screen.getByTestId('round-table')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
 });
 
-it('implements linked tabs with roving focus and arrow-key selection', async () => {
+it('implements three linked tabs with roving focus and arrow-key selection', async () => {
   // Break caught: visual tabs lack programmatic panel ownership or cannot be operated without pointer input.
   const socket = new FakeGameSocket();
   renderGame(socket, snapshot({ players: players(1) }));
-  const tableTab = await screen.findByRole('tab', { name: '对战区' });
+  const tableTab = await screen.findByRole('tab', { name: '竞技区' });
   const purchaseTab = screen.getByRole('tab', { name: /^购买记录/ });
 
   expect(tableTab).toHaveAttribute('aria-controls', 'game-panel-table');
   expect(tableTab).toHaveAttribute('tabindex', '0');
   expect(purchaseTab).toHaveAttribute('tabindex', '-1');
-  expect(screen.getByRole('tabpanel', { name: '对战区' })).toHaveAttribute('id', 'game-panel-table');
+  expect(screen.getByRole('tabpanel', { name: '竞技区' })).toHaveAttribute('id', 'game-panel-table');
 
   tableTab.focus();
   await userEvent.setup().keyboard('{ArrowRight}');
@@ -232,6 +408,8 @@ it('implements linked tabs with roving focus and arrow-key selection', async () 
   expect(screen.getByRole('tabpanel', { name: /^购买记录/ })).toHaveAttribute('id', 'game-panel-purchases');
   await userEvent.setup().keyboard('{Home}');
   expect(tableTab).toHaveFocus();
+  await userEvent.setup().keyboard('{End}');
+  expect(screen.getByRole('tab', { name: '消息区' })).toHaveFocus();
 });
 
 it('rejoins with the latest known version after a socket reconnect', async () => {
@@ -292,6 +470,8 @@ it('starts exactly one polling refresh every ten seconds after the fallback acti
 
   await act(async () => { await vi.advanceTimersByTimeAsync(30_000); });
   expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/snapshot')))
+    .toHaveLength(3);
+  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/games/game-1/messages')))
     .toHaveLength(3);
 });
 

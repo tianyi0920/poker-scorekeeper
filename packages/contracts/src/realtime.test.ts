@@ -5,6 +5,7 @@ import {
   gameJoinCommandSchema,
   gameLeaveAckSchema,
   gameLeaveCommandSchema,
+  gameMessageCreatedEventSchema,
   gameSnapshotEventSchema,
   gameUpdatedEventSchema,
   playerRakeUpdatedEventSchema,
@@ -14,6 +15,22 @@ import {
 } from './realtime.js';
 
 describe('realtime contracts', () => {
+  it('accepts only a strict current-game message event', () => {
+    const message = {
+      id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+      gameId: 'cm123abc',
+      userId: 'cm456def',
+      nickname: '西西',
+      avatarUrl: '/avatars/preset-13.webp',
+      text: '马上到',
+      createdAt: '2026-08-24T09:00:00.000Z'
+    };
+
+    expect(gameMessageCreatedEventSchema.parse(message)).toEqual(message);
+    expect(gameMessageCreatedEventSchema.safeParse({ ...message, extra: true }).success)
+      .toBe(false);
+  });
+
   it('accepts only the hard-delete realtime reason', () => {
     expect(gameDeletedEventSchema.parse({
       gameId: 'cm123456789012345678901234',

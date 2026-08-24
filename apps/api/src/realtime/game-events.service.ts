@@ -1,5 +1,10 @@
 import { Inject, Injectable } from '@nestjs/common';
-import type { GameDeletedEvent, GameSnapshotDto, PresenceUpdatedEvent } from '@poker/contracts';
+import type {
+  GameDeletedEvent,
+  GameMessageDto,
+  GameSnapshotDto,
+  PresenceUpdatedEvent
+} from '@poker/contracts';
 import type { Server } from 'socket.io';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { AppError } from '../common/errors/app-error.js';
@@ -66,6 +71,19 @@ export class GameEventsService {
     };
     await this.forEachAuthorizedSocket(gameId, game, (socket) => {
       socket.emit('presence.updated', event);
+    });
+  }
+
+  async publishGameMessage(
+    gameId: string,
+    message: GameMessageDto,
+    isCurrent: () => boolean = () => true
+  ): Promise<void> {
+    if (!isCurrent()) return;
+    const game = await this.prisma.game.findUnique({ where: { id: gameId }, include: snapshotInclude });
+    if (game === null || game.status !== GameStatus.ACTIVE || !isCurrent()) return;
+    await this.forEachAuthorizedSocket(gameId, game as SnapshotGameRecord, (socket) => {
+      if (isCurrent()) socket.emit('game.message.created', message);
     });
   }
 

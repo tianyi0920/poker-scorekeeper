@@ -299,6 +299,65 @@ describe.sequential('game lifecycle and snapshots', () => {
     })).toBe(1);
   });
 
+  it('stores and lists a validated current-game message for an authenticated spectator', async () => {
+    // Break caught: the HTTP surface blocks spectators, skips validation, or loses accepted in-memory speech.
+    const active = await seedGame(`${prefix}-messages`, GameStatus.ACTIVE);
+
+    const created = await write(userAuth, 'post', `/api/games/${active.id}/messages`, {
+      text: '  马上到  '
+    }).expect(201);
+
+    expect(created.body).toMatchObject({
+      gameId: active.id,
+      userId: regularUser.id,
+      nickname: regularUser.nickname,
+      avatarUrl: '/avatars/preset-01.webp',
+      text: '马上到'
+    });
+    expect(created.body.id).toMatch(/^[0-9a-f-]{36}$/);
+    expect(created.body.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+    await get(userAuth, `/api/games/${active.id}/messages`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toEqual({
+        gameId: active.id,
+        messages: [created.body]
+      }));
+  });
+
+  it.each(['begin-settlement', 'void'] as const)(
+    'clears current-game messages after committed %s',
+    async (action) => {
+      // Break caught: an ended table exposes its old in-memory conversation if the same id becomes active again.
+      const active = await seedGame(`${prefix}-clear-message-${action}`, GameStatus.ACTIVE);
+      await write(userAuth, 'post', `/api/games/${active.id}/messages`, { text: '结束前消息' })
+        .expect(201);
+
+      await write(adminAuth, 'post', `/api/games/${active.id}/${action}`).expect(200);
+      await prisma.game.update({
+        where: { id: active.id },
+        data: { status: GameStatus.ACTIVE }
+      });
+
+      await get(userAuth, `/api/games/${active.id}/messages`)
+        .expect(200)
+        .expect(({ body }) => expect(body.messages).toEqual([]));
+    }
+  );
+
+  it.each([
+    ['blank text', { text: '   ' }],
+    ['oversized text', { text: 'a'.repeat(121) }],
+    ['control character', { text: '坏\n消息' }],
+    ['unknown field', { text: '马上到', extra: true }]
+  ] as const)('rejects %s in a current-game message', async (_label, body) => {
+    // Break caught: malformed speech bypasses the shared request contract at the controller boundary.
+    const active = await seedGame(`${prefix}-invalid-message-${_label}`, GameStatus.ACTIVE);
+
+    await write(userAuth, 'post', `/api/games/${active.id}/messages`, body)
+      .expect(400)
+      .expect(({ body: responseBody }) => expect(responseBody.code).toBe('VALIDATION_ERROR'));
+  });
+
   it('deletes only an unrelated DRAFT and audits the deletion', async () => {
     const draft = await seedGame(`${prefix}-delete`, GameStatus.DRAFT);
 

@@ -92,7 +92,8 @@ describe('Task18 release harness safety', () => {
     const previous = {
       ci: process.env.CI,
       githubActions: process.env.GITHUB_ACTIONS,
-      databaseUrl: process.env.DATABASE_URL
+      databaseUrl: process.env.DATABASE_URL,
+      environmentFile: process.env.TASK18_ENV_FILE
     };
     const previousDirectory = process.cwd();
     let testDirectory: string | undefined;
@@ -106,6 +107,7 @@ describe('Task18 release harness safety', () => {
       await writeFile(join(testDirectory, '.env.local'), `DATABASE_URL=${guardedDatabaseUrl}\n`);
       delete process.env.CI;
       delete process.env.GITHUB_ACTIONS;
+      delete process.env.TASK18_ENV_FILE;
       process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
       process.chdir(testDirectory);
       await readTestDatabaseEnvironment();
@@ -130,9 +132,51 @@ describe('Task18 release harness safety', () => {
       else process.env.GITHUB_ACTIONS = previous.githubActions;
       if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
       else process.env.DATABASE_URL = previous.databaseUrl;
+      if (previous.environmentFile === undefined) delete process.env.TASK18_ENV_FILE;
+      else process.env.TASK18_ENV_FILE = previous.environmentFile;
       if (testDirectory !== undefined) {
         await rm(testDirectory, { recursive: true, force: true });
       }
+    }
+  });
+
+  it('can read the same guarded test environment from an explicit worktree-safe file path', async () => {
+    // Break caught: an isolated worktree cannot run Playwright without copying an ignored secret file into Git state.
+    const previous = {
+      ci: process.env.CI,
+      githubActions: process.env.GITHUB_ACTIONS,
+      databaseUrl: process.env.DATABASE_URL,
+      environmentFile: process.env.TASK18_ENV_FILE
+    };
+    let testDirectory: string | undefined;
+    try {
+      testDirectory = await mkdtemp(join(tmpdir(), 'poker-task18-worktree-environment-'));
+      const guardedDatabaseUrl = [
+        'mysql://fixture_user:fixture_password@',
+        'tianyi.wiki:8306/',
+        'poker_scorekeeper_test'
+      ].join('');
+      const environmentFile = join(testDirectory, 'shared.env.local');
+      await writeFile(environmentFile, `DATABASE_URL=${guardedDatabaseUrl}\n`);
+      delete process.env.CI;
+      delete process.env.GITHUB_ACTIONS;
+      process.env.DATABASE_URL = 'mysql://poisoned:poisoned@127.0.0.1:3306/not_the_test_database';
+      process.env.TASK18_ENV_FILE = environmentFile;
+
+      const environment = await readTestDatabaseEnvironment();
+
+      expect(environment.url.pathname).toBe('/poker_scorekeeper_test');
+      expect(process.env.DATABASE_URL).toBe(guardedDatabaseUrl);
+    } finally {
+      if (previous.ci === undefined) delete process.env.CI;
+      else process.env.CI = previous.ci;
+      if (previous.githubActions === undefined) delete process.env.GITHUB_ACTIONS;
+      else process.env.GITHUB_ACTIONS = previous.githubActions;
+      if (previous.databaseUrl === undefined) delete process.env.DATABASE_URL;
+      else process.env.DATABASE_URL = previous.databaseUrl;
+      if (previous.environmentFile === undefined) delete process.env.TASK18_ENV_FILE;
+      else process.env.TASK18_ENV_FILE = previous.environmentFile;
+      if (testDirectory !== undefined) await rm(testDirectory, { recursive: true, force: true });
     }
   });
 

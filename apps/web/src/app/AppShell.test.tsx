@@ -120,6 +120,9 @@ it.each([
   else expect(shell).not.toHaveClass('app-shell--focus');
   if (focused) expect(navigation).not.toBeInTheDocument();
   else expect(navigation).toBeVisible();
+  const header = screen.getByRole('banner');
+  if (liveGame) expect(header).toHaveClass('app-header--game');
+  else expect(header).not.toHaveClass('app-header--game');
 });
 
 it('enables iPhone cover viewport so CSS safe-area insets are available', () => {
@@ -128,4 +131,18 @@ it('enables iPhone cover viewport so CSS safe-area insets are available', () => 
   const viewport = html.match(/<meta\s+name=["']viewport["']\s+content=["']([^"']+)["']/i);
 
   expect(viewport?.[1]).toContain('viewport-fit=cover');
+});
+
+it('keeps the live arena within dynamic viewport and both narrow mobile boundaries', () => {
+  // Break caught: fixed heights hide observers or the action dock behind iPhone browser and safe-area chrome.
+  const css = readFileSync(resolve(process.cwd(), 'src/styles/global.css'), 'utf8');
+
+  expect(css).toMatch(/\.app-shell--game\s*\{[^}]*100dvh/s);
+  expect(css).toMatch(/\.app-shell--game\s*\{[^}]*overflow:\s*hidden/s);
+  expect(css).toMatch(/\.battle-panel\s*\{[^}]*overflow:\s*hidden/s);
+  expect(css).toMatch(/\.round-table\s*\{[^}]*min-height:\s*0[^}]*flex:\s*1/s);
+  expect(css).toContain('safe-area-inset-bottom');
+  expect(css).toMatch(/\.game-tabs\s*\{[^}]*repeat\(3,/s);
+  expect(css).toContain('@media (max-width: 420px)');
+  expect(css).toContain('@media (max-width: 359px)');
 });

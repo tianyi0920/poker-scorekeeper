@@ -1,6 +1,7 @@
 import {
   gameJoinAckSchema,
   gameDeletedEventSchema,
+  gameMessageCreatedEventSchema,
   gameSnapshotSchema,
   gameSnapshotEventSchema,
   gameUpdatedEventSchema,
@@ -8,6 +9,7 @@ import {
   presenceUpdatedEventSchema,
   rakeSettingsUpdatedEventSchema,
   serverErrorEventSchema,
+  type GameMessageDto,
   type GameSnapshotDto
 } from '@poker/contracts';
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
@@ -21,17 +23,34 @@ import { Toast } from '../../components/Toast.js';
 import { AdjustBuyInDialog } from '../buyins/AdjustBuyInDialog.js';
 import { BuyInSheet } from '../buyins/BuyInSheet.js';
 import { GameTimer } from './GameTimer.js';
+import { GameMessagesPanel } from './GameMessagesPanel.js';
+import { GameSpeechSheet } from './GameSpeechSheet.js';
 import { PurchaseTimeline } from './PurchaseTimeline.js';
 import { RoundTable } from './RoundTable.js';
 import { SpectatorBar } from './SpectatorBar.js';
 import { GAME_DELETED_NOTICE } from './useGameDeletedSubscription.js';
 
-type GameTab = 'table' | 'purchases';
+type GameTab = 'table' | 'purchases' | 'messages';
 type SocketFactory = () => GameSocketClient;
 const moneyFormatter = new Intl.NumberFormat('zh-CN');
 
 function totalBuyIn(snapshot: GameSnapshotDto): bigint {
   return snapshot.players.reduce((total, player) => total + BigInt(player.buyInAmount), 0n);
+}
+
+export function mergeGameMessageWindow(
+  authoritative: GameMessageDto[],
+  current: GameMessageDto[],
+  baselineIds: ReadonlySet<string>
+): GameMessageDto[] {
+  const byId = new Map<string, GameMessageDto>();
+  for (const message of authoritative) byId.set(message.id, message);
+  for (const message of current) {
+    if (!baselineIds.has(message.id) && !byId.has(message.id)) byId.set(message.id, message);
+  }
+  return [...byId.values()]
+    .sort((left, right) => left.createdAt.localeCompare(right.createdAt))
+    .slice(-50);
 }
 
 export function GamePage({ socketFactory = createGameSocket }: { socketFactory?: SocketFactory }) {
@@ -44,6 +63,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   activeGameIdRef.current = gameId;
   const tableTabRef = useRef<HTMLButtonElement>(null);
   const purchaseTabRef = useRef<HTMLButtonElement>(null);
+  const messageTabRef = useRef<HTMLButtonElement>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [socketReady, setSocketReady] = useState(false);
@@ -54,6 +74,9 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const fallbackTimeoutRef = useRef<number | undefined>(undefined);
   const pollingIntervalRef = useRef<number | undefined>(undefined);
   const [tab, setTab] = useState<GameTab>('table');
+  const [messages, setMessages] = useState<GameMessageDto[]>([]);
+  const messagesRef = useRef<GameMessageDto[]>([]);
+  const [speechOpen, setSpeechOpen] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
   const [adjustment, setAdjustment] = useState<{ playerId: string; currentHands: number } | null>(null);
   const [endOpen, setEndOpen] = useState(false);
@@ -65,6 +88,16 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const writeAbortRef = useRef(new AbortController());
   const deletedRef = useRef(false);
   const hasSnapshot = snapshot?.id === gameId;
+
+  const updateMessages = useCallback((
+    updater: (current: GameMessageDto[]) => GameMessageDto[]
+  ) => {
+    setMessages((current) => {
+      const next = updater(current);
+      messagesRef.current = next;
+      return next;
+    });
+  }, []);
 
   const abortPageRequests = useCallback(() => {
     for (const controller of loadAbortControllersRef.current) controller.abort();
@@ -83,6 +116,12 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setSnapshot(parsed.data);
     return true;
   }, []);
+
+  const appendMessage = useCallback((message: GameMessageDto) => {
+    updateMessages((current) => current.some(({ id }) => id === message.id)
+      ? current
+      : [...current, message].slice(-50));
+  }, [updateMessages]);
 
   const loadSnapshot = useCallback(async (background = false) => {
     const requestedGameId = gameId;
@@ -103,6 +142,32 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (!controller.signal.aborted && !deletedRef.current && requestGenerationRef.current === generation && !background && activeGameIdRef.current === requestedGameId) setLoading(false);
     }
   }, [applySnapshot, gameId]);
+
+  const loadMessages = useCallback(async () => {
+    const requestedGameId = gameId;
+    const generation = requestGenerationRef.current;
+    const baselineIds = new Set(messagesRef.current.map(({ id }) => id));
+    const controller = new AbortController();
+    loadAbortControllersRef.current.add(controller);
+    try {
+      const response = await scorekeeperApi.gameMessages(requestedGameId, controller.signal);
+      if (
+        controller.signal.aborted ||
+        deletedRef.current ||
+        requestGenerationRef.current !== generation ||
+        activeGameIdRef.current !== requestedGameId
+      ) return;
+      if (snapshotRef.current !== null && snapshotRef.current.status !== 'ACTIVE') {
+        updateMessages(() => []);
+        return;
+      }
+      updateMessages((current) => mergeGameMessageWindow(response.messages, current, baselineIds));
+    } catch {
+      // Snapshot availability is more important than the temporary, current-game message list.
+    } finally {
+      loadAbortControllersRef.current.delete(controller);
+    }
+  }, [gameId, updateMessages]);
 
   const stopFallback = useCallback(() => {
     if (fallbackTimeoutRef.current !== undefined) {
@@ -135,13 +200,15 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setLoading(false);
     setLoadError(null);
     setTab('table');
+    updateMessages(() => []);
+    setSpeechOpen(false);
     setBuyOpen(false);
     setAdjustment(null);
     setEndOpen(false);
     setEnding(false);
     setEndError(null);
     navigate('/', { replace: true, state: { notice: GAME_DELETED_NOTICE } });
-  }, [abortPageRequests, navigate, stopFallback]);
+  }, [abortPageRequests, navigate, stopFallback, updateMessages]);
 
   const receiveDeletedGame = useCallback((value: unknown) => {
     const parsed = gameDeletedEventSchema.safeParse(value);
@@ -164,6 +231,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setLoading(true);
     setLoadError(null);
     setTab('table');
+    updateMessages(() => []);
+    setSpeechOpen(false);
     setBuyOpen(false);
     setAdjustment(null);
     setEndOpen(false);
@@ -173,20 +242,23 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       return;
     }
     void loadSnapshot();
+    void loadMessages();
     const generation = requestGenerationRef.current;
     return () => {
       if (requestGenerationRef.current === generation) requestGenerationRef.current += 1;
       abortPageRequests();
     };
-  }, [abortPageRequests, gameId, loadSnapshot]);
+  }, [abortPageRequests, gameId, loadMessages, loadSnapshot, updateMessages]);
 
   useEffect(() => {
     if (snapshot !== null && snapshot.status !== 'ACTIVE') {
       setBuyOpen(false);
       setAdjustment(null);
       setEndOpen(false);
+      setSpeechOpen(false);
+      updateMessages(() => []);
     }
-  }, [snapshot]);
+  }, [snapshot, updateMessages]);
 
   useEffect(() => {
     if (!hasSnapshot) return;
@@ -300,6 +372,15 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       const parsed = gameUpdatedEventSchema.safeParse(value);
       if (parsed.success) applySnapshot(parsed.data);
     };
+    const receiveMessage = (value: unknown) => {
+      const parsed = gameMessageCreatedEventSchema.safeParse(value);
+      if (
+        !parsed.success ||
+        parsed.data.gameId !== gameId ||
+        snapshotRef.current?.status !== 'ACTIVE'
+      ) return;
+      appendMessage(parsed.data);
+    };
     const receivePresence = (value: unknown) => {
       const parsed = presenceUpdatedEventSchema.safeParse(value);
       if (!parsed.success || parsed.data.gameId !== gameId) return;
@@ -335,6 +416,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       ['connect_error', socketError],
       ['game.snapshot', receiveSnapshot],
       ['game.updated', receiveGameUpdate],
+      ['game.message.created', receiveMessage],
       ['game.deleted', receiveDeletedGame],
       ['presence.updated', receivePresence],
       ['rake-settings.updated', refreshRakeSettings],
@@ -354,7 +436,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setSocketReady(false);
       setRoomSynchronized(false);
     };
-  }, [applySnapshot, ensureFallbackGrace, exitDeletedGame, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, startFallbackGrace, stopFallback]);
+  }, [appendMessage, applySnapshot, ensureFallbackGrace, exitDeletedGame, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, startFallbackGrace, stopFallback]);
 
   useEffect(() => {
     if (!socketReady || roomSynchronized) {
@@ -367,10 +449,13 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (generation !== fallbackGenerationRef.current) return;
       fallbackTimeoutRef.current = undefined;
       setPolling(true);
-      pollingIntervalRef.current = window.setInterval(() => { void loadSnapshot(true); }, 10_000);
+      pollingIntervalRef.current = window.setInterval(() => {
+        void loadSnapshot(true);
+        void loadMessages();
+      }, 10_000);
     }, 5_000);
     return stopFallback;
-  }, [fallbackGeneration, loadSnapshot, roomSynchronized, socketReady, stopFallback]);
+  }, [fallbackGeneration, loadMessages, loadSnapshot, roomSynchronized, socketReady, stopFallback]);
 
   const refreshAfterWrite = () => {
     void loadSnapshot(true);
@@ -379,16 +464,23 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
     let next: GameTab | null = null;
     if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-      next = tab === 'table' ? 'purchases' : 'table';
+      const tabs: GameTab[] = ['table', 'purchases', 'messages'];
+      const offset = event.key === 'ArrowRight' ? 1 : -1;
+      next = tabs[(tabs.indexOf(tab) + offset + tabs.length) % tabs.length]!;
     } else if (event.key === 'Home') {
       next = 'table';
     } else if (event.key === 'End') {
-      next = 'purchases';
+      next = 'messages';
     }
     if (next === null) return;
     event.preventDefault();
     setTab(next);
-    (next === 'table' ? tableTabRef.current : purchaseTabRef.current)?.focus();
+    const target = next === 'table'
+      ? tableTabRef.current
+      : next === 'purchases'
+        ? purchaseTabRef.current
+        : messageTabRef.current;
+    target?.focus();
   };
 
   if (loading || (snapshot !== null && snapshot.id !== gameId)) return <div className="page-status">正在摆好牌桌…</div>;
@@ -400,6 +492,25 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const active = snapshot.status === 'ACTIVE';
   const fullForViewer = snapshot.players.length >= 12 && selfPlayer === undefined;
   const canManage = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+
+  const sendMessage = async (text: string) => {
+    if (!active) return;
+    const requestedGameId = snapshot.id;
+    const generation = requestGenerationRef.current;
+    const created = await scorekeeperApi.createGameMessage(
+      requestedGameId,
+      { text },
+      writeAbortRef.current.signal
+    );
+    if (
+      writeAbortRef.current.signal.aborted ||
+      deletedRef.current ||
+      requestGenerationRef.current !== generation ||
+      activeGameIdRef.current !== requestedGameId ||
+      snapshotRef.current?.status !== 'ACTIVE'
+    ) return;
+    appendMessage(created);
+  };
 
   const beginSettlement = async () => {
     if (!active || !canManage || ending) return;
@@ -425,6 +536,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (!deletedRef.current && requestGenerationRef.current === generation && activeGameIdRef.current === requestedGameId) setEnding(false);
     }
   };
+
+  const latestMessage = messages.at(-1);
+  const latestMessageHasVisibleSender = latestMessage === undefined ||
+    snapshot.players.some(({ userId }) => userId === latestMessage.userId) ||
+    snapshot.spectators.some(({ userId }) => userId === latestMessage.userId);
 
   return (
     <section className="game-page" aria-labelledby="game-title">
@@ -454,7 +570,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
           tabIndex={tab === 'table' ? 0 : -1}
           onKeyDown={onTabKeyDown}
           onClick={() => setTab('table')}
-        >对战区</button>
+        >竞技区</button>
         <button
           ref={purchaseTabRef}
           id="game-tab-purchases"
@@ -467,6 +583,16 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         >
           购买记录 <span>{snapshot.purchases.length}</span>
         </button>
+        <button
+          ref={messageTabRef}
+          id="game-tab-messages"
+          role="tab"
+          aria-controls="game-panel-messages"
+          aria-selected={tab === 'messages'}
+          tabIndex={tab === 'messages' ? 0 : -1}
+          onKeyDown={onTabKeyDown}
+          onClick={() => setTab('messages')}
+        >消息区</button>
       </div>
 
       {tab === 'table' ? (
@@ -477,10 +603,14 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             <div><dt className="visually-hidden">每手</dt><dd>每手 ¥{moneyFormatter.format(BigInt(snapshot.handPrice))}</dd></div>
             <div className="game-table-summary__timer"><dt className="visually-hidden">已开局</dt><dd>已开局 <GameTimer startedAt={snapshot.startedAt} stoppedAt={snapshot.stoppedAt} serverNow={snapshot.serverNow} /></dd></div>
           </dl>
-          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} />
-          <SpectatorBar spectators={snapshot.spectators} />
+          <SpectatorBar
+            spectators={snapshot.spectators}
+            latestMessage={latestMessage}
+            fallbackMessage={latestMessage !== undefined && !latestMessageHasVisibleSender ? latestMessage : undefined}
+          />
+          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} latestMessage={latestMessage} />
         </div>
-      ) : (
+      ) : tab === 'purchases' ? (
         <div id="game-panel-purchases" role="tabpanel" aria-labelledby="game-tab-purchases" tabIndex={0} className="timeline-panel">
           <PurchaseTimeline
             purchases={snapshot.purchases}
@@ -491,6 +621,10 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             onAdjust={(playerId, currentHands) => setAdjustment({ playerId, currentHands })}
           />
         </div>
+      ) : (
+        <div id="game-panel-messages" role="tabpanel" aria-labelledby="game-tab-messages" tabIndex={0} className="game-messages-panel">
+          <GameMessagesPanel messages={messages} />
+        </div>
       )}
 
       {active && (
@@ -498,8 +632,16 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
           <Button unsafe disabled={fullForViewer} onClick={() => setBuyOpen(true)}>
             {fullForViewer ? '本桌已满' : '购买筹码'}
           </Button>
+          <Button variant="secondary" unsafe onClick={() => setSpeechOpen(true)}>发言</Button>
         </div>
       )}
+
+      <GameSpeechSheet
+        open={speechOpen && active}
+        disabled={!active}
+        onClose={() => setSpeechOpen(false)}
+        onSubmit={sendMessage}
+      />
 
       <BuyInSheet
         gameId={snapshot.id}

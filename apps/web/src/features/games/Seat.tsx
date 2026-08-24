@@ -1,4 +1,4 @@
-import type { GameSnapshotDto } from '@poker/contracts';
+import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import type { CSSProperties } from 'react';
 import { formatSignedMoney, formatUnsignedMoney } from '../../components/money-format.js';
 
@@ -7,20 +7,24 @@ export function Seat({
   position,
   positionKey,
   self,
-  compact
+  compact,
+  speechDirection,
+  latestMessage
 }: {
   player: GameSnapshotDto['players'][number];
   position: { left: string; top: string };
   positionKey: string;
   self: boolean;
   compact: boolean;
+  speechDirection: 'above' | 'below' | 'left' | 'right';
+  latestMessage?: GameMessageDto;
 }) {
   const amount = -BigInt(player.buyInAmount);
   const formattedAmount = formatSignedMoney(amount.toString());
   const ariaAmount = formatUnsignedMoney(player.buyInAmount).slice(1);
   return (
     <article
-      className={`table-seat${self ? ' table-seat--self' : ''}${compact ? ' table-seat--compact' : ''}`}
+      className={`table-seat${self ? ' table-seat--self' : ''}${compact ? ' table-seat--compact' : ''} table-seat--speech-${speechDirection}`}
       style={position as CSSProperties}
       data-testid="table-seat"
       data-position={positionKey}
@@ -32,6 +36,7 @@ export function Seat({
       <strong title={player.nickname}>{player.nickname}</strong>
       <span>{player.effectiveHands}手</span>
       <b>{formattedAmount}</b>
+      {latestMessage && <span className="seat-speech">{latestMessage.text}</span>}
     </article>
   );
 }

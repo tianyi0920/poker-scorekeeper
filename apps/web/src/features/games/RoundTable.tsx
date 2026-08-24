@@ -1,4 +1,4 @@
-import type { GameSnapshotDto } from '@poker/contracts';
+import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import type { ReactNode } from 'react';
 import { Seat } from './Seat.js';
 
@@ -38,10 +38,12 @@ export function seatPosition(index: number, count: number, selfIndex: number) {
 export function RoundTable({
   players,
   selfUserId,
+  latestMessage,
   children
 }: {
   players: GameSnapshotDto['players'];
   selfUserId: string;
+  latestMessage?: GameMessageDto;
   children?: ReactNode;
 }) {
   const ordered = [...players].sort((left, right) => left.seatNo - right.seatNo);
@@ -51,14 +53,32 @@ export function RoundTable({
 
   return (
     <section
-      className={`round-table round-table--${density}${compact ? ' round-table--compact' : ''}`}
+      className={`round-table round-table--portrait round-table--${density}${compact ? ' round-table--compact' : ''}`}
       data-testid="round-table"
       aria-label={`牌桌，${ordered.length} 名玩家`}
     >
-      <div className="poker-felt" aria-hidden="true"><span className="felt-line" /></div>
-      <div className="table-center">{children}</div>
+      <div className="poker-felt" aria-hidden="true">
+        <span className="felt-betting-line" />
+        <span className="felt-center-line felt-center-line--vertical" />
+        <span className="felt-center-line felt-center-line--horizontal" />
+        <span className="community-card-slots">
+          {Array.from({ length: 5 }, (_, index) => <i key={index} />)}
+        </span>
+      </div>
+      <div className="table-center">
+        {ordered.length === 0 ? <strong className="table-waiting">等待玩家入座</strong> : children}
+      </div>
       {ordered.map((player, index) => {
         const position = seatPosition(index, ordered.length, selfIndex);
+        const left = Number.parseFloat(position.left);
+        const top = Number.parseFloat(position.top);
+        const speechDirection = left <= 15
+          ? 'right'
+          : left >= 85
+            ? 'left'
+            : top <= 20
+              ? 'below'
+              : 'above';
         return (
           <Seat
             key={player.id}
@@ -67,6 +87,8 @@ export function RoundTable({
             positionKey={position.key}
             self={player.userId === selfUserId}
             compact={compact}
+            speechDirection={speechDirection}
+            latestMessage={latestMessage?.userId === player.userId ? latestMessage : undefined}
           />
         );
       })}

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 process.env.TASK18_RUN_ID ??= `t18${Date.now().toString(36)}${randomUUID().replaceAll('-', '').slice(0, 4)}`;
 
 const mobileProjects = [
+  { browser: 'chromium', width: 320, height: 568 },
   { browser: 'chromium', width: 360, height: 800 },
   { browser: 'chromium', width: 430, height: 932 },
   { browser: 'webkit', width: 360, height: 800 },

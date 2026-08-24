@@ -4,6 +4,7 @@ import type { AuthUser } from '../common/auth/auth-user.js';
 import { GameStatus, Role } from '../generated/prisma/client.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
 import type { GameEventsService } from '../realtime/game-events.service.js';
+import type { GameMessagesService } from './game-messages.service.js';
 import { GameManagementService } from './game-management.service.js';
 
 const actor: AuthUser = {
@@ -86,11 +87,16 @@ function createService(options: {
       if (options.publishFailure !== undefined) throw options.publishFailure;
     })
   } as unknown as GameEventsService;
-  const service = Reflect.construct(GameManagementService, [prisma, audit, events]) as GameManagementService;
+  const gameMessages = { clear: vi.fn() } as unknown as GameMessagesService;
+  const service = Reflect.construct(
+    GameManagementService,
+    [prisma, audit, events, gameMessages]
+  ) as GameManagementService;
   return {
     service,
     prisma,
     events,
+    gameMessages,
     transaction,
     callbackFinished: callbackFinished.promise,
     releaseCommit: commitGate.resolve
@@ -111,6 +117,9 @@ describe('GameManagementService hard-delete publication', () => {
     });
 
     expect(fixture.events.publishDeletedGame).toHaveBeenCalledExactlyOnceWith('game-1');
+    expect(fixture.gameMessages.clear).toHaveBeenCalledExactlyOnceWith('game-1');
+    expect(vi.mocked(fixture.gameMessages.clear).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(fixture.events.publishDeletedGame).mock.invocationCallOrder[0]!);
   });
 
   it('waits for the outer transaction to resolve after its callback finishes before publishing', async () => {
@@ -121,12 +130,14 @@ describe('GameManagementService hard-delete publication', () => {
     await fixture.callbackFinished;
     try {
       expect(fixture.events.publishDeletedGame).not.toHaveBeenCalled();
+      expect(fixture.gameMessages.clear).not.toHaveBeenCalled();
     } finally {
       fixture.releaseCommit();
     }
 
     await expect(deletion).resolves.toEqual({ deletedGameId: 'game-1' });
     expect(fixture.events.publishDeletedGame).toHaveBeenCalledExactlyOnceWith('game-1');
+    expect(fixture.gameMessages.clear).toHaveBeenCalledExactlyOnceWith('game-1');
   });
 
   it('does not publish when COMMIT rejects after the transaction callback succeeds', async () => {
@@ -138,6 +149,7 @@ describe('GameManagementService hard-delete publication', () => {
     await fixture.callbackFinished;
     await deletion;
     expect(fixture.events.publishDeletedGame).not.toHaveBeenCalled();
+    expect(fixture.gameMessages.clear).not.toHaveBeenCalled();
   });
 
   it('never publishes when the transaction fails', async () => {
@@ -148,6 +160,7 @@ describe('GameManagementService hard-delete publication', () => {
     await expect(fixture.service.hardDelete('game-1', actor)).rejects.toBe(transactionFailure);
 
     expect(fixture.events.publishDeletedGame).not.toHaveBeenCalled();
+    expect(fixture.gameMessages.clear).not.toHaveBeenCalled();
   });
 
   it('logs one publication failure without retrying, rolling back, or changing the success response', async () => {
@@ -162,6 +175,7 @@ describe('GameManagementService hard-delete publication', () => {
 
     expect(fixture.prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(fixture.events.publishDeletedGame).toHaveBeenCalledExactlyOnceWith('game-1');
+    expect(fixture.gameMessages.clear).toHaveBeenCalledExactlyOnceWith('game-1');
     expect(logger).toHaveBeenCalledTimes(1);
     expect(logger).toHaveBeenCalledWith(
       'Failed to publish hard-deleted game game-1',

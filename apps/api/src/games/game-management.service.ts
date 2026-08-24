@@ -13,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockGameLifecycleCoordinator } from './game-lifecycle-coordinator.js';
 import { lockGameForUpdate } from './game-lock.js';
+import { GameMessagesService } from './game-messages.service.js';
 
 export const managementQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(50).default(50),
@@ -70,7 +71,8 @@ export class GameManagementService {
   constructor(
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(AuditService) private readonly audit: AuditService,
-    @Inject(GameEventsService) private readonly events: GameEventsService
+    @Inject(GameEventsService) private readonly events: GameEventsService,
+    @Inject(GameMessagesService) private readonly gameMessages: GameMessagesService
   ) {}
 
   async list(query: ManagementQuery): Promise<ManagedGamesResponseDto> {
@@ -161,6 +163,7 @@ export class GameManagementService {
       });
       return { deletedGameId: id };
     });
+    this.gameMessages.clear(id);
     try {
       await this.events.publishDeletedGame(id);
     } catch (error) {

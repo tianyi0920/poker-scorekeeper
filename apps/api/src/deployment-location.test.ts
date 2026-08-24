@@ -28,7 +28,11 @@ describe('production acceptance ownership headers', () => {
 
   it('returns an exact Location header for a newly created game', async () => {
     const created = { id: 'owned-game-id' };
-    const controller = new GamesController({ create: vi.fn(async () => created) } as never, {} as never);
+    const controller = new GamesController(
+      { create: vi.fn(async () => created) } as never,
+      {} as never,
+      {} as never
+    );
     const setHeader = vi.fn();
 
     await expect(controller.create(actor, {
