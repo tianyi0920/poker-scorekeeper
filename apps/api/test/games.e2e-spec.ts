@@ -324,6 +324,26 @@ describe.sequential('game lifecycle and snapshots', () => {
       }));
   });
 
+  it.each(['begin-settlement', 'void'] as const)(
+    'clears current-game messages after committed %s',
+    async (action) => {
+      // Break caught: an ended table exposes its old in-memory conversation if the same id becomes active again.
+      const active = await seedGame(`${prefix}-clear-message-${action}`, GameStatus.ACTIVE);
+      await write(userAuth, 'post', `/api/games/${active.id}/messages`, { text: '结束前消息' })
+        .expect(201);
+
+      await write(adminAuth, 'post', `/api/games/${active.id}/${action}`).expect(200);
+      await prisma.game.update({
+        where: { id: active.id },
+        data: { status: GameStatus.ACTIVE }
+      });
+
+      await get(userAuth, `/api/games/${active.id}/messages`)
+        .expect(200)
+        .expect(({ body }) => expect(body.messages).toEqual([]));
+    }
+  );
+
   it.each([
     ['blank text', { text: '   ' }],
     ['oversized text', { text: 'a'.repeat(121) }],

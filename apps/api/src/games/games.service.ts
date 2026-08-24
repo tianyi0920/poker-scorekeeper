@@ -23,6 +23,7 @@ import {
 } from './game-policy.js';
 import { lockGameLifecycleCoordinator } from './game-lifecycle-coordinator.js';
 import { lockGameForUpdate } from './game-lock.js';
+import { GameMessagesService } from './game-messages.service.js';
 import { mapGameSnapshot, type SnapshotGameRecord } from './game-snapshot.mapper.js';
 
 const OPEN_STATUSES = [GameStatus.ACTIVE, GameStatus.SETTLING] as const;
@@ -54,7 +55,8 @@ export class GamesService {
     @Inject(PrismaService) private readonly prisma: PrismaService,
     @Inject(AuditService) private readonly audit: AuditService,
     @Inject(PresenceService) private readonly presence: PresenceService,
-    @Inject(GameEventsService) private readonly events: GameEventsService
+    @Inject(GameEventsService) private readonly events: GameEventsService,
+    @Inject(GameMessagesService) private readonly gameMessages: GameMessagesService
   ) {}
 
   async create(actor: AuthUser, input: CreateGameRequest): Promise<GameSnapshotDto> {
@@ -175,6 +177,7 @@ export class GamesService {
       );
       return this.snapshotIn(transaction, id, now);
     });
+    this.gameMessages.clear(id);
     await this.publishSafely(id);
     return snapshot;
   }
@@ -227,6 +230,7 @@ export class GamesService {
       await this.recordTransition(transaction, currentActor.id, 'GAME_VOIDED', before, after);
       return this.snapshotIn(transaction, id, now);
     });
+    this.gameMessages.clear(id);
     await this.publishSafely(id);
     return snapshot;
   }
