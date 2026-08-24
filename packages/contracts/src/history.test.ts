@@ -10,7 +10,7 @@ const player = {
 const detail = {
   totals: { buyIn: '100', cashOut: '100', roomFee: '0', otherFee: '0', rake: '0', final: '0' },
   players: [player],
-  game: { id: 'game-1', name: '牌局', startedAt: '2026-08-18T10:00:00.000+08:00', stoppedAt: '2026-08-18T12:00:00.000+08:00', durationSeconds: 7200 },
+  game: { id: 'game-1', name: '牌局', handPrice: '300', startedAt: '2026-08-18T10:00:00.000+08:00', stoppedAt: '2026-08-18T12:00:00.000+08:00', durationSeconds: 7200 },
   completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', otherFeeNote: '', immutable: true as const
 };
 const aggregatePlayer = {
@@ -18,6 +18,11 @@ const aggregatePlayer = {
   rawProfit: '0', roomFeeShare: '0', otherFeeShare: '0', afterFeeProfit: '0', rakeAmount: '0', finalAmount: '0',
   games: [{ gameId: 'game-1', gameName: '牌局', completedAt: '2026-08-18T12:00:00.000+08:00', finalAmount: '0' }]
 };
+
+it('carries the historical hand price needed to derive each player purchase count', () => {
+  // Break caught: the history response cannot explain a player's buy-in as a number of hands.
+  expect(settlementDetailSchema.parse(detail).game.handPrice).toBe('300');
+});
 
 it('rejects non-MoneyJson history money and malformed/oversized cursors while allowing base64url cursors', () => {
   expect(historyResponseSchema.safeParse({ items: [{ ...item, myFinalAmount: 'not-money' }], nextCursor: null }).success).toBe(false);

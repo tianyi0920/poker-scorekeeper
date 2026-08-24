@@ -9,6 +9,7 @@ export const settlementDetailSchema = settlementBreakdownSchema.extend({
   game: z.object({
     id: canonicalPublicIdSchema,
     name: z.string().min(1).max(128),
+    handPrice: moneyJsonSchema.optional(),
     startedAt: offsetDateTimeSchema,
     stoppedAt: offsetDateTimeSchema,
     durationSeconds: z.number().int().nonnegative()

@@ -25,7 +25,7 @@ function decodeCursor(value: string | undefined): Cursor | undefined {
 function encodeCursor(value: Cursor): string { return Buffer.from(JSON.stringify(value)).toString('base64url'); }
 
 const detailInclude = {
-  settlement: { include: { results: { include: { gamePlayer: true }, orderBy: { gamePlayer: { seatNo: 'asc' } } } } }
+  settlement: { include: { results: { include: { gamePlayer: { include: { user: { select: { avatarKind: true, avatarValue: true } } } } }, orderBy: { gamePlayer: { seatNo: 'asc' } } } } }
 } satisfies Prisma.GameInclude;
 
 function detail(game: Prisma.GameGetPayload<{ include: typeof detailInclude }>): SettlementDetailDto {
@@ -36,10 +36,10 @@ function detail(game: Prisma.GameGetPayload<{ include: typeof detailInclude }>):
     totals: { buyIn: formatMoney(settlement.buyInTotal), cashOut: formatMoney(settlement.cashOutTotal), roomFee: formatMoney(settlement.roomFee), otherFee: formatMoney(settlement.otherFee), rake: formatMoney(settlement.rakeTotal), final: formatMoney(settlement.finalTotal) },
     players: settlement.results.map((result) => ({
       playerId: result.gamePlayerId, nickname: result.gamePlayer.nicknameSnapshot,
-      avatarKind: result.gamePlayer.avatarKindSnapshot, avatarValue: result.gamePlayer.avatarValueSnapshot, seatNo: result.gamePlayer.seatNo,
+      avatarKind: result.gamePlayer.user.avatarKind, avatarValue: result.gamePlayer.user.avatarValue, seatNo: result.gamePlayer.seatNo,
       buyIn: formatMoney(result.buyIn), cashOut: formatMoney(result.cashOut), rawProfit: formatMoney(result.rawProfit), roomFeeShare: formatMoney(result.roomFeeShare), otherFeeShare: formatMoney(result.otherFeeShare), afterFeeProfit: formatMoney(result.afterFeeProfit), rakeEligible: result.rakeEligible, rakeAmount: formatMoney(result.rakeAmount), finalAmount: formatMoney(result.finalAmount)
     })),
-    game: { id: game.id, name: game.name, startedAt: startedAt.toISOString(), stoppedAt: stoppedAt.toISOString(), durationSeconds: Math.max(0, Math.floor((stoppedAt.getTime() - startedAt.getTime()) / 1000)) },
+    game: { id: game.id, name: game.name, handPrice: formatMoney(game.handPrice), startedAt: startedAt.toISOString(), stoppedAt: stoppedAt.toISOString(), durationSeconds: Math.max(0, Math.floor((stoppedAt.getTime() - startedAt.getTime()) / 1000)) },
     completedAt: game.completedAt!.toISOString(), settledByNickname: settlement.settledByNicknameSnapshot, otherFeeNote: settlement.otherFeeNote, immutable: true
   };
 }

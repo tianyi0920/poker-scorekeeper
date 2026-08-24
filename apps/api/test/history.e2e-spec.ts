@@ -221,6 +221,8 @@ describe.sequential('immutable completed-game history', () => {
       where: { id: admin.id },
       data: { nickname: `历史-${runId}-admin`, activeNormalizedNickname: normalize(`历史-${runId}-admin`) }
     });
+    member = await prisma.user.update({ where: { id: member.id }, data: { avatarValue: 'preset-01' } });
+    outsider = await prisma.user.update({ where: { id: outsider.id }, data: { avatarValue: 'preset-01' } });
   });
 
   afterAll(async () => {
@@ -237,12 +239,13 @@ describe.sequential('immutable completed-game history', () => {
     if (app !== undefined) await app.close();
   }, 120_000);
 
-  it('gives administrators global scope and participants immutable full-table detail', async () => {
-    // Break caught: user scope leaks another table, drops opponents, or reads mutable profiles after settlement.
+  it('gives administrators global scope and participants full-table detail with current player avatars', async () => {
+    // Break caught: history leaks another table, drops opponents, loses hand price, or keeps a stale avatar after a profile update.
     const completedAt = new Date('2026-08-18T00:00:00.000Z');
     const visible = await seedCompleted(1, true, completedAt);
     const hidden = await seedCompleted(2, false, new Date(completedAt.getTime() - 1_000));
     const settledBySnapshot = admin.nickname;
+    member = await prisma.user.update({ where: { id: member.id }, data: { avatarValue: 'preset-24' } });
     await prisma.user.update({
       where: { id: admin.id },
       data: { nickname: `已修改-${runId}`, activeNormalizedNickname: normalize(`已修改-${runId}`) }
@@ -272,6 +275,7 @@ describe.sequential('immutable completed-game history', () => {
       },
       game: {
         name: `${prefix}-detail-1`,
+        handPrice: '300',
         startedAt: new Date(completedAt.getTime() - 3_000_000).toISOString(),
         stoppedAt: new Date(completedAt.getTime() - 1_000_000).toISOString(),
         durationSeconds: 2000
@@ -280,7 +284,7 @@ describe.sequential('immutable completed-game history', () => {
     expect(detail.body.players).toHaveLength(2);
     expect(detail.body.players[0]).toMatchObject({
       nickname: `${member.nickname}-snapshot-1`,
-      avatarValue: 'preset-01',
+      avatarValue: 'preset-24',
       buyIn: '300', cashOut: '600', rawProfit: '300', roomFeeShare: '20',
       otherFeeShare: '10', afterFeeProfit: '270', rakeAmount: '0', finalAmount: '270'
     });

@@ -9,7 +9,7 @@ import { readCachedHistory, readCachedSettlementDetail, writeCachedHistory, writ
 import { SettlementDetailPage } from './SettlementDetailPage.js';
 
 const player = { playerId: 'player-1', nickname: '天一', avatarKind: 'PRESET', avatarValue: 'avatar', seatNo: 1, buyIn: '100', cashOut: '100', rawProfit: '0', roomFeeShare: '0', otherFeeShare: '0', afterFeeProfit: '0', rakeEligible: false, rakeAmount: '0', finalAmount: '0' };
-const detail = { game: { id: 'game-1', name: '网络结算', startedAt: '2026-08-18T10:00:00.000+08:00', stoppedAt: '2026-08-18T12:00:00.000+08:00', durationSeconds: 7200 }, completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', otherFeeNote: '', immutable: true, totals: { buyIn: '100', cashOut: '100', roomFee: '0', otherFee: '0', rake: '0', final: '0' }, players: [player] };
+const detail = { game: { id: 'game-1', name: '网络结算', handPrice: '300', startedAt: '2026-08-18T10:00:00.000+08:00', stoppedAt: '2026-08-18T12:00:00.000+08:00', durationSeconds: 7200 }, completedAt: '2026-08-18T12:00:00.000+08:00', settledByNickname: '天一', otherFeeNote: '', immutable: true, totals: { buyIn: '100', cashOut: '100', roomFee: '0', otherFee: '0', rake: '0', final: '0' }, players: [player] };
 const detailCacheKey = 'poker-scorekeeper:history-cache:v1:user-1:detail:game-1';
 const history = { items: [{ gameId: 'game-1', name: '网络结算', completedAt: detail.completedAt, settledByNickname: '天一', myFinalAmount: '0' }], nextCursor: null };
 
