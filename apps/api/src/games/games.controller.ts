@@ -12,9 +12,13 @@ import {
   UseGuards
 } from '@nestjs/common';
 import {
+  createGameMessageRequestSchema,
   createGameSchema,
+  type CreateGameMessageRequest,
   type CreateGameRequest,
   type CurrentGamesResponse,
+  type GameMessageDto,
+  type GameMessagesResponseDto,
   type GameSnapshotDto,
   type HardDeleteGameResponseDto,
   type ManagedGamesResponseDto
@@ -31,6 +35,7 @@ import {
   type ManagementQuery,
   managementQuerySchema
 } from './game-management.service.js';
+import { GameMessagesService } from './game-messages.service.js';
 import { GamesService } from './games.service.js';
 
 interface LocationResponse {
@@ -42,7 +47,8 @@ interface LocationResponse {
 export class GamesController {
   constructor(
     @Inject(GamesService) private readonly games: GamesService,
-    @Inject(GameManagementService) private readonly gameManagement: GameManagementService
+    @Inject(GameManagementService) private readonly gameManagement: GameManagementService,
+    @Inject(GameMessagesService) private readonly gameMessages: GameMessagesService
   ) {}
 
   @Post()
@@ -117,5 +123,22 @@ export class GamesController {
     @Param('id') id: string
   ): Promise<GameSnapshotDto> {
     return this.games.snapshot(id, actor);
+  }
+
+  @Get(':id/messages')
+  messages(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string
+  ): Promise<GameMessagesResponseDto> {
+    return this.gameMessages.list(id, actor);
+  }
+
+  @Post(':id/messages')
+  createMessage(
+    @CurrentUser() actor: AuthUser,
+    @Param('id') id: string,
+    @Body(new ZodValidationPipe(createGameMessageRequestSchema)) body: CreateGameMessageRequest
+  ): Promise<GameMessageDto> {
+    return this.gameMessages.create(id, actor, body);
   }
 }

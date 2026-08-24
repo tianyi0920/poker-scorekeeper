@@ -5,6 +5,8 @@ import type { PresenceService } from './presence.service.js';
 import { GameEventsService } from './game-events.service.js';
 import type { SocketSessionAdapter } from './socket-session.adapter.js';
 import type { Server } from 'socket.io';
+import type { GameMessageDto } from '@poker/contracts';
+import { GameStatus } from '../generated/prisma/client.js';
 
 interface FakeSocket {
   id: string;
@@ -199,6 +201,77 @@ describe('GameEventsService.publishDeletedGame', () => {
     await fixture.service.publishDeletedGame('game-1');
 
     expect(fixture.presence.clear).toHaveBeenCalledExactlyOnceWith('game-1');
+    expect(fixture.socketSessions.revalidate).not.toHaveBeenCalled();
+  });
+});
+
+describe('GameEventsService.publishGameMessage', () => {
+  it('publishes only to revalidated sockets in the target active-game room', async () => {
+    // Break caught: a revoked session or unrelated table receives a current-game message.
+    const fixture = createFixture();
+    const valid = fakeSocket('valid');
+    const revoked = fakeSocket('revoked');
+    const unrelated = fakeSocket('unrelated', 'game-2');
+    fixture.service.bindServer(fakeServer(
+      new Map([
+        ['game:game-1', new Set([valid.id, revoked.id])],
+        ['game:game-2', new Set([unrelated.id])]
+      ]),
+      new Map([[valid.id, valid], [revoked.id, revoked], [unrelated.id, unrelated]])
+    ));
+    vi.mocked(fixture.prisma.game.findUnique).mockResolvedValue({
+      id: 'game-1',
+      status: GameStatus.ACTIVE,
+      players: [],
+      buyinEvents: []
+    } as never);
+    vi.mocked(fixture.socketSessions.revalidate).mockImplementation(async (socket) =>
+      socket.id === revoked.id ? null : authenticatedSession('valid-user')
+    );
+    const message: GameMessageDto = {
+      id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+      gameId: 'game-1',
+      userId: 'valid-user',
+      nickname: '西西',
+      avatarUrl: '/avatars/preset-13.webp',
+      text: '马上到',
+      createdAt: '2026-08-24T09:00:00.000Z'
+    };
+
+    await fixture.service.publishGameMessage('game-1', message);
+
+    expect(valid.emit).toHaveBeenCalledExactlyOnceWith('game.message.created', message);
+    expect(revoked.emit).not.toHaveBeenCalled();
+    expect(revoked.disconnect).toHaveBeenCalledExactlyOnceWith(true);
+    expect(unrelated.emit).not.toHaveBeenCalled();
+  });
+
+  it('does not publish messages after the game leaves the active state', async () => {
+    // Break caught: a delayed sender can keep chatting while settlement is already underway.
+    const fixture = createFixture();
+    const socket = fakeSocket('socket-1');
+    fixture.service.bindServer(fakeServer(
+      new Map([['game:game-1', new Set([socket.id])]]),
+      new Map([[socket.id, socket]])
+    ));
+    vi.mocked(fixture.prisma.game.findUnique).mockResolvedValue({
+      id: 'game-1',
+      status: GameStatus.SETTLING,
+      players: [],
+      buyinEvents: []
+    } as never);
+
+    await fixture.service.publishGameMessage('game-1', {
+      id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+      gameId: 'game-1',
+      userId: 'user-1',
+      nickname: '西西',
+      avatarUrl: '/avatars/preset-13.webp',
+      text: '马上到',
+      createdAt: '2026-08-24T09:00:00.000Z'
+    });
+
+    expect(socket.emit).not.toHaveBeenCalled();
     expect(fixture.socketSessions.revalidate).not.toHaveBeenCalled();
   });
 });
