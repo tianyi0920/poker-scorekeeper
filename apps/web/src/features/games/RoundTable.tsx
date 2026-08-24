@@ -1,4 +1,4 @@
-import type { GameSnapshotDto } from '@poker/contracts';
+import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import type { ReactNode } from 'react';
 import { Seat } from './Seat.js';
 
@@ -26,7 +26,7 @@ export function seatPosition(index: number, count: number, selfIndex: number) {
     };
   }
   const angle = Math.PI / 2 + (rotated * Math.PI * 2) / count;
-  const left = 50 + Math.cos(angle) * 40;
+  const left = 50 + Math.cos(angle) * 42;
   const top = 50 + Math.sin(angle) * 30;
   return {
     left: `${left}%`,
@@ -38,10 +38,12 @@ export function seatPosition(index: number, count: number, selfIndex: number) {
 export function RoundTable({
   players,
   selfUserId,
+  latestMessage,
   children
 }: {
   players: GameSnapshotDto['players'];
   selfUserId: string;
+  latestMessage?: GameMessageDto;
   children?: ReactNode;
 }) {
   const ordered = [...players].sort((left, right) => left.seatNo - right.seatNo);
@@ -51,11 +53,18 @@ export function RoundTable({
 
   return (
     <section
-      className={`round-table round-table--${density}${compact ? ' round-table--compact' : ''}`}
+      className={`round-table round-table--portrait round-table--${density}${compact ? ' round-table--compact' : ''}`}
       data-testid="round-table"
       aria-label={`牌桌，${ordered.length} 名玩家`}
     >
-      <div className="poker-felt" aria-hidden="true"><span className="felt-line" /></div>
+      <div className="poker-felt" aria-hidden="true">
+        <span className="felt-betting-line" />
+        <span className="felt-center-line felt-center-line--vertical" />
+        <span className="felt-center-line felt-center-line--horizontal" />
+        <span className="community-card-slots">
+          {Array.from({ length: 5 }, (_, index) => <i key={index} />)}
+        </span>
+      </div>
       <div className="table-center">{children}</div>
       {ordered.map((player, index) => {
         const position = seatPosition(index, ordered.length, selfIndex);
@@ -67,6 +76,7 @@ export function RoundTable({
             positionKey={position.key}
             self={player.userId === selfUserId}
             compact={compact}
+            latestMessage={latestMessage?.userId === player.userId ? latestMessage : undefined}
           />
         );
       })}

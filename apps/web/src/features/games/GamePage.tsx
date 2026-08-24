@@ -505,6 +505,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     }
   };
 
+  const latestMessage = messages.at(-1);
+
   return (
     <section className="game-page" aria-labelledby="game-title">
       <header className="game-heading">
@@ -566,8 +568,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             <div><dt className="visually-hidden">每手</dt><dd>每手 ¥{moneyFormatter.format(BigInt(snapshot.handPrice))}</dd></div>
             <div className="game-table-summary__timer"><dt className="visually-hidden">已开局</dt><dd>已开局 <GameTimer startedAt={snapshot.startedAt} stoppedAt={snapshot.stoppedAt} serverNow={snapshot.serverNow} /></dd></div>
           </dl>
-          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} />
-          <SpectatorBar spectators={snapshot.spectators} />
+          <SpectatorBar spectators={snapshot.spectators} latestMessage={latestMessage} />
+          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} latestMessage={latestMessage} />
         </div>
       ) : tab === 'purchases' ? (
         <div id="game-panel-purchases" role="tabpanel" aria-labelledby="game-tab-purchases" tabIndex={0} className="timeline-panel">

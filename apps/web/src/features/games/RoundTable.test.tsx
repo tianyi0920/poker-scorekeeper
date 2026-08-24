@@ -1,5 +1,5 @@
-import type { GameSnapshotDto } from '@poker/contracts';
-import { render, screen } from '@testing-library/react';
+import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
+import { render, screen, within } from '@testing-library/react';
 import { expect, it } from 'vitest';
 import { getTableDensity, RoundTable, seatPosition } from './RoundTable.js';
 
@@ -14,6 +14,36 @@ function makePlayers(count: number): GameSnapshotDto['players'] {
     buyInAmount: String((index + 1) * 300)
   }));
 }
+
+const latestMessage: GameMessageDto = {
+  id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e01',
+  gameId: 'game-1',
+  userId: 'user-1',
+  nickname: '牌友1',
+  avatarUrl: '/avatars/preset-01.webp',
+  text: '我在路上',
+  createdAt: '2026-08-24T09:00:00.000Z'
+};
+
+it('renders a portrait poker arena with five community-card slots', () => {
+  // Break caught: the table falls back to the short horizontal ellipse or loses its Texas Hold'em identity.
+  render(<RoundTable players={makePlayers(2)} selfUserId="self" />);
+
+  expect(screen.getByTestId('round-table')).toHaveClass('round-table--portrait');
+  expect(document.querySelectorAll('.community-card-slots i')).toHaveLength(5);
+  expect(document.querySelector('.felt-betting-line')).toBeInTheDocument();
+});
+
+it('shows only the newest speech beside its matching player seat', () => {
+  // Break caught: one message appears on every avatar or beside the wrong player.
+  render(<RoundTable players={makePlayers(2)} selfUserId="self" latestMessage={latestMessage} />);
+
+  const senderSeat = screen.getByText('牌友1').closest('[data-testid="table-seat"]');
+  const selfSeat = screen.getByTestId('seat-self').closest('[data-testid="table-seat"]');
+  expect(senderSeat).not.toBeNull();
+  expect(within(senderSeat as HTMLElement).getByText('我在路上')).toHaveClass('seat-speech');
+  expect(within(selfSeat as HTMLElement).queryByText('我在路上')).not.toBeInTheDocument();
+});
 
 it.each([1, 8, 12])('renders %i unique seats with self anchored at the bottom', (count) => {
   // Break caught: seat rotation overlaps people or moves the current player away from the bottom.

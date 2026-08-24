@@ -206,6 +206,9 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   expect(screen.getByText('总买入')).toBeInTheDocument();
   expect(screen.getByText('01:00:00')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '购买筹码' })).toBeInTheDocument();
+  const spectatorBar = screen.getByRole('region', { name: '观战区' });
+  expect(spectatorBar.compareDocumentPosition(screen.getByTestId('round-table')) & Node.DOCUMENT_POSITION_FOLLOWING)
+    .toBeTruthy();
 
   const user = userEvent.setup();
   await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
