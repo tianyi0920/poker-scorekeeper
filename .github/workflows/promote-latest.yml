@@ -53,17 +53,12 @@ jobs:
           docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json
           node scripts/release/docker-publish-contract.mjs manifest raw-index.json
           docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$DIGEST_IMAGE" > amd64-image.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$DIGEST_IMAGE" > arm64-image.json
           jq -n \
             --slurpfile amd64 amd64-image.json \
-            --slurpfile arm64 arm64-image.json \
             '[
-              {os: $amd64[0].os, architecture: $amd64[0].architecture, labels: $amd64[0].config.Labels},
-              {os: $arm64[0].os, architecture: $arm64[0].architecture, labels: $arm64[0].config.Labels}
+              {os: $amd64[0].os, architecture: $amd64[0].architecture, labels: $amd64[0].config.Labels}
             ]' > platform-identities.json
           AMD64_REVISION="$(jq -er '.config.Labels["org.opencontainers.image.revision"] | select(test("^[0-9a-f]{40}$"))' amd64-image.json)"
-          ARM64_REVISION="$(jq -er '.config.Labels["org.opencontainers.image.revision"] | select(test("^[0-9a-f]{40}$"))' arm64-image.json)"
-          [[ "$AMD64_REVISION" == "$ARM64_REVISION" ]]
           EXPECTED_COMMIT="$AMD64_REVISION"
           node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$EXPECTED_COMMIT"
           SHA_IMAGE="${IMAGE_REPOSITORY}:sha-${EXPECTED_COMMIT}"

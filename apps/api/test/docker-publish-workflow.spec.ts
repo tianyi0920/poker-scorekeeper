@@ -399,8 +399,8 @@ describe("GitHub Actions Docker publication workflows", () => {
     ]);
   });
 
-  it("smokes one unique local amd64 candidate before pushing exactly two identified platforms", async () => {
-    // Break caught: publication skips local runtime proof, smokes a pullable tag, or pushes an incomplete platform set.
+  it("smokes one unique local amd64 candidate before publishing only amd64 without emulation", async () => {
+    // Break caught: publication skips local runtime proof or silently restores ARM emulation/multi-platform output.
     const { workflow } = await readWorkflow("publish-docker.yml");
     const candidateLines = executableLines(
       requiredRunStep(workflow, "candidate", "Build and smoke the unique amd64 candidate"),
@@ -421,11 +421,14 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(buildPush.uses).toMatch(/^docker\/build-push-action@[0-9a-f]{40}$/);
     expect(buildPush?.with).toEqual(
       expect.objectContaining({
-        platforms: "linux/amd64,linux/arm64",
+        platforms: "linux/amd64",
         push: true,
         "build-args": "DEPLOYMENT_ID=${{ github.sha }}",
       }),
     );
+    expect(actionReferences(workflow).some((uses) => uses.startsWith("docker/setup-qemu-action@")))
+      .toBe(false);
+    expect(JSON.stringify(pushJob)).not.toContain("linux/arm64");
     expect(
       String(
         buildPush?.with && (buildPush.with as Record<string, unknown>).tags,
@@ -444,14 +447,14 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(JSON.stringify(workflow)).not.toMatch(/secrets\.(?!DOCKERHUB_(?:USERNAME|TOKEN))/);
   });
 
-  it("binds all remote publication checks to one digest and re-reads both tags", async () => {
-    // Break caught: tag mutation can switch the raw index or one platform config between separate verification commands.
+  it("binds the remote amd64 publication check to one digest and re-reads both tags", async () => {
+    // Break caught: tag mutation can switch the raw index or amd64 config between separate verification commands.
     const { workflow } = await readWorkflow("publish-docker.yml");
     expect(workflow.jobs?.remote_verify?.needs).toBe("publish");
     const verifyStep = requiredRunStep(
       workflow,
       "remote_verify",
-      "Verify the remote index and both platform identities",
+      "Verify the remote amd64 image identity",
     );
     expect(verifyStep.env).toEqual({
       FIXED_IMAGE: "docker.io/tianyi920/poker-scorekeeper:${{ needs.publish.outputs.version }}",
@@ -480,8 +483,8 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(identity).toBeGreaterThan(manifest);
     expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
       'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
-      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/arm64")}}\' "$DIGEST_IMAGE" > arm64-image.json',
     ]);
+    expect(lines.some((line) => line.includes("$arm64"))).toBe(false);
     expect(lines.filter((line) => line.includes("imagetools inspect --raw"))).toEqual([
       'docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json',
     ]);
@@ -575,8 +578,8 @@ describe("GitHub Actions Docker publication workflows", () => {
     expect(digestEquality).toBeGreaterThan(shaDigest);
     expect(lines.filter((line) => line.includes("(index .Image"))).toEqual([
       'docker buildx imagetools inspect --format \'{{json (index .Image "linux/amd64")}}\' "$DIGEST_IMAGE" > amd64-image.json',
-      'docker buildx imagetools inspect --format \'{{json (index .Image "linux/arm64")}}\' "$DIGEST_IMAGE" > arm64-image.json',
     ]);
+    expect(lines.some((line) => line.includes("ARM64_REVISION") || line.includes("$arm64"))).toBe(false);
     const finalFixed = lineIndex(lines, /"\$FIXED_IMAGE" > fixed-manifest-final\.json$/);
     const finalSha = lineIndex(lines, /"\$SHA_IMAGE" > sha-manifest-final\.json$/);
     const finalFixedEquality = lineIndex(lines, '[[ "$FINAL_FIXED_DIGEST" == "$FIXED_DIGEST" ]]');

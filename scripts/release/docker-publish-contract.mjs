@@ -155,12 +155,12 @@ export function assertImageIdentity(identities, expectedCommit) {
       typeof expectedCommit !== 'string'
       || !FULL_COMMIT.test(expectedCommit)
       || !Array.isArray(identities)
-      || identities.length !== 2
+      || identities.length !== 1
     ) {
       fail('IMAGE_IDENTITY_MISMATCH');
     }
 
-    const expectedPlatforms = new Set(['linux/amd64', 'linux/arm64']);
+    const expectedPlatforms = new Set(['linux/amd64']);
     const actualPlatforms = new Set();
     for (const identity of identities) {
       if (!identity || typeof identity !== 'object') fail('IMAGE_IDENTITY_MISMATCH');
@@ -211,7 +211,7 @@ async function main(args) {
   }
   if (command === 'manifest' && commandArgs.length === 1) {
     const rawManifest = await readFile(commandArgs[0], 'utf8').catch(() => fail('INVALID_CLI_ARGUMENTS'));
-    assertManifestPlatforms(rawManifest, ['linux/amd64', 'linux/arm64']);
+    assertManifestPlatforms(rawManifest, ['linux/amd64']);
     return;
   }
   if (command === 'identity' && commandArgs.length === 2) {
