@@ -102,6 +102,6 @@ export async function expectAllPlayerAggregate(page: Page, gameIds: string[]): P
     await expect(page.getByRole('heading', { name: account.nickname })).toBeVisible();
     const card = page.locator('.aggregate-card').filter({ has: page.getByRole('heading', { name: account.nickname }) });
     await expect(card).toHaveCount(1);
-    await expect(card.locator('.aggregate-heading strong')).toHaveText(amount);
+    await expect(card.locator('.aggregate-actual strong')).toHaveText(amount);
   }
 }

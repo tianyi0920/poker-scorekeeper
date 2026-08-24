@@ -2,10 +2,10 @@ import type { AllPlayerAggregationDto, AllPlayerAggregationPlayerDto } from '@po
 import { useEffect, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { scorekeeperApi } from '../../api/resources.js';
-import { Card } from '../../components/Card.js';
-import { formatSignedMoney } from '../../components/money-format.js';
-import { Toast } from '../../components/Toast.js';
 import { Button } from '../../components/Button.js';
+import { Card } from '../../components/Card.js';
+import { formatSignedMoney, formatUnsignedMoney } from '../../components/money-format.js';
+import { Toast } from '../../components/Toast.js';
 
 type AggregateRequest = Parameters<typeof scorekeeperApi.aggregateHistory>[0];
 type QuickKind = 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS';
@@ -20,16 +20,160 @@ function requestFromSearch(search: URLSearchParams): AggregateRequest {
   return { filter: { kind: quick } };
 }
 
-function expenseMoney(value: string): string { return formatSignedMoney((-BigInt(value)).toString()); }
+const FALLBACK_AVATAR = '/avatars/preset-01.webp';
+
+function PlayerAvatar({ player }: { player: AllPlayerAggregationPlayerDto }) {
+  const [source, setSource] = useState(player.avatarUrl);
+
+  useEffect(() => setSource(player.avatarUrl), [player.avatarUrl]);
+
+  return (
+    <img
+      src={source}
+      alt={`${player.nickname}的当前头像`}
+      onError={() => setSource((current) => current === FALLBACK_AVATAR ? current : FALLBACK_AVATAR)}
+    />
+  );
+}
 
 function PlayerAggregateCard({ player }: { player: AllPlayerAggregationPlayerDto }) {
   const [expanded, setExpanded] = useState(false);
-  return <Card className="aggregate-card"><header className="aggregate-heading"><img src={player.avatarUrl} alt="" /><div><h3>{player.nickname}</h3><span>{player.gamesPlayed} 局 · 胜 {player.wins} · 负 {player.losses}</span></div><strong>{formatSignedMoney(player.finalAmount)}</strong></header><dl className="settlement-metrics"><div className="settlement-metric"><dt>累计牌局盈亏</dt><dd>{formatSignedMoney(player.rawProfit)}</dd></div><div className="settlement-metric expense-metric"><dt>累计房费</dt><dd>{expenseMoney(player.roomFeeShare)}</dd></div><div className="settlement-metric expense-metric"><dt>累计其他费用</dt><dd>{expenseMoney(player.otherFeeShare)}</dd></div><div className="settlement-metric"><dt>累计费用后盈亏（抽成前）</dt><dd>{formatSignedMoney(player.afterFeeProfit)}</dd></div><div className="settlement-metric rake-metric"><dt>累计抽成</dt><dd>{expenseMoney(player.rakeAmount)}</dd></div><div className="settlement-metric"><dt>累计最终金额</dt><dd>{formatSignedMoney(player.finalAmount)}</dd></div></dl><button type="button" className="expand-button" aria-expanded={expanded} aria-controls={`games-${player.userId}`} aria-label={`${expanded ? '收起' : '展开'}${player.nickname}的逐局明细`} onClick={() => setExpanded((value) => !value)}>{expanded ? '收起逐局明细' : '展开逐局明细'}</button>{expanded && <ul id={`games-${player.userId}`} className="game-drilldown">{player.games.map((game) => <li key={game.gameId}><span>{game.gameName}<small>{new Date(game.completedAt).toLocaleDateString('zh-CN')}</small></span><strong>{formatSignedMoney(game.finalAmount)}</strong></li>)}</ul>}</Card>;
+  const finalAmount = BigInt(player.finalAmount);
+  const afterFeeAmount = BigInt(player.afterFeeProfit);
+  const rakeAmount = BigInt(player.rakeAmount);
+  const winner = finalAmount > 0n;
+  const loser = finalAmount < 0n;
+  const bankPaysPlayer = afterFeeAmount > 0n;
+  const hasBankTransfer = afterFeeAmount !== 0n;
+  const showsExpenseTransfer = winner || rakeAmount !== 0n;
+  const hasFees = BigInt(player.roomFeeShare) !== 0n || BigInt(player.otherFeeShare) !== 0n;
+  const actualLabel = winner ? '实际盈利合计' : loser ? '实际亏损合计' : '实际金额合计';
+  const actualTone = winner ? 'positive' : loser ? 'negative' : 'neutral';
+
+  return (
+    <Card className={`aggregate-card aggregate-card--${actualTone}`}>
+      <header className="aggregate-player-header">
+        <div className="aggregate-player-identity">
+          <PlayerAvatar player={player} />
+          <div>
+            <h3>{player.nickname}</h3>
+            <span>{player.gamesPlayed} 局 · 胜 {player.wins} · 负 {player.losses}</span>
+          </div>
+        </div>
+        <div className={`aggregate-actual money--${actualTone}`}>
+          <span>{actualLabel}</span>
+          <strong>{formatSignedMoney(player.finalAmount)}</strong>
+        </div>
+      </header>
+
+      {hasBankTransfer || showsExpenseTransfer ? (
+        <>
+          <div className={`aggregate-transfer-grid${hasBankTransfer && showsExpenseTransfer ? '' : ' aggregate-transfer-grid--single'}`}>
+            {hasBankTransfer && (
+              <div className={`aggregate-transfer-action aggregate-transfer-action--${bankPaysPlayer ? 'bank' : 'loss'}`}>
+                <span>{bankPaysPlayer ? '银行付款合计' : '转给银行合计'}</span>
+                <strong>{formatUnsignedMoney(player.afterFeeProfit)}</strong>
+                <small>{bankPaysPlayer
+                  ? '费用后盈亏 · 抽成前应收'
+                  : showsExpenseTransfer
+                    ? '费用后实际亏损 · 经费单独计算'
+                    : '理论转给银行 = 实际亏损合计 · 无需另付经费'}</small>
+              </div>
+            )}
+            {showsExpenseTransfer && (
+              <div className="aggregate-transfer-action aggregate-transfer-action--expense">
+                <span>另付经费合计</span>
+                <strong>{formatUnsignedMoney(player.rakeAmount)}</strong>
+                <small>单独付给固定人员</small>
+              </div>
+            )}
+          </div>
+          {hasFees && (
+            <p className="aggregate-fee-line">
+              费用已计入：房费 {formatUnsignedMoney(player.roomFeeShare)} · 其他费用 {formatUnsignedMoney(player.otherFeeShare)}
+            </p>
+          )}
+        </>
+      ) : (
+        <div className="aggregate-transfer-action aggregate-transfer-action--neutral">
+          <span>本次无需转账</span>
+          <strong>¥0</strong>
+          <small>所选对局的实际收支为零</small>
+        </div>
+      )}
+
+      <button
+        type="button"
+        className="aggregate-detail-toggle"
+        aria-expanded={expanded}
+        aria-controls={`games-${player.userId}`}
+        aria-label={`${expanded ? '收起' : '展开'}${player.nickname}的逐局明细`}
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <span>{expanded ? '收起逐局明细' : `查看 ${player.games.length} 局明细`}</span>
+        <span className="aggregate-detail-chevron" aria-hidden="true">{expanded ? '⌃' : '⌄'}</span>
+      </button>
+      {expanded && (
+        <ul id={`games-${player.userId}`} className="aggregate-game-list">
+          {player.games.map((game) => (
+            <li key={game.gameId}>
+              <span>{game.gameName}<small>{new Date(game.completedAt).toLocaleDateString('zh-CN')}</small></span>
+              <strong>{formatSignedMoney(game.finalAmount)}</strong>
+            </li>
+          ))}
+        </ul>
+      )}
+    </Card>
+  );
 }
 
 export function AllPlayerSummaryPage() {
-  const [search] = useSearchParams(); const [data, setData] = useState<AllPlayerAggregationDto | null>(null); const [error, setError] = useState<string | null>(null); const [reload, setReload] = useState(0);
-  useEffect(() => { let active = true; const request = requestFromSearch(search); setError(null); void scorekeeperApi.aggregateHistory(request).then((next) => { if (active) setData(next); }).catch(() => { if (active) setError('全员汇总暂时无法加载；服务器已保护可见对局范围。'); }); return () => { active = false; }; }, [reload, search]);
-  if (data === null) return <section className="page-stack"><p className="muted">正在汇总全员战绩…</p>{error !== null && <><Toast tone="error" message={error} /><Button variant="ghost" onClick={() => setReload((value) => value + 1)}>重试加载</Button></>}</section>;
-  return <section className="page-stack" aria-labelledby="summary-title"><header className="page-title"><span className="section-kicker">战绩汇总</span><h2 id="summary-title">全员汇总</h2><p>{data.gameCount} 局 · {data.playerCount} 位玩家；顺序由服务器结算汇总返回。</p></header>{data.players.length === 0 ? <Card className="empty-card"><p>所选范围没有可汇总的结算记录。</p></Card> : <div className="card-list">{data.players.map((player) => <PlayerAggregateCard key={player.userId} player={player} />)}</div>}<Link className="secondary-link" to="/history/select">重新选择范围</Link></section>;
+  const [search] = useSearchParams();
+  const [data, setData] = useState<AllPlayerAggregationDto | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [reload, setReload] = useState(0);
+
+  useEffect(() => {
+    let active = true;
+    const request = requestFromSearch(search);
+    setError(null);
+    void scorekeeperApi.aggregateHistory(request)
+      .then((next) => { if (active) setData(next); })
+      .catch(() => { if (active) setError('全员汇总暂时无法加载；服务器已保护可见对局范围。'); });
+    return () => { active = false; };
+  }, [reload, search]);
+
+  if (data === null) {
+    return (
+      <section className="page-stack">
+        <p className="muted">正在汇总全员战绩…</p>
+        {error !== null && (
+          <>
+            <Toast tone="error" message={error} />
+            <Button variant="ghost" onClick={() => setReload((value) => value + 1)}>重试加载</Button>
+          </>
+        )}
+      </section>
+    );
+  }
+
+  return (
+    <section className="page-stack" aria-labelledby="summary-title">
+      <header className="page-title aggregate-page-heading">
+        <span className="section-kicker">战绩汇总</span>
+        <div>
+          <h2 id="summary-title">全员汇总</h2>
+          <Link to="/history/select">修改范围</Link>
+        </div>
+        <p>{data.gameCount} 场 · {data.playerCount} 位玩家</p>
+        <small>按实际盈亏从高到低排列</small>
+      </header>
+      {data.players.length === 0 ? (
+        <Card className="empty-card"><p>所选范围没有可汇总的结算记录。</p></Card>
+      ) : (
+        <div className="card-list">{data.players.map((player) => <PlayerAggregateCard key={player.userId} player={player} />)}</div>
+      )}
+      <Link className="secondary-link" to="/history">返回战绩</Link>
+    </section>
+  );
 }

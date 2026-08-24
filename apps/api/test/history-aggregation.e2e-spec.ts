@@ -67,7 +67,7 @@ describe.sequential('authorized all-player history aggregation', () => {
         activeNormalizedNickname: normalize(nickname),
         passwordHash,
         role,
-        avatarValue: `preset-${suffix}`
+        avatarValue: 'preset-01'
       }
     });
   }
@@ -225,8 +225,8 @@ describe.sequential('authorized all-player history aggregation', () => {
     if (app !== undefined) await app.close();
   }, 120_000);
 
-  it('returns every immutable snapshot player and exact component sums for ordinary participant selections', async () => {
-    // Break caught: aggregation omits opponents, reads mutable profiles, or derives a component sum with number arithmetic.
+  it('keeps settlement names immutable while returning each player current avatar and exact component sums', async () => {
+    // Break caught: aggregation exposes a stale raw avatar snapshot instead of the player's current usable avatar URL.
     const second = await seedCompleted('visible-second', new Date('2026-08-18T12:00:00.000Z'), [
       { user: participant, nickname: '天一', avatarUrl: 'snapshot-tianyi', rawProfit: 1420n, roomFeeShare: 220n, otherFeeShare: 100n, afterFeeProfit: 1100n, rakeAmount: 140n, finalAmount: 960n },
       { user: thirdPlayer, nickname: '小陈', avatarUrl: 'snapshot-xiaochen', rawProfit: -1420n, roomFeeShare: 0n, otherFeeShare: 0n, afterFeeProfit: -1420n, rakeAmount: 0n, finalAmount: -1420n },
@@ -239,7 +239,11 @@ describe.sequential('authorized all-player history aggregation', () => {
     ]);
     await prisma.user.update({
       where: { id: participant.id },
-      data: { nickname: '已修改用户', activeNormalizedNickname: normalize('已修改用户') }
+      data: {
+        nickname: '已修改用户',
+        activeNormalizedNickname: normalize('已修改用户'),
+        avatarValue: 'preset-24'
+      }
     });
 
     const response = await aggregateAs(participantAuth, { gameIds: [first, second] }).expect(200);
@@ -250,7 +254,7 @@ describe.sequential('authorized all-player history aggregation', () => {
       .toEqual(['天一', 'alpha', 'Beta', '小陈', '老王']);
     const playerA = response.body.players.find(({ userId }: { userId: string }) => userId === participant.id);
     expect(playerA).toMatchObject({
-      nickname: '天一', avatarUrl: 'snapshot-tianyi', gamesPlayed: 2, wins: 2, losses: 0,
+      nickname: '天一', avatarUrl: '/avatars/preset-24.webp', gamesPlayed: 2, wins: 2, losses: 0,
       rawProfit: '3420', roomFeeShare: '520', otherFeeShare: '140', afterFeeProfit: '2760', rakeAmount: '300', finalAmount: '2460'
     });
     expect(BigInt(playerA.afterFeeProfit)).toBe(
@@ -304,7 +308,7 @@ describe.sequential('authorized all-player history aggregation', () => {
     const admin = await aggregateAs(adminAuth, { filter: { kind: 'LAST_30_DAYS' } }).expect(200);
     expect(admin.body.gameIds).toContain(hidden);
     expect(admin.body.players).toEqual([expect.objectContaining({
-      userId: outsider.id, nickname: '永久局外人', avatarUrl: 'snapshot-deleted-user',
+      userId: outsider.id, nickname: '永久局外人', avatarUrl: '/avatars/preset-01.webp',
       gamesPlayed: 1, wins: 0, losses: 0, finalAmount: '1'
     })]);
     const superAdmin = await aggregateAs(superAdminAuth, { filter: { kind: 'RECENT_10' } }).expect(200);
@@ -313,7 +317,7 @@ describe.sequential('authorized all-player history aggregation', () => {
       .expect(({ body }) => expect(body.gameIds).not.toContain(hidden));
     await aggregateAs(adminAuth, { gameIds: [hidden] }).expect(200)
       .expect(({ body }) => expect(body.players).toEqual([expect.objectContaining({
-        userId: outsider.id, nickname: '永久局外人', avatarUrl: 'snapshot-deleted-user',
+        userId: outsider.id, nickname: '永久局外人', avatarUrl: '/avatars/preset-01.webp',
         gamesPlayed: 1, wins: 0, losses: 0, finalAmount: '1'
       })]));
   });

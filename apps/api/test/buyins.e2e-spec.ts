@@ -201,6 +201,7 @@ describe.sequential('buy-in HTTP ledger', () => {
     ['space-suffixed player id', (id: string) => `${id}%20`]
   ])('rejects %s before appending an adjustment', async (_label, mutateId) => {
     const game = await seedGame(`invalid-player-route-${_label}`);
+    const adjustmentKey = `${prefix}-invalid-player-adjust`;
     const bought = await post(playerAuth, `/api/games/${game.id}/buyins`, {
       hands: 2,
       idempotencyKey: `${prefix}-invalid-player-seed`
@@ -208,11 +209,15 @@ describe.sequential('buy-in HTTP ledger', () => {
     await post(
       playerAuth,
       `/api/games/${game.id}/players/${mutateId(bought.body.playerId)}/buyins/latest/adjust`,
-      { newHands: 1, idempotencyKey: `${prefix}-invalid-player-adjust` }
+      { newHands: 1, idempotencyKey: adjustmentKey }
     ).expect(400).expect(({ body }) => expect(body.code).toBe('VALIDATION_ERROR'));
     await expect(prisma.buyinEvent.count({ where: { gameId: game.id } })).resolves.toBe(1);
     await expect(prisma.auditLog.count({
-      where: { action: 'BUYIN_ADJUSTED', entityType: 'BUYIN_EVENT' }
+      where: {
+        action: 'BUYIN_ADJUSTED',
+        entityType: 'BUYIN_EVENT',
+        requestId: adjustmentKey
+      }
     })).resolves.toBe(0);
     await expect(prisma.game.findUniqueOrThrow({ where: { id: game.id } }))
       .resolves.toMatchObject({ version: 2 });

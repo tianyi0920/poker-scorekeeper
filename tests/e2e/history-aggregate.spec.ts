@@ -16,7 +16,7 @@ function formatSignedMoney(value: string): string {
   return `${amount > 0n ? '+' : '−'}¥${(amount < 0n ? -amount : amount).toLocaleString('zh-CN')}`;
 }
 
-test('completed history is immutable, participant-visible in full, outsider-hidden, and all-player aggregated', async ({ browser }) => {
+test('completed history is immutable, participant-visible in full, outsider-hidden, and all-player aggregated', async ({ browser }, testInfo) => {
   const admin = await apiLogin('admin');
   const playerA = await apiLogin('player-a');
   const playerB = await apiLogin('player-b');
@@ -83,6 +83,17 @@ test('completed history is immutable, participant-visible in full, outsider-hidd
     await browserSession.page.goto(`/history/summary?games=${gameId}`);
     await expect(browserSession.page.getByRole('heading', { name: '全员汇总' })).toBeVisible();
     await expect(browserSession.page.locator('.aggregate-card')).toHaveCount(3);
+    await expect(browserSession.page.getByRole('img', { name: /的当前头像$/ })).toHaveCount(3);
+    await expect(browserSession.page.getByText('累计牌局盈亏')).toHaveCount(0);
+    await expect(browserSession.page.getByRole('button', { name: /逐局明细$/ })).toHaveCount(3);
+    const horizontalOverflow = await browserSession.page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth
+    );
+    expect(horizontalOverflow).toBeLessThanOrEqual(0);
+    await testInfo.attach(`全员汇总-${testInfo.project.name}`, {
+      body: await browserSession.page.screenshot({ fullPage: true }),
+      contentType: 'image/png'
+    });
   } finally {
     await browserSession.context.close();
     await cleanupTaskGame(gameId);

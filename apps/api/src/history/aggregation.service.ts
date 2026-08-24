@@ -2,7 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import { formatMoney, type AllPlayerAggregationDto } from '@poker/contracts';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { badRequest, forbidden } from '../common/errors/app-error.js';
-import { GameStatus, Prisma } from '../generated/prisma/client.js';
+import { AvatarKind, GameStatus, Prisma } from '../generated/prisma/client.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import type { HistoryAggregationRequest, HistoryFilter } from './history-filter.schema.js';
 import { historyScope } from './history-policy.js';
@@ -13,7 +13,15 @@ const MAX_SIGNED_BIGINT = 9_223_372_036_854_775_807n;
 const aggregationInclude = {
   settlement: {
     include: {
-      results: { include: { gamePlayer: true } }
+      results: {
+        include: {
+          gamePlayer: {
+            include: {
+              user: { select: { avatarKind: true, avatarValue: true } }
+            }
+          }
+        }
+      }
     }
   }
 } satisfies Prisma.GameInclude;
@@ -44,6 +52,12 @@ function addMoney(left: bigint, right: bigint): bigint {
 
 function normalizedNickname(value: string): string {
   return value.trim().normalize('NFKC').toLocaleLowerCase('zh-CN');
+}
+
+function currentAvatarUrl(kind: AvatarKind, value: string): string {
+  return kind === AvatarKind.PRESET
+    ? `/avatars/${value}.webp`
+    : `/avatars/uploads/${value}`;
 }
 
 function initialPlayer(userId: string, nickname: string, avatarUrl: string): MutablePlayerAggregation {
@@ -82,7 +96,7 @@ export class AggregationService {
         const player = players.get(snapshot.userId) ?? initialPlayer(
           snapshot.userId,
           snapshot.nicknameSnapshot,
-          snapshot.avatarValueSnapshot
+          currentAvatarUrl(snapshot.user.avatarKind, snapshot.user.avatarValue)
         );
         players.set(snapshot.userId, player);
         player.gamesPlayed += 1;
