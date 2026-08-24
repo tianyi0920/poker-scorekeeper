@@ -105,11 +105,6 @@ jobs:
           node-version: "24"
           package-manager-cache: false
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@ce360397dd3f832beb865e1373c09c0e9f86d70a # v4.0.0
-        with:
-          platforms: arm64
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
@@ -144,7 +139,7 @@ jobs:
         uses: docker/build-push-action@f9f3042f7e2789586610d6e8b85c8f03e5195baf # v7.2.0
         with:
           context: .
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/amd64
           push: true
           build-args: DEPLOYMENT_ID=${{ github.sha }}
           tags: |
@@ -173,7 +168,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@d7f5e7f509e45cec5c76c4d5afdd7de93d0b3df5 # v4.1.0
 
-      - name: Verify the remote index and both platform identities
+      - name: Verify the remote amd64 image identity
         id: verify
         shell: bash
         env:
@@ -190,13 +185,10 @@ jobs:
           docker buildx imagetools inspect --raw "$DIGEST_IMAGE" > raw-index.json
           node scripts/release/docker-publish-contract.mjs manifest raw-index.json
           docker buildx imagetools inspect --format '{{json (index .Image "linux/amd64")}}' "$DIGEST_IMAGE" > amd64-image.json
-          docker buildx imagetools inspect --format '{{json (index .Image "linux/arm64")}}' "$DIGEST_IMAGE" > arm64-image.json
           jq -n \
             --slurpfile amd64 amd64-image.json \
-            --slurpfile arm64 arm64-image.json \
             '[
-              {os: $amd64[0].os, architecture: $amd64[0].architecture, labels: $amd64[0].config.Labels},
-              {os: $arm64[0].os, architecture: $arm64[0].architecture, labels: $arm64[0].config.Labels}
+              {os: $amd64[0].os, architecture: $amd64[0].architecture, labels: $amd64[0].config.Labels}
             ]' > platform-identities.json
           node scripts/release/docker-publish-contract.mjs identity platform-identities.json "$GITHUB_SHA"
           docker buildx imagetools inspect --format '{{json .Manifest}}' "$FIXED_IMAGE" > fixed-manifest-final.json

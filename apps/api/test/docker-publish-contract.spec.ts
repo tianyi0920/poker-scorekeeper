@@ -126,22 +126,20 @@ describe('Docker publication contract', () => {
     )).rejects.toThrow('REMOTE_TAG_STATUS_UNKNOWN');
   });
 
-  it('accepts exactly one linux amd64 and one linux arm64 executable manifest', () => {
-    // Break caught: a valid two-platform OCI index is rejected.
+  it('accepts exactly one linux amd64 executable manifest', () => {
+    // Break caught: a valid amd64-only OCI index is rejected.
     expect(() => contract.assertManifestPlatforms({
       manifests: [
-        { platform: { os: 'linux', architecture: 'amd64' } },
-        { platform: { os: 'linux', architecture: 'arm64' } }
+        { platform: { os: 'linux', architecture: 'amd64' } }
       ]
-    }, ['linux/amd64', 'linux/arm64'])).not.toThrow();
+    }, ['linux/amd64'])).not.toThrow();
   });
 
-  it('accepts only a fully identified Buildx attestation beside the two executable platforms', () => {
-    // Break caught: a legitimate Buildx attestation prevents validating the two executable platforms.
+  it('accepts only a fully identified Buildx attestation beside amd64', () => {
+    // Break caught: a legitimate Buildx attestation prevents validating the amd64 image.
     expect(() => contract.assertManifestPlatforms({
       manifests: [
         { platform: { os: 'linux', architecture: 'amd64' } },
-        { platform: { os: 'linux', architecture: 'arm64' } },
         {
           platform: { os: 'unknown', architecture: 'unknown' },
           annotations: {
@@ -150,24 +148,22 @@ describe('Docker publication contract', () => {
           }
         }
       ]
-    }, ['linux/amd64', 'linux/arm64'])).not.toThrow();
+    }, ['linux/amd64'])).not.toThrow();
   });
 
   it.each([
-    [{ manifests: [{ platform: { os: 'linux', architecture: 'amd64' } }] }],
+    [{ manifests: [] }],
     { manifests: [
       { platform: { os: 'linux', architecture: 'amd64' } },
-      { platform: { os: 'linux', architecture: 'amd64' } },
-      { platform: { os: 'linux', architecture: 'arm64' } }
+      { platform: { os: 'linux', architecture: 'amd64' } }
     ] },
     { manifests: [
       { platform: { os: 'linux', architecture: 'amd64' } },
-      { platform: { os: 'linux', architecture: 'arm64' } },
-      { platform: { os: 'linux', architecture: 's390x' } }
+      { platform: { os: 'linux', architecture: 'arm64' } }
     ] }
   ])('rejects a missing, duplicate, or extra executable platform', (rawManifest) => {
-    // Break caught: a partial or expanded image index passes the immutable platform contract.
-    expect(() => contract.assertManifestPlatforms(rawManifest, ['linux/amd64', 'linux/arm64']))
+    // Break caught: an empty, duplicated, or ARM-expanded image index passes the amd64-only contract.
+    expect(() => contract.assertManifestPlatforms(rawManifest, ['linux/amd64']))
       .toThrow('MANIFEST_PLATFORMS_INVALID');
   });
 
@@ -192,35 +188,48 @@ describe('Docker publication contract', () => {
     expect(() => contract.assertManifestPlatforms({
       manifests: [
         { platform: { os: 'linux', architecture: 'amd64' } },
-        { platform: { os: 'linux', architecture: 'arm64' } },
         unknownDescriptor
       ]
-    }, ['linux/amd64', 'linux/arm64'])).toThrow('MANIFEST_PLATFORMS_INVALID');
+    }, ['linux/amd64'])).toThrow('MANIFEST_PLATFORMS_INVALID');
   });
 
-  it('requires both architecture image revisions to equal the full release commit', () => {
-    // Break caught: one platform image is built from a different source revision.
+  it('requires the amd64 image revision to equal the full release commit', () => {
+    // Break caught: the only published image is built from a different source revision.
     expect(() => contract.assertImageIdentity([
-      imageIdentity('amd64'),
-      imageIdentity('arm64')
+      imageIdentity('amd64')
     ], commit)).not.toThrow();
   });
 
   it.each([
-    [imageIdentity('amd64')],
+    [],
     [imageIdentity('amd64'), imageIdentity('amd64')],
-    [
-      imageIdentity('amd64'),
-      imageIdentity('arm64', 'fedcba9876543210fedcba9876543210fedcba98')
-    ],
-    [
-      imageIdentity('amd64'),
-      imageIdentity('arm64', commit.toUpperCase())
-    ],
-    [imageIdentity('amd64'), imageIdentity('arm64'), imageIdentity('s390x')]
+    [imageIdentity('arm64')],
+    [imageIdentity('amd64', 'fedcba9876543210fedcba9876543210fedcba98')],
+    [imageIdentity('amd64', commit.toUpperCase())],
+    [imageIdentity('amd64'), imageIdentity('s390x')]
   ])('rejects missing, duplicate, extra, or inconsistent platform image identities', (...labels: ImageIdentity[]) => {
-    // Break caught: an incomplete or mismatched per-platform image identity passes promotion.
+    // Break caught: a missing, duplicated, non-amd64, or mismatched image identity passes promotion.
     expect(() => contract.assertImageIdentity(labels, commit)).toThrow('IMAGE_IDENTITY_MISMATCH');
+  });
+
+  it('validates an amd64-only manifest through the release CLI', async () => {
+    // Break caught: the CLI silently keeps requiring arm64 after the release contract becomes amd64-only.
+    const root = await mkdtemp(join(tmpdir(), 'docker-publish-contract-'));
+    const manifestPath = join(root, 'manifest.json');
+    try {
+      await writeFile(manifestPath, JSON.stringify({
+        manifests: [{ platform: { os: 'linux', architecture: 'amd64' } }]
+      }));
+      const result = spawnSync(process.execPath, [contractPath, 'manifest', manifestPath], {
+        encoding: 'utf8'
+      });
+
+      expect(result.status).toBe(0);
+      expect(result.stdout).toBe('');
+      expect(result.stderr).toBe('');
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it('prints only a stable code and exits one for invalid CLI release input', () => {
@@ -236,7 +245,7 @@ describe('Docker publication contract', () => {
   });
 
   it('rejects a CLI manifest request that tries to weaken the required platform set', async () => {
-    // Break caught: a workflow caller can validate only one architecture through the CLI.
+    // Break caught: a workflow caller can override the fixed amd64-only contract through the CLI.
     const root = await mkdtemp(join(tmpdir(), 'docker-publish-contract-'));
     const manifestPath = join(root, 'manifest.json');
     try {
@@ -259,7 +268,7 @@ describe('Docker publication contract', () => {
     // Break caught: a proxy or accessor leaks arbitrary exception text from an exported validator.
     const hostile = new Proxy({}, { get() { throw new Error('hostile accessor'); } });
 
-    expect(() => contract.assertManifestPlatforms(hostile, ['linux/amd64', 'linux/arm64']))
+    expect(() => contract.assertManifestPlatforms(hostile, ['linux/amd64']))
       .toThrow('MANIFEST_PLATFORMS_INVALID');
     expect(() => contract.assertImageIdentity(hostile, commit)).toThrow('IMAGE_IDENTITY_MISMATCH');
   });
