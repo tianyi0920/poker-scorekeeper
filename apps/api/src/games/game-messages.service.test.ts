@@ -1,4 +1,3 @@
-import type { GameMessageDto } from '@poker/contracts';
 import type { AuthUser } from '../common/auth/auth-user.js';
 import { GameStatus, Role } from '../generated/prisma/client.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
@@ -28,7 +27,7 @@ function createFixture() {
     }
   } as unknown as PrismaService;
   const events = {
-    publishGameMessage: vi.fn(async (_gameId: string, _message: GameMessageDto) => undefined)
+    publishGameMessage: vi.fn(async () => undefined)
   } as unknown as GameEventsService;
   const service = new GameMessagesService(prisma, events);
   return { service, events };
