@@ -206,6 +206,11 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   expect(screen.getByText('总买入')).toBeInTheDocument();
   expect(screen.getByText('01:00:00')).toBeInTheDocument();
   expect(screen.getByRole('button', { name: '购买筹码' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: '返回首页' })).toHaveAttribute('href', '/');
+  const latestPurchase = screen.getByRole('status', { name: '最新购买记录' });
+  expect(latestPurchase).toHaveTextContent('阿明');
+  expect(latestPurchase).toHaveTextContent('购买 1 手');
+  expect(latestPurchase).toHaveTextContent('¥300');
   const spectatorBar = screen.getByRole('region', { name: '观战区' });
   expect(spectatorBar.compareDocumentPosition(screen.getByTestId('round-table')) & Node.DOCUMENT_POSITION_FOLLOWING)
     .toBeTruthy();
@@ -225,7 +230,7 @@ it('shows three simple tabs and sends one current-game message from the speech s
 
   expect(await screen.findByRole('tab', { name: '竞技区' })).toHaveAttribute('aria-selected', 'true');
   expect(screen.getByRole('tab', { name: /^购买记录/ })).toBeInTheDocument();
-  expect(screen.getByRole('tab', { name: '消息区' })).toBeInTheDocument();
+  expect(screen.getByRole('tab', { name: '消息区 0' })).toBeInTheDocument();
   expect(screen.queryByText(/未读/)).not.toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: '发言' }));
@@ -234,7 +239,8 @@ it('shows three simple tabs and sends one current-game message from the speech s
   await user.click(screen.getByRole('button', { name: '发送' }));
 
   await waitFor(() => expect(screen.queryByRole('dialog', { name: '发言' })).not.toBeInTheDocument());
-  await user.click(screen.getByRole('tab', { name: '消息区' }));
+  expect(screen.getByRole('tab', { name: '消息区 1' })).toBeInTheDocument();
+  await user.click(screen.getByRole('tab', { name: '消息区 1' }));
   expect(screen.getAllByText('马上到')).toHaveLength(1);
   expect(fetchMock).toHaveBeenCalledWith(
     '/api/games/game-1/messages',
@@ -270,7 +276,7 @@ it('accepts one strict realtime message for the current game and ignores duplica
   const socket = new FakeGameSocket();
   renderGame(socket, snapshot({ players: players(1) }));
   const user = userEvent.setup();
-  await user.click(await screen.findByRole('tab', { name: '消息区' }));
+  await user.click(await screen.findByRole('tab', { name: /^消息区/ }));
 
   act(() => {
     socket.fire('game.message.created', message());
@@ -343,7 +349,7 @@ it('ignores delayed realtime speech when the loaded game is no longer active', a
   await screen.findByRole('link', { name: '继续结算' });
 
   act(() => { socket.fire('game.message.created', message({ text: '已经结束了' })); });
-  await user.click(screen.getByRole('tab', { name: '消息区' }));
+  await user.click(screen.getByRole('tab', { name: /^消息区/ }));
 
   expect(screen.queryByText('已经结束了')).not.toBeInTheDocument();
   expect(screen.getByText('本场还没有消息')).toBeInTheDocument();
@@ -409,7 +415,7 @@ it('implements three linked tabs with roving focus and arrow-key selection', asy
   await userEvent.setup().keyboard('{Home}');
   expect(tableTab).toHaveFocus();
   await userEvent.setup().keyboard('{End}');
-  expect(screen.getByRole('tab', { name: '消息区' })).toHaveFocus();
+  expect(screen.getByRole('tab', { name: /^消息区/ })).toHaveFocus();
 });
 
 it('rejoins with the latest known version after a socket reconnect', async () => {
