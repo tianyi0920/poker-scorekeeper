@@ -57,7 +57,7 @@ it.each([
   ['NICKNAME_TAKEN', '昵称已被使用，请换一个'],
   ['USER_IN_ACTIVE_GAME', '用户仍在未完成牌局中，请先完成牌局'],
   ['LAST_SUPER_ADMIN', '系统必须保留至少一位启用的超级管理员'],
-  ['ACTIVE_GAME_LIMIT', '最多同时开启两场对局，请先完成现有对局'],
+  ['ACTIVE_GAME_LIMIT', '最多同时开启五场对局，请先完成现有对局'],
   ['ACTIVE_GAME_NAME_TAKEN', '已有进行中对局使用该名称，请更换名称'],
   ['GAME_STATE_CONFLICT', '对局状态已变化，请刷新后重试'],
   ['GAME_PLAYER_LIMIT', '本桌已满 12 人，无法继续加入'],

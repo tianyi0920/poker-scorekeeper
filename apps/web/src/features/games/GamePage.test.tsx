@@ -1,5 +1,5 @@
 import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate, useNavigationType } from 'react-router-dom';
 import { afterEach, expect, it, vi } from 'vitest';
@@ -212,6 +212,7 @@ function SwitchableGame({ socketFactory }: { socketFactory: () => GameSocketClie
 }
 
 afterEach(() => {
+  localStorage.clear();
   vi.useRealTimers();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -286,6 +287,38 @@ it('keeps voice announcements off until the speaker is explicitly enabled', asyn
   expect(speech.spoken).toEqual([
     expect.objectContaining({ text: '语音播报已开启', lang: 'zh-CN' })
   ]);
+});
+
+it('keeps the current table layout and places the speaker in the upper game heading', async () => {
+  // Break caught: the speaker consumes a fourth column beside the three approved content tabs.
+  renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
+
+  const heading = (await screen.findByRole('heading', { name: '8月17日晚场' })).closest('header');
+  expect(heading).not.toBeNull();
+  expect(within(heading as HTMLElement).getByRole('button', { name: '开启语音播报' }))
+    .toHaveAttribute('aria-pressed', 'false');
+  expect(screen.getByRole('tablist', { name: '对局内容' })).toHaveTextContent('竞技区购买记录 1消息区 0');
+});
+
+it('restores the saved speaker preference after the page remounts and remembers turning it off', async () => {
+  // Break caught: a manual browser refresh resets the speaker to off even after the user chose to keep it on.
+  installSpeechSynthesis();
+  const firstView = renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
+  const user = userEvent.setup();
+
+  await user.click(await screen.findByRole('button', { name: '开启语音播报' }));
+  firstView.unmount();
+
+  const secondView = renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
+  const restoredToggle = await screen.findByRole('button', { name: '关闭语音播报' });
+  expect(restoredToggle).toHaveAttribute('aria-pressed', 'true');
+
+  await user.click(restoredToggle);
+  secondView.unmount();
+  renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
+
+  expect(await screen.findByRole('button', { name: '开启语音播报' }))
+    .toHaveAttribute('aria-pressed', 'false');
 });
 
 it('announces each new purchase or adjustment once without replaying the existing timeline', async () => {
@@ -477,8 +510,8 @@ it('cancels queued speech when leaving the table page', async () => {
   expect(speech.cancelCount).toBe(1);
 });
 
-it('returns voice announcements to the default off state when entering another table', async () => {
-  // Break caught: enabling one table silently carries voice playback into the next table after navigation.
+it('keeps the saved voice preference when entering another table', async () => {
+  // Break caught: changing tables forgets the browser-level speaker preference and silently disables announcements.
   const speech = installSpeechSynthesis();
   const sockets: FakeGameSocket[] = [];
   const gameOne = snapshot({ id: 'game-1', name: '第一桌', players: players(1) });
@@ -512,14 +545,13 @@ it('returns voice announcements to the default off state when entering another t
   await user.click(screen.getByRole('button', { name: '切换到第二桌' }));
 
   expect(await screen.findByRole('heading', { name: '第二桌' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: '开启语音播报' })).toHaveAttribute('aria-pressed', 'false');
-  expect(speech.cancelCount).toBe(1);
+  expect(screen.getByRole('button', { name: '关闭语音播报' })).toHaveAttribute('aria-pressed', 'true');
   act(() => sockets.at(-1)?.fire('game.message.created', message({
     id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e03',
     gameId: 'game-2',
     text: '第二桌消息'
   })));
-  expect(speech.spoken).toEqual([]);
+  expect(speech.spoken.map(({ text }) => text)).toEqual(['阿明说：第二桌消息']);
 });
 
 it('keeps the speech draft and offers a Chinese retry message after send failure', async () => {

@@ -213,6 +213,9 @@ describe.sequential('game lifecycle and snapshots', () => {
   it('leaves no game when atomic create exceeds the open-table limit', async () => {
     await seedGame(`${prefix}-open-a`, GameStatus.ACTIVE);
     await seedGame(`${prefix}-open-b`, GameStatus.SETTLING, { stoppedAt: new Date() });
+    await seedGame(`${prefix}-open-c`, GameStatus.ACTIVE);
+    await seedGame(`${prefix}-open-d`, GameStatus.ACTIVE);
+    await seedGame(`${prefix}-open-e`, GameStatus.ACTIVE);
     const before = await prisma.game.count();
 
     await write(adminAuth, 'post', '/api/games', { name: `${prefix}-rejected` })
@@ -250,15 +253,22 @@ describe.sequential('game lifecycle and snapshots', () => {
       .expect(({ body }) => expect(body.code).toBe(code));
   });
 
-  it('allows only two ACTIVE or SETTLING games', async () => {
+  it('allows only five ACTIVE or SETTLING games', async () => {
     const first = await seedGame(`${prefix}-open-1`, GameStatus.ACTIVE);
     await seedGame(`${prefix}-settling`, GameStatus.SETTLING, { stoppedAt: new Date() });
-    const third = await seedGame(`${prefix}-third`, GameStatus.DRAFT);
+    await seedGame(`${prefix}-open-3`, GameStatus.ACTIVE);
+    await seedGame(`${prefix}-open-4`, GameStatus.ACTIVE);
+    const fifth = await seedGame(`${prefix}-fifth`, GameStatus.DRAFT);
+    const sixth = await seedGame(`${prefix}-sixth`, GameStatus.DRAFT);
 
-    await write(adminAuth, 'post', `/api/games/${third.id}/start`)
+    await write(adminAuth, 'post', `/api/games/${fifth.id}/start`).expect(200);
+
+    await write(adminAuth, 'post', `/api/games/${sixth.id}/start`)
       .expect(409)
       .expect(({ body }) => expect(body.code).toBe('ACTIVE_GAME_LIMIT'));
-    expect((await prisma.game.findUniqueOrThrow({ where: { id: third.id } })).status)
+    expect((await prisma.game.findUniqueOrThrow({ where: { id: fifth.id } })).status)
+      .toBe(GameStatus.ACTIVE);
+    expect((await prisma.game.findUniqueOrThrow({ where: { id: sixth.id } })).status)
       .toBe(GameStatus.DRAFT);
     expect((await prisma.game.findUniqueOrThrow({ where: { id: first.id } })).status)
       .toBe(GameStatus.ACTIVE);

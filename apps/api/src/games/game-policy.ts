@@ -10,6 +10,12 @@ export const ALLOWED_GAME_TRANSITIONS: Readonly<Record<GameStatus, readonly Game
   VOIDED: []
 };
 
+export const MAX_OPEN_GAMES = 5;
+
+export function canOpenAnotherGame(openCount: number): boolean {
+  return openCount < MAX_OPEN_GAMES;
+}
+
 export function assertGameManager(actor: Pick<AuthUser, 'role'>): void {
   if (actor.role !== 'ADMIN' && actor.role !== 'SUPER_ADMIN') throw forbidden('FORBIDDEN');
 }

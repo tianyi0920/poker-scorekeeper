@@ -116,8 +116,11 @@ describe.sequential('game lifecycle concurrency', () => {
     if (app !== undefined) await app.close();
   }, 30_000);
 
-  it('serializes two simultaneous starts so only one third table opens', async () => {
-    await seedGame('already-open', GameStatus.ACTIVE);
+  it('serializes two simultaneous starts so only one fifth table opens', async () => {
+    await seedGame('already-open-1', GameStatus.ACTIVE);
+    await seedGame('already-open-2', GameStatus.ACTIVE);
+    await seedGame('already-open-3', GameStatus.ACTIVE);
+    await seedGame('already-open-4', GameStatus.ACTIVE);
     const firstDraft = await seedGame('candidate-a');
     const secondDraft = await seedGame('candidate-b');
 
@@ -131,7 +134,7 @@ describe.sequential('game lifecycle concurrency', () => {
     expect(rejection).toMatchObject({ status: 'rejected', reason: { code: 'ACTIVE_GAME_LIMIT' } });
     await expect(prisma.game.count({
       where: { name: { startsWith: prefix }, status: { in: [GameStatus.ACTIVE, GameStatus.SETTLING] } }
-    })).resolves.toBe(2);
+    })).resolves.toBe(5);
     await expect(prisma.auditLog.count({
       where: { action: 'GAME_STARTED', entityId: { in: [firstDraft.id, secondDraft.id] } }
     })).resolves.toBe(1);
