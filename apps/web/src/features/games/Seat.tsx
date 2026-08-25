@@ -16,7 +16,7 @@ export function Seat({
   positionKey: string;
   self: boolean;
   compact: boolean;
-  speechDirection: 'above' | 'below' | 'left' | 'right';
+  speechDirection: 'left' | 'right';
   latestMessage?: GameMessageDto;
 }) {
   const amount = -BigInt(player.buyInAmount);
@@ -36,7 +36,7 @@ export function Seat({
       <strong title={player.nickname}>{player.nickname}</strong>
       <span>{player.effectiveHands}手</span>
       <b>{formattedAmount}</b>
-      {latestMessage && <span className="seat-speech">{latestMessage.text}</span>}
+      {latestMessage && <span className="seat-speech seat-speech--corner">{latestMessage.text}</span>}
     </article>
   );
 }

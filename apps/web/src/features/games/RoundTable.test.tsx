@@ -25,13 +25,55 @@ const latestMessage: GameMessageDto = {
   createdAt: '2026-08-24T09:00:00.000Z'
 };
 
-it('renders a portrait poker arena with five community-card slots', () => {
-  // Break caught: the table falls back to the short horizontal ellipse or loses its Texas Hold'em identity.
-  render(<RoundTable players={makePlayers(2)} selfUserId="self" />);
+const purchases: GameSnapshotDto['purchases'] = [
+  {
+    id: 'buy-older',
+    playerId: 'player-2',
+    actorNickname: '牌友2',
+    type: 'BUY',
+    previousHands: null,
+    newHands: 2,
+    handsDelta: 2,
+    createdAt: '2026-08-24T08:59:00.000Z'
+  },
+  {
+    id: 'buy-latest',
+    playerId: 'player-1',
+    actorNickname: '牌友1',
+    type: 'BUY',
+    previousHands: null,
+    newHands: 1,
+    handsDelta: 1,
+    createdAt: '2026-08-24T09:00:00.000Z'
+  }
+];
+
+it('renders a portrait poker arena with five recognizable face-down cards', () => {
+  // Break caught: the table falls back to empty dark rectangles that do not read as playing cards.
+  const { container } = render(<RoundTable players={makePlayers(2)} selfUserId="self" />);
 
   expect(screen.getByTestId('round-table')).toHaveClass('round-table--portrait');
-  expect(document.querySelectorAll('.community-card-slots i')).toHaveLength(5);
+  const cards = container.querySelectorAll('.community-card--back');
+  expect(cards).toHaveLength(5);
+  for (const card of cards) expect(card.querySelector('.community-card__mark')).not.toBeNull();
   expect(document.querySelector('.felt-betting-line')).toBeInTheDocument();
+});
+
+it('highlights the newest purchase with the matching player and amount in the table center', () => {
+  // Break caught: purchases are only available behind the tab, leaving the table center empty during play.
+  const props = {
+    players: makePlayers(2),
+    selfUserId: 'self',
+    purchases,
+    handPrice: '300'
+  } as Parameters<typeof RoundTable>[0];
+  render(<RoundTable {...props} />);
+
+  const latest = screen.getByRole('status', { name: '最新购买记录' });
+  expect(latest).toHaveTextContent('牌友1');
+  expect(latest).toHaveTextContent('购买 1 手');
+  expect(latest).toHaveTextContent('¥300');
+  expect(latest).not.toHaveTextContent('牌友2');
 });
 
 it('shows a clear waiting state inside an empty poker table', () => {
@@ -48,7 +90,7 @@ it('shows only the newest speech beside its matching player seat', () => {
   const senderSeat = screen.getByText('牌友1').closest('[data-testid="table-seat"]');
   const selfSeat = screen.getByTestId('seat-self').closest('[data-testid="table-seat"]');
   expect(senderSeat).not.toBeNull();
-  expect(within(senderSeat as HTMLElement).getByText('我在路上')).toHaveClass('seat-speech');
+  expect(within(senderSeat as HTMLElement).getByText('我在路上')).toHaveClass('seat-speech', 'seat-speech--corner');
   expect(within(selfSeat as HTMLElement).queryByText('我在路上')).not.toBeInTheDocument();
 });
 

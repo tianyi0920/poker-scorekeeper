@@ -545,7 +545,10 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   return (
     <section className="game-page" aria-labelledby="game-title">
       <header className="game-heading">
-        <div><span className="section-kicker">实时牌桌</span><h2 id="game-title">{snapshot.name}</h2></div>
+        <div className="game-heading-copy">
+          <div className="game-heading-meta"><Link className="game-home-link" to="/" aria-label="返回首页">← 返回首页</Link><span className="section-kicker">实时牌桌</span></div>
+          <h2 id="game-title">{snapshot.name}</h2>
+        </div>
         <div className="game-heading-actions">
           <span className={active ? 'live-pill' : 'status-pill status-pill--settling'}>{active ? '进行中' : '结算中'}</span>
           {active && canManage && <Button variant="ghost" unsafe onClick={() => setEndOpen(true)}>结束对局</Button>}
@@ -592,7 +595,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
           tabIndex={tab === 'messages' ? 0 : -1}
           onKeyDown={onTabKeyDown}
           onClick={() => setTab('messages')}
-        >消息区</button>
+        >消息区 <span>{messages.length}</span></button>
       </div>
 
       {tab === 'table' ? (
@@ -608,7 +611,13 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             latestMessage={latestMessage}
             fallbackMessage={latestMessage !== undefined && !latestMessageHasVisibleSender ? latestMessage : undefined}
           />
-          <RoundTable players={snapshot.players} selfUserId={user?.id ?? ''} latestMessage={latestMessage} />
+          <RoundTable
+            players={snapshot.players}
+            selfUserId={user?.id ?? ''}
+            latestMessage={latestMessage}
+            purchases={snapshot.purchases}
+            handPrice={snapshot.handPrice}
+          />
         </div>
       ) : tab === 'purchases' ? (
         <div id="game-panel-purchases" role="tabpanel" aria-labelledby="game-tab-purchases" tabIndex={0} className="timeline-panel">

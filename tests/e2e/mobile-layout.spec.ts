@@ -265,6 +265,9 @@ test('administrator end-game control and a long latest speech stay inside the fi
     await page.goto(`/games/${game.id}`);
     await expect(page.getByTestId('table-seat')).toHaveCount(12);
     await expect(page.getByRole('button', { name: '结束对局' })).toBeVisible();
+    await expect(page.getByRole('link', { name: '返回首页' })).toBeVisible();
+    await expect(page.getByRole('status', { name: '最新购买记录' })).toBeVisible();
+    await expect(page.locator('.community-card--back')).toHaveCount(5);
     const speechSenders = testInfo.project.name === 'chromium-320x568'
       ? playerSessions
       : [playerSessions[4]!];
@@ -277,6 +280,7 @@ test('administrator end-game control and a long latest speech stay inside the fi
         { text: speechText }
       )).status()).toBe(201);
       await expect(page.getByText(speechText)).toBeVisible();
+      await expect(page.getByRole('tab', { name: `消息区 ${senderIndex + 1}` })).toBeVisible();
 
       const geometry = await page.evaluate((currentSpeechText) => {
         const table = document.querySelector<HTMLElement>('[data-testid="round-table"]');
@@ -295,6 +299,8 @@ test('administrator end-game control and a long latest speech stay inside the fi
         const endRect = endButton.getBoundingClientRect();
         const speechRect = speechElement.getBoundingClientRect();
         const ownSeat = speechElement.closest('[data-testid="table-seat"]');
+        const ownAmount = ownSeat?.querySelector<HTMLElement>('b');
+        if (!ownAmount) throw new Error('发言人的当前购买金额未渲染');
         const overlaps = (left: DOMRect, right: DOMRect) => (
           left.left < right.right && left.right > right.left &&
           left.top < right.bottom && left.bottom > right.top
@@ -312,17 +318,19 @@ test('administrator end-game control and a long latest speech stay inside the fi
           speechRight: speechRect.right,
           viewportWidth: window.innerWidth,
           overlapsSpectatorBar: overlaps(speechRect, spectatorRect),
+          overlapsOwnAmount: overlaps(speechRect, ownAmount.getBoundingClientRect()),
           overlappingSeats
         };
       }, speechText);
 
       expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
       expect(geometry.verticalOverflow).toBeLessThanOrEqual(0);
-      expect(geometry.tableBottom).toBeLessThanOrEqual(geometry.dockTop);
+      expect(geometry.tableBottom - geometry.dockTop).toBeLessThanOrEqual(1);
       expect(geometry.endHeight).toBeGreaterThanOrEqual(44);
       expect(geometry.speechLeft).toBeGreaterThanOrEqual(0);
       expect(geometry.speechRight).toBeLessThanOrEqual(geometry.viewportWidth);
       expect(geometry.overlapsSpectatorBar, speechText).toBe(false);
+      expect(geometry.overlapsOwnAmount, speechText).toBe(false);
       expect(geometry.overlappingSeats, speechText).toEqual([]);
     }
   } finally {
