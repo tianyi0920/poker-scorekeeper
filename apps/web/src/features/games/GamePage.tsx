@@ -546,8 +546,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     <section className="game-page" aria-labelledby="game-title">
       <header className="game-heading">
         <div className="game-heading-copy">
-          <div className="game-heading-meta"><Link className="game-home-link" to="/" aria-label="返回首页">← 返回首页</Link><span className="section-kicker">实时牌桌</span></div>
-          <h2 id="game-title">{snapshot.name}</h2>
+          <Link className="game-home-link" to="/" aria-label="返回首页">← 首页</Link>
+          <div className="game-heading-title">
+            <span className="section-kicker">实时牌桌</span>
+            <h2 id="game-title">{snapshot.name}</h2>
+          </div>
         </div>
         <div className="game-heading-actions">
           <span className={active ? 'live-pill' : 'status-pill status-pill--settling'}>{active ? '进行中' : '结算中'}</span>
