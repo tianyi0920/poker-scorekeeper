@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes, useLocation, useNavigate } from 'react-router-dom';
@@ -9,10 +9,10 @@ import { HomePage } from './HomePage.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
-function mockHomeFetch(currentResponse: unknown) {
+function mockHomeFetch(currentResponse: unknown, role: 'USER' | 'ADMIN' | 'SUPER_ADMIN' = 'USER') {
   const fetchMock = vi.fn(async (input: string | URL | Request) => {
     const url = String(input);
-    if (url.endsWith('/api/auth/session')) return jsonResponse(session('USER'));
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session(role));
     if (url.endsWith('/api/games/current')) return currentResponse instanceof Response ? currentResponse : jsonResponse(currentResponse);
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
@@ -56,6 +56,71 @@ it('requests only current games and omits personal summaries and recent results'
   expect(screen.queryByText('个人摘要')).not.toBeInTheDocument();
   expect(screen.queryByText('最近战绩')).not.toBeInTheDocument();
   expectOnlyCurrentRequests(fetchMock);
+});
+
+it('makes the whole current-game card a link and shows the participating player avatars', async () => {
+  // Break caught: only the small footer enters the table, or the home card hides who is already playing.
+  mockHomeFetch({ games: [{
+    ...currentGame(1),
+    players: [
+      { id: 'player-1', userId: 'user-1', nickname: '西西', avatarUrl: '/avatars/preset-01.webp', seatNo: 1, effectiveHands: 3, buyInAmount: '900' },
+      { id: 'player-2', userId: 'user-2', nickname: 'test', avatarUrl: '/avatars/preset-02.webp', seatNo: 2, effectiveHands: 4, buyInAmount: '1200' }
+    ]
+  }] });
+
+  renderAt('/', <App />);
+
+  const cardLink = await screen.findByRole('link', { name: '进入对局：8月17日晚场' });
+  expect(cardLink).toHaveAttribute('href', '/games/game-1');
+  expect(within(cardLink).getByRole('img', { name: '西西的头像' })).toHaveAttribute('src', '/avatars/preset-01.webp');
+  expect(within(cardLink).getByRole('img', { name: 'test的头像' })).toHaveAttribute('src', '/avatars/preset-02.webp');
+  expect(within(cardLink).getByText('西西、test')).toBeInTheDocument();
+});
+
+it('limits the home-card avatar and name preview to five players', async () => {
+  // Break caught: the avatar stack is capped but all 12 names still inflate the card DOM.
+  mockHomeFetch({ games: [{
+    ...currentGame(1),
+    players: Array.from({ length: 6 }, (_, index) => ({
+      id: `player-${index + 1}`,
+      userId: `user-${index + 1}`,
+      nickname: `玩家${index + 1}`,
+      avatarUrl: `/avatars/preset-0${index + 1}.webp`,
+      seatNo: index + 1,
+      effectiveHands: 1,
+      buyInAmount: '300'
+    }))
+  }] });
+
+  renderAt('/', <App />);
+
+  const cardLink = await screen.findByRole('link', { name: '进入对局：8月17日晚场' });
+  expect(within(cardLink).getAllByRole('img')).toHaveLength(5);
+  expect(within(cardLink).getByText('玩家1、玩家2、玩家3、玩家4、玩家5')).toBeInTheDocument();
+  expect(within(cardLink).queryByText('玩家6')).not.toBeInTheDocument();
+  expect(within(cardLink).getByText('+1')).toBeInTheDocument();
+});
+
+it('shows at most five open games and reports the current capacity', async () => {
+  // Break caught: the home page still truncates the server result to the former two-table limit.
+  mockHomeFetch({ games: Array.from({ length: 6 }, (_, index) => currentGame(index + 1)) });
+
+  renderAt('/', <App />);
+
+  expect(await screen.findAllByRole('link', { name: /^进入对局：/ })).toHaveLength(5);
+  expect(screen.getByText('当前 5 / 5 场')).toBeInTheDocument();
+  expect(screen.queryByText('8月22日晚场')).not.toBeInTheDocument();
+});
+
+it('disables game creation for an administrator when five games are already open', async () => {
+  // Break caught: administrators can enter the creation flow even though the open-table capacity is full.
+  mockHomeFetch({ games: Array.from({ length: 5 }, (_, index) => currentGame(index + 1)) }, 'ADMIN');
+
+  renderAt('/', <App />);
+
+  const limit = await screen.findByText('已达 5 场上限');
+  expect(limit).toHaveAttribute('aria-disabled', 'true');
+  expect(screen.queryByRole('link', { name: '创建对局' })).not.toBeInTheDocument();
 });
 
 it('shows the current-game empty state without loading history', async () => {

@@ -33,6 +33,23 @@ import { GAME_DELETED_NOTICE } from './useGameDeletedSubscription.js';
 type GameTab = 'table' | 'purchases' | 'messages';
 type SocketFactory = () => GameSocketClient;
 const moneyFormatter = new Intl.NumberFormat('zh-CN');
+const VOICE_ENABLED_STORAGE_KEY = 'poker-scorekeeper:voice-enabled:v1';
+
+function readSavedVoicePreference(): boolean {
+  try {
+    return window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function saveVoicePreference(enabled: boolean): void {
+  try {
+    window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, String(enabled));
+  } catch {
+    // Keep the current-page control usable when browser storage is unavailable.
+  }
+}
 
 function totalBuyIn(snapshot: GameSnapshotDto): bigint {
   return snapshot.players.reduce((total, player) => total + BigInt(player.buyInAmount), 0n);
@@ -76,8 +93,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [tab, setTab] = useState<GameTab>('table');
   const [messages, setMessages] = useState<GameMessageDto[]>([]);
   const messagesRef = useRef<GameMessageDto[]>([]);
-  const [voiceEnabled, setVoiceEnabled] = useState(false);
-  const voiceEnabledRef = useRef(false);
+  const [voiceEnabled, setVoiceEnabled] = useState(readSavedVoicePreference);
+  const voiceEnabledRef = useRef(voiceEnabled);
   const announcedPurchaseIdsRef = useRef(new Set<string>());
   const announcedMessageIdsRef = useRef(new Set<string>());
   const messagesInitializedRef = useRef(false);
@@ -257,8 +274,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     if (voiceEnabledRef.current && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-    voiceEnabledRef.current = false;
-    setVoiceEnabled(false);
     announcedPurchaseIdsRef.current.clear();
     announcedMessageIdsRef.current.clear();
     messagesInitializedRef.current = false;
@@ -296,8 +311,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     if (voiceEnabledRef.current && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
-    voiceEnabledRef.current = false;
-    setVoiceEnabled(false);
     announcedPurchaseIdsRef.current.clear();
     announcedMessageIdsRef.current.clear();
     messagesInitializedRef.current = false;
@@ -318,7 +331,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (voiceEnabledRef.current && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
-      voiceEnabledRef.current = false;
       announcedPurchaseIdsRef.current.clear();
       announcedMessageIdsRef.current.clear();
       messagesInitializedRef.current = false;
@@ -545,10 +557,12 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       voiceEnabledRef.current = false;
       setVoiceEnabled(false);
+      saveVoicePreference(false);
       return;
     }
     voiceEnabledRef.current = true;
     setVoiceEnabled(true);
+    saveVoicePreference(true);
     speak('语音播报已开启');
   };
 
@@ -647,6 +661,14 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         </div>
         <div className="game-heading-actions">
           <span className={active ? 'live-pill' : 'status-pill status-pill--settling'}>{active ? '进行中' : '结算中'}</span>
+          <button
+            type="button"
+            className={`voice-toggle${voiceEnabled ? ' voice-toggle--enabled' : ''}`}
+            aria-label={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
+            aria-pressed={voiceEnabled}
+            title={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
+            onClick={toggleVoice}
+          >{voiceEnabled ? '🔊' : '🔈'}</button>
           {active && canManage && <Button variant="ghost" unsafe onClick={() => setEndOpen(true)}>结束对局</Button>}
           {snapshot.status === 'SETTLING' && canManage && <Link className="action-link" to={`/games/${encodeURIComponent(snapshot.id)}/settlement`}>继续结算</Link>}
         </div>
@@ -694,14 +716,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             onClick={() => setTab('messages')}
           >消息区 <span>{messages.length}</span></button>
         </div>
-        <button
-          type="button"
-          className={`voice-toggle${voiceEnabled ? ' voice-toggle--enabled' : ''}`}
-          aria-label={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
-          aria-pressed={voiceEnabled}
-          title={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
-          onClick={toggleVoice}
-        >{voiceEnabled ? '🔊' : '🔈'}</button>
       </div>
 
       {tab === 'table' ? (

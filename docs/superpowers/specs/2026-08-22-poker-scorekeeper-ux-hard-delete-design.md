@@ -77,7 +77,7 @@
 `POST /api/games` 的产品语义改为“创建并开启”。事务必须取得与现有开启流程相同的生命周期协调锁，然后：
 
 - 锁定并重新验证操作者仍为启用的 `ADMIN` 或 `SUPER_ADMIN`；
-- 检查 `ACTIVE + SETTLING < 2`；
+- 检查 `ACTIVE + SETTLING < 5`；
 - 检查规范化后的进行中名称不重复；
 - 创建 `status=ACTIVE`、`startedAt=now`、`version=1` 的对局；
 - 写入 `GAME_CREATED_AND_STARTED` 审计记录；

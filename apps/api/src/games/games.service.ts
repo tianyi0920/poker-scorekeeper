@@ -18,6 +18,7 @@ import {
   assertCanViewGameSnapshot,
   assertGameManager,
   assertGameTransition,
+  canOpenAnotherGame,
   defaultShanghaiGameName,
   normalizeGameName
 } from './game-policy.js';
@@ -66,7 +67,7 @@ export class GamesService {
       const openCount = await transaction.game.count({
         where: { status: { in: [...OPEN_STATUSES] } }
       });
-      if (openCount >= 2) throw conflict('ACTIVE_GAME_LIMIT');
+      if (!canOpenAnotherGame(openCount)) throw conflict('ACTIVE_GAME_LIMIT');
 
       const now = new Date();
       const name = input.name ?? defaultShanghaiGameName(now);
@@ -114,7 +115,7 @@ export class GamesService {
       const openCount = await transaction.game.count({
         where: { status: { in: [...OPEN_STATUSES] } }
       });
-      if (openCount >= 2) throw conflict('ACTIVE_GAME_LIMIT');
+      if (!canOpenAnotherGame(openCount)) throw conflict('ACTIVE_GAME_LIMIT');
 
       const openNames = await transaction.game.findMany({
         where: { status: { in: [...OPEN_STATUSES] } },

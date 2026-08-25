@@ -54,7 +54,7 @@ export const ERROR_MESSAGES: Record<ErrorCode, string> = {
   SETTINGS_VERSION_CONFLICT: 'Rake settings were updated by another request',
   AVATAR_UNSUPPORTED: 'Unsupported avatar image',
   AVATAR_TOO_LARGE: 'Avatar image is too large',
-  ACTIVE_GAME_LIMIT: 'At most two games can be active or settling',
+  ACTIVE_GAME_LIMIT: 'At most five games can be active or settling',
   ACTIVE_GAME_NAME_TAKEN: 'An active game already uses this name',
   GAME_STATE_CONFLICT: 'Game state changed or does not allow this action',
   GAME_HAS_BUYINS: 'A game with purchases cannot be voided',
