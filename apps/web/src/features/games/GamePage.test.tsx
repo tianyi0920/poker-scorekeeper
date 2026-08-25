@@ -132,10 +132,31 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+class FakeSpeechSynthesisUtterance {
+  lang = '';
+  readonly text: string;
+
+  constructor(text: string) {
+    this.text = text;
+  }
+}
+
+function installSpeechSynthesis() {
+  const spoken: FakeSpeechSynthesisUtterance[] = [];
+  let cancelCount = 0;
+  vi.stubGlobal('SpeechSynthesisUtterance', FakeSpeechSynthesisUtterance);
+  vi.stubGlobal('speechSynthesis', {
+    speak: (utterance: FakeSpeechSynthesisUtterance) => { spoken.push(utterance); },
+    cancel: () => { cancelCount += 1; }
+  });
+  return { spoken, get cancelCount() { return cancelCount; } };
+}
+
 function renderGame(
   socket: FakeGameSocket,
   game = snapshot(),
-  role: 'SUPER_ADMIN' | 'ADMIN' | 'USER' = 'USER'
+  role: 'SUPER_ADMIN' | 'ADMIN' | 'USER' = 'USER',
+  initialMessages: GameMessageDto[] = []
 ) {
   const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
@@ -152,7 +173,7 @@ function renderGame(
         const body = JSON.parse(String(init.body)) as { text: string };
         return jsonResponse(message({ text: body.text.trim() }));
       }
-      return jsonResponse({ gameId: 'game-1', messages: [] });
+      return jsonResponse({ gameId: 'game-1', messages: initialMessages });
     }
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   });
@@ -246,6 +267,259 @@ it('shows three simple tabs and sends one current-game message from the speech s
     '/api/games/game-1/messages',
     expect.objectContaining({ method: 'POST', body: JSON.stringify({ text: '马上到' }) })
   );
+});
+
+it('keeps voice announcements off until the speaker is explicitly enabled', async () => {
+  // Break caught: entering a table starts reading private table activity without the user's consent.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+
+  const toggle = await screen.findByRole('button', { name: '开启语音播报' });
+  expect(toggle).toHaveAttribute('aria-pressed', 'false');
+  expect(speech.spoken).toEqual([]);
+
+  await userEvent.setup().click(toggle);
+
+  expect(toggle).toHaveAttribute('aria-pressed', 'true');
+  expect(toggle).toHaveAccessibleName('关闭语音播报');
+  expect(speech.spoken).toEqual([
+    expect.objectContaining({ text: '语音播报已开启', lang: 'zh-CN' })
+  ]);
+});
+
+it('announces each new purchase or adjustment once without replaying the existing timeline', async () => {
+  // Break caught: enabling voice replays old purchases or duplicate snapshots read the same purchase repeatedly.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  const initial = snapshot({ players: players(2) });
+  renderGame(socket, initial);
+  await userEvent.setup().click(await screen.findByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  const purchase = {
+    id: 'buy-player-2', playerId: 'player-2', actorNickname: '阿明', type: 'BUY' as const,
+    previousHands: null, newHands: 4, handsDelta: 2, createdAt: '2026-08-17T12:20:00.000Z'
+  };
+  act(() => {
+    socket.fire('game.updated', snapshot({ ...initial, version: 2, purchases: [...initial.purchases, purchase] }));
+    socket.fire('game.updated', snapshot({ ...initial, version: 2, purchases: [...initial.purchases, purchase] }));
+  });
+
+  expect(speech.spoken.map(({ text }) => text)).toEqual(['牌友2购买 2 手，共 600 元']);
+
+  act(() => socket.fire('game.updated', snapshot({
+    ...initial,
+    version: 3,
+    purchases: [...initial.purchases, purchase, {
+      id: 'adjust-player-2', playerId: 'player-2', actorNickname: '牌友2', type: 'ADJUST',
+      previousHands: 4, newHands: 5, handsDelta: 1, createdAt: '2026-08-17T12:21:00.000Z'
+    }]
+  })));
+
+  expect(speech.spoken.map(({ text }) => text)).toEqual([
+    '牌友2购买 2 手，共 600 元',
+    '牌友2更正为 5 手'
+  ]);
+});
+
+it('announces one new current-game message with its sender', async () => {
+  // Break caught: duplicate socket delivery either stays silent or reads the same chat message twice.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(2) }));
+  await userEvent.setup().click(await screen.findByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  const incoming = message({
+    id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e02',
+    userId: 'user-2',
+    nickname: '牌友2',
+    text: '马上到'
+  });
+  act(() => {
+    socket.fire('game.message.created', incoming);
+    socket.fire('game.message.created', incoming);
+  });
+
+  expect(speech.spoken.map(({ text }) => text)).toEqual(['牌友2说：马上到']);
+});
+
+it('does not announce a historical message when the socket redelivers it', async () => {
+  // Break caught: the initial REST message window is not added to voice de-duplication state.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  const historical = message({ text: '刚才已经说过了' });
+  renderGame(socket, snapshot({ players: players(2) }), 'USER', [historical]);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('tab', { name: /消息区 1/ }));
+  expect(await screen.findByText('刚才已经说过了')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  act(() => socket.fire('game.message.created', historical));
+
+  expect(speech.spoken).toEqual([]);
+});
+
+it('never announces the initial message window when it arrives after voice is enabled', async () => {
+  // Break caught: a slow initial message request turns historical chat into live speech after a quick toggle.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  const initialMessages = deferred<Response>();
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session()));
+    if (url.endsWith('/api/games/game-1/snapshot')) {
+      return Promise.resolve(jsonResponse(snapshot({ players: players(2) })));
+    }
+    if (url.endsWith('/api/games/game-1/messages')) return initialMessages.promise;
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes>
+    <Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} />
+  </Routes></MemoryRouter></AuthProvider>);
+  await userEvent.setup().click(await screen.findByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  await act(async () => {
+    initialMessages.resolve(jsonResponse({
+      gameId: 'game-1',
+      messages: [message({ text: '加载前就存在的消息' })]
+    }));
+    await initialMessages.promise;
+  });
+
+  expect(speech.spoken).toEqual([]);
+});
+
+it('announces a new message found by fallback polling only once', async () => {
+  // Break caught: the disconnected fallback refreshes messages on screen but never sends them to voice playback.
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  const { fetchMock } = renderGame(socket, snapshot({ players: players(2) }));
+  await screen.findByTestId('round-table');
+  await waitFor(() => expect(socket.joined).toHaveLength(1));
+  await userEvent.setup({ advanceTimers: vi.advanceTimersByTime })
+    .click(screen.getByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+  const originalFetch = fetchMock.getMockImplementation()!;
+  const polled = message({
+    id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e04',
+    nickname: '牌友2',
+    text: '断线时发来的消息'
+  });
+  fetchMock.mockImplementation(async (input, init) => (
+    String(input).endsWith('/api/games/game-1/messages') && init?.method !== 'POST'
+      ? jsonResponse({ gameId: 'game-1', messages: [polled] })
+      : originalFetch(input, init)
+  ));
+
+  act(() => {
+    socket.connected = false;
+    socket.fire('disconnect');
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(speech.spoken.map(({ text }) => text)).toEqual(['牌友2说：断线时发来的消息']);
+
+  await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+  expect(speech.spoken.map(({ text }) => text)).toEqual(['牌友2说：断线时发来的消息']);
+});
+
+it('announces spectator entries and exits without reading the initial spectator list', async () => {
+  // Break caught: enabling voice reads everyone already online or misses one side of a presence change.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+  await userEvent.setup().click(await screen.findByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  const newcomer = { userId: 'watcher-2', nickname: '观战小李', avatarUrl: '/avatars/preset-11.webp' };
+  act(() => socket.fire('presence.updated', {
+    gameId: 'game-1',
+    spectators: [...snapshot().spectators, newcomer]
+  }));
+  act(() => socket.fire('presence.updated', { gameId: 'game-1', spectators: [newcomer] }));
+
+  expect(speech.spoken.map(({ text }) => text)).toEqual([
+    '观战小李进入观战区',
+    '观战小王退出观战区'
+  ]);
+});
+
+it('cancels queued speech and stops announcing immediately when the speaker is disabled', async () => {
+  // Break caught: switching the speaker off leaves queued speech playing or continues reading later events.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  renderGame(socket, snapshot({ players: players(1) }));
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  await user.click(screen.getByRole('button', { name: '关闭语音播报' }));
+  act(() => socket.fire('game.message.created', message()));
+
+  expect(speech.cancelCount).toBe(1);
+  expect(speech.spoken).toEqual([]);
+});
+
+it('cancels queued speech when leaving the table page', async () => {
+  // Break caught: navigation removes the controls while the browser keeps reading an old table event.
+  const speech = installSpeechSynthesis();
+  const socket = new FakeGameSocket();
+  const { unmount } = renderGame(socket, snapshot({ players: players(1) }));
+  await userEvent.setup().click(await screen.findByRole('button', { name: '开启语音播报' }));
+
+  unmount();
+
+  expect(speech.cancelCount).toBe(1);
+});
+
+it('returns voice announcements to the default off state when entering another table', async () => {
+  // Break caught: enabling one table silently carries voice playback into the next table after navigation.
+  const speech = installSpeechSynthesis();
+  const sockets: FakeGameSocket[] = [];
+  const gameOne = snapshot({ id: 'game-1', name: '第一桌', players: players(1) });
+  const gameTwo = snapshot({ id: 'game-2', name: '第二桌', players: [{ ...players(1)[0]!, id: 'player-game-2' }] });
+  vi.stubGlobal('fetch', vi.fn((input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return Promise.resolve(jsonResponse(session()));
+    if (url.endsWith('/api/games/game-1/snapshot')) return Promise.resolve(jsonResponse(gameOne));
+    if (url.endsWith('/api/games/game-2/snapshot')) return Promise.resolve(jsonResponse(gameTwo));
+    if (url.endsWith('/messages')) return Promise.resolve(jsonResponse({
+      gameId: url.includes('game-2') ? 'game-2' : 'game-1',
+      messages: []
+    }));
+    return Promise.resolve(jsonResponse({ code: 'NOT_FOUND' }, 404));
+  }));
+  render(
+    <AuthProvider>
+      <MemoryRouter initialEntries={['/games/game-1']}>
+        <Routes><Route path="/games/:id" element={<SwitchableGame socketFactory={() => {
+          const socket = new FakeGameSocket();
+          sockets.push(socket);
+          return socket;
+        }} />} /></Routes>
+      </MemoryRouter>
+    </AuthProvider>
+  );
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '开启语音播报' }));
+  speech.spoken.length = 0;
+
+  await user.click(screen.getByRole('button', { name: '切换到第二桌' }));
+
+  expect(await screen.findByRole('heading', { name: '第二桌' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '开启语音播报' })).toHaveAttribute('aria-pressed', 'false');
+  expect(speech.cancelCount).toBe(1);
+  act(() => sockets.at(-1)?.fire('game.message.created', message({
+    id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e03',
+    gameId: 'game-2',
+    text: '第二桌消息'
+  })));
+  expect(speech.spoken).toEqual([]);
 });
 
 it('keeps the speech draft and offers a Chinese retry message after send failure', async () => {

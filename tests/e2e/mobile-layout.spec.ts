@@ -53,11 +53,17 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
     expect(overflow).toBeLessThanOrEqual(0);
     const arenaGeometry = await page.evaluate(() => {
       const table = document.querySelector<HTMLElement>('[data-testid="round-table"]');
+      const felt = document.querySelector<HTMLElement>('.poker-felt');
       const dock = document.querySelector<HTMLElement>('.game-action-dock');
+      const controls = document.querySelector<HTMLElement>('.game-controls');
+      const voiceToggle = document.querySelector<HTMLElement>('.voice-toggle');
       const spectatorBar = document.querySelector<HTMLElement>('.spectator-bar');
-      if (!table || !dock || !spectatorBar) throw new Error('竞技区关键元素未渲染');
+      if (!table || !felt || !dock || !controls || !voiceToggle || !spectatorBar) throw new Error('竞技区关键元素未渲染');
       const tableRect = table.getBoundingClientRect();
+      const feltRect = felt.getBoundingClientRect();
       const dockRect = dock.getBoundingClientRect();
+      const controlsRect = controls.getBoundingClientRect();
+      const voiceToggleRect = voiceToggle.getBoundingClientRect();
       const spectatorRect = spectatorBar.getBoundingClientRect();
       const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]'))
         .map((seat) => seat.getBoundingClientRect())
@@ -78,6 +84,14 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
         viewportWidth: window.innerWidth,
         tableTop: tableRect.top,
         tableBottom: tableRect.bottom,
+        tableWidth: tableRect.width,
+        tableHeight: tableRect.height,
+        feltWidth: feltRect.width,
+        feltHeight: feltRect.height,
+        controlsHeight: controlsRect.height,
+        voiceToggleWidth: voiceToggleRect.width,
+        voiceToggleHeight: voiceToggleRect.height,
+        dockWidth: dockRect.width,
         dockTop: dockRect.top,
         spectatorTop: spectatorRect.top,
         spectatorBottom: spectatorRect.bottom,
@@ -89,6 +103,12 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
     expect(arenaGeometry.spectatorTop).toBeGreaterThanOrEqual(0);
     expect(arenaGeometry.spectatorBottom).toBeLessThanOrEqual(arenaGeometry.tableTop);
     expect(arenaGeometry.tableBottom).toBeLessThanOrEqual(arenaGeometry.dockTop);
+    expect(arenaGeometry.feltWidth / arenaGeometry.tableWidth).toBeGreaterThanOrEqual(0.77);
+    expect(arenaGeometry.feltHeight).toBeGreaterThanOrEqual(arenaGeometry.tableHeight - 58);
+    expect(arenaGeometry.controlsHeight).toBe(44);
+    expect(arenaGeometry.voiceToggleWidth).toBeGreaterThanOrEqual(44);
+    expect(arenaGeometry.voiceToggleHeight).toBeGreaterThanOrEqual(44);
+    expect(arenaGeometry.dockWidth).toBeLessThanOrEqual(arenaGeometry.viewportWidth - 40);
     expect(arenaGeometry.seatOverlaps).toEqual([]);
     expect(arenaGeometry.seats.every((seat) => (
       seat.left >= 0 &&
