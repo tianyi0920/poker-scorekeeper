@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { userEvent } from '@testing-library/user-event';
 import { afterEach, expect, it, vi } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
@@ -32,7 +32,7 @@ it('shows the latest avatar and transfer-first summary while keeping exact per-g
   expect(within(card).queryByText('累计牌局盈亏')).not.toBeInTheDocument();
   expect(screen.queryByText('昨晚深夜局')).not.toBeInTheDocument();
   fireEvent.error(avatar);
-  expect(avatar).toHaveAttribute('src', '/avatars/preset-01.webp');
+  await waitFor(() => expect(avatar).toHaveAttribute('src', '/avatars/preset-01.webp'));
   const user = userEvent.setup();
   await user.click(screen.getByRole('button', { name: '展开超长中文昵称十二人之一的逐局明细' }));
   expect(screen.getByText('昨晚深夜局')).toBeInTheDocument();
