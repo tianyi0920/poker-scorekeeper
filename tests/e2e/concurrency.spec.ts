@@ -11,7 +11,7 @@ import { cleanupTaskGame, expireTask18SettlementLease, openTestDatabase } from '
 import { accounts } from './support/fixtures.js';
 import { startFreshApi } from './support/restart.js';
 
-test('two-table limit, one-player lock, idempotency, and correction chain hold through real HTTP', async () => {
+test('five-table limit, one-player lock, idempotency, and correction chain hold through real HTTP', async () => {
   const admin = await apiLogin('admin');
   const playerA = await apiLogin('player-a');
   const games: string[] = [];
@@ -28,6 +28,15 @@ test('two-table limit, one-player lock, idempotency, and correction chain hold t
       '300',
       (createdGameId) => games.push(createdGameId)
     );
+    for (const name of ['并发桌三', '并发桌四', '并发桌五']) {
+      await createStartedGame(
+        admin,
+        name,
+        '300',
+        (createdGameId) => games.push(createdGameId)
+      );
+    }
+    expect(games).toHaveLength(5);
     const database = await openTestDatabase();
     let gamesBefore: number;
     let auditsBefore: number;
@@ -38,7 +47,7 @@ test('two-table limit, one-player lock, idempotency, and correction chain hold t
       await database.end();
     }
     const rejectedCreate = await apiWrite(admin, 'post', '/api/games', {
-      name: `Task18 第三桌 ${Date.now().toString(36)}`,
+      name: `Task18 第六桌 ${Date.now().toString(36)}`,
       handPrice: '300',
       rakeEnabled: true
     });
