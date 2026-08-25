@@ -76,6 +76,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [tab, setTab] = useState<GameTab>('table');
   const [messages, setMessages] = useState<GameMessageDto[]>([]);
   const messagesRef = useRef<GameMessageDto[]>([]);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const voiceEnabledRef = useRef(false);
+  const announcedPurchaseIdsRef = useRef(new Set<string>());
+  const announcedMessageIdsRef = useRef(new Set<string>());
+  const messagesInitializedRef = useRef(false);
   const [speechOpen, setSpeechOpen] = useState(false);
   const [buyOpen, setBuyOpen] = useState(false);
   const [adjustment, setAdjustment] = useState<{ playerId: string; currentHands: number } | null>(null);
@@ -99,6 +104,28 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     });
   }, []);
 
+  const speak = useCallback((text: string) => {
+    if (!('speechSynthesis' in window) || !('SpeechSynthesisUtterance' in window)) return;
+    const utterance = new SpeechSynthesisUtterance(text);
+    utterance.lang = 'zh-CN';
+    window.speechSynthesis.speak(utterance);
+  }, []);
+
+  const announceSpectatorChanges = useCallback((
+    current: GameSnapshotDto['spectators'],
+    next: GameSnapshotDto['spectators']
+  ) => {
+    if (!voiceEnabledRef.current) return;
+    const currentById = new Map(current.map((spectator) => [spectator.userId, spectator]));
+    const nextById = new Map(next.map((spectator) => [spectator.userId, spectator]));
+    for (const spectator of next) {
+      if (!currentById.has(spectator.userId)) speak(`${spectator.nickname}进入观战区`);
+    }
+    for (const spectator of current) {
+      if (!nextById.has(spectator.userId)) speak(`${spectator.nickname}退出观战区`);
+    }
+  }, [speak]);
+
   const abortPageRequests = useCallback(() => {
     for (const controller of loadAbortControllersRef.current) controller.abort();
     loadAbortControllersRef.current.clear();
@@ -112,15 +139,32 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     if (!parsed.success || parsed.data.id !== activeGameIdRef.current) return false;
     const current = snapshotRef.current;
     if (current !== null && parsed.data.version < current.version) return false;
+    const newPurchases = parsed.data.purchases.filter(({ id }) => !announcedPurchaseIdsRef.current.has(id));
+    for (const { id } of parsed.data.purchases) announcedPurchaseIdsRef.current.add(id);
+    if (current !== null && current.id === parsed.data.id && voiceEnabledRef.current) {
+      for (const purchase of newPurchases.sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
+        const nickname = parsed.data.players.find(({ id }) => id === purchase.playerId)?.nickname ?? purchase.actorNickname;
+        if (purchase.type === 'ADJUST') {
+          speak(`${nickname}更正为 ${purchase.newHands} 手`);
+        } else {
+          const amount = BigInt(parsed.data.handPrice) * BigInt(purchase.handsDelta);
+          speak(`${nickname}购买 ${purchase.handsDelta} 手，共 ${moneyFormatter.format(amount)} 元`);
+        }
+      }
+      announceSpectatorChanges(current.spectators, parsed.data.spectators);
+    }
     snapshotRef.current = parsed.data;
     setSnapshot(parsed.data);
     return true;
-  }, []);
+  }, [announceSpectatorChanges, speak]);
 
   const appendMessage = useCallback((message: GameMessageDto) => {
+    const isNew = !announcedMessageIdsRef.current.has(message.id);
+    announcedMessageIdsRef.current.add(message.id);
     updateMessages((current) => current.some(({ id }) => id === message.id)
       ? current
       : [...current, message].slice(-50));
+    return isNew;
   }, [updateMessages]);
 
   const loadSnapshot = useCallback(async (background = false) => {
@@ -161,13 +205,22 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         updateMessages(() => []);
         return;
       }
+      const canAnnounce = messagesInitializedRef.current;
+      const newMessages = response.messages.filter(({ id }) => !announcedMessageIdsRef.current.has(id));
+      for (const { id } of response.messages) announcedMessageIdsRef.current.add(id);
+      messagesInitializedRef.current = true;
       updateMessages((current) => mergeGameMessageWindow(response.messages, current, baselineIds));
+      if (canAnnounce && voiceEnabledRef.current && snapshotRef.current?.status === 'ACTIVE') {
+        for (const message of newMessages.sort((left, right) => left.createdAt.localeCompare(right.createdAt))) {
+          speak(`${message.nickname}说：${message.text}`);
+        }
+      }
     } catch {
       // Snapshot availability is more important than the temporary, current-game message list.
     } finally {
       loadAbortControllersRef.current.delete(controller);
     }
-  }, [gameId, updateMessages]);
+  }, [gameId, speak, updateMessages]);
 
   const stopFallback = useCallback(() => {
     if (fallbackTimeoutRef.current !== undefined) {
@@ -201,6 +254,14 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setLoadError(null);
     setTab('table');
     updateMessages(() => []);
+    if (voiceEnabledRef.current && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    voiceEnabledRef.current = false;
+    setVoiceEnabled(false);
+    announcedPurchaseIdsRef.current.clear();
+    announcedMessageIdsRef.current.clear();
+    messagesInitializedRef.current = false;
     setSpeechOpen(false);
     setBuyOpen(false);
     setAdjustment(null);
@@ -232,6 +293,14 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     setLoadError(null);
     setTab('table');
     updateMessages(() => []);
+    if (voiceEnabledRef.current && 'speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    voiceEnabledRef.current = false;
+    setVoiceEnabled(false);
+    announcedPurchaseIdsRef.current.clear();
+    announcedMessageIdsRef.current.clear();
+    messagesInitializedRef.current = false;
     setSpeechOpen(false);
     setBuyOpen(false);
     setAdjustment(null);
@@ -246,6 +315,13 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     const generation = requestGenerationRef.current;
     return () => {
       if (requestGenerationRef.current === generation) requestGenerationRef.current += 1;
+      if (voiceEnabledRef.current && 'speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      voiceEnabledRef.current = false;
+      announcedPurchaseIdsRef.current.clear();
+      announcedMessageIdsRef.current.clear();
+      messagesInitializedRef.current = false;
       abortPageRequests();
     };
   }, [abortPageRequests, gameId, loadMessages, loadSnapshot, updateMessages]);
@@ -379,13 +455,16 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         parsed.data.gameId !== gameId ||
         snapshotRef.current?.status !== 'ACTIVE'
       ) return;
-      appendMessage(parsed.data);
+      if (appendMessage(parsed.data) && voiceEnabledRef.current) {
+        speak(`${parsed.data.nickname}说：${parsed.data.text}`);
+      }
     };
     const receivePresence = (value: unknown) => {
       const parsed = presenceUpdatedEventSchema.safeParse(value);
       if (!parsed.success || parsed.data.gameId !== gameId) return;
       setSnapshot((current) => {
         if (current === null) return current;
+        announceSpectatorChanges(current.spectators, parsed.data.spectators);
         const next = { ...current, spectators: parsed.data.spectators };
         snapshotRef.current = next;
         return next;
@@ -436,7 +515,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       setSocketReady(false);
       setRoomSynchronized(false);
     };
-  }, [appendMessage, applySnapshot, ensureFallbackGrace, exitDeletedGame, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, startFallbackGrace, stopFallback]);
+  }, [announceSpectatorChanges, appendMessage, applySnapshot, ensureFallbackGrace, exitDeletedGame, gameId, hasSnapshot, loadSnapshot, receiveDeletedGame, socketFactory, speak, startFallbackGrace, stopFallback]);
 
   useEffect(() => {
     if (!socketReady || roomSynchronized) {
@@ -459,6 +538,18 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
 
   const refreshAfterWrite = () => {
     void loadSnapshot(true);
+  };
+
+  const toggleVoice = () => {
+    if (voiceEnabled) {
+      if ('speechSynthesis' in window) window.speechSynthesis.cancel();
+      voiceEnabledRef.current = false;
+      setVoiceEnabled(false);
+      return;
+    }
+    voiceEnabledRef.current = true;
+    setVoiceEnabled(true);
+    speak('语音播报已开启');
   };
 
   const onTabKeyDown = (event: ReactKeyboardEvent<HTMLButtonElement>) => {
@@ -509,7 +600,9 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       activeGameIdRef.current !== requestedGameId ||
       snapshotRef.current?.status !== 'ACTIVE'
     ) return;
-    appendMessage(created);
+    if (appendMessage(created) && voiceEnabledRef.current) {
+      speak(`${created.nickname}说：${created.text}`);
+    }
   };
 
   const beginSettlement = async () => {
@@ -566,39 +659,49 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         </div>
       )}
 
-      <div className="game-tabs" role="tablist" aria-label="对局内容">
+      <div className="game-controls">
+        <div className="game-tabs" role="tablist" aria-label="对局内容">
+          <button
+            ref={tableTabRef}
+            id="game-tab-table"
+            role="tab"
+            aria-controls="game-panel-table"
+            aria-selected={tab === 'table'}
+            tabIndex={tab === 'table' ? 0 : -1}
+            onKeyDown={onTabKeyDown}
+            onClick={() => setTab('table')}
+          >竞技区</button>
+          <button
+            ref={purchaseTabRef}
+            id="game-tab-purchases"
+            role="tab"
+            aria-controls="game-panel-purchases"
+            aria-selected={tab === 'purchases'}
+            tabIndex={tab === 'purchases' ? 0 : -1}
+            onKeyDown={onTabKeyDown}
+            onClick={() => setTab('purchases')}
+          >
+            购买记录 <span>{snapshot.purchases.length}</span>
+          </button>
+          <button
+            ref={messageTabRef}
+            id="game-tab-messages"
+            role="tab"
+            aria-controls="game-panel-messages"
+            aria-selected={tab === 'messages'}
+            tabIndex={tab === 'messages' ? 0 : -1}
+            onKeyDown={onTabKeyDown}
+            onClick={() => setTab('messages')}
+          >消息区 <span>{messages.length}</span></button>
+        </div>
         <button
-          ref={tableTabRef}
-          id="game-tab-table"
-          role="tab"
-          aria-controls="game-panel-table"
-          aria-selected={tab === 'table'}
-          tabIndex={tab === 'table' ? 0 : -1}
-          onKeyDown={onTabKeyDown}
-          onClick={() => setTab('table')}
-        >竞技区</button>
-        <button
-          ref={purchaseTabRef}
-          id="game-tab-purchases"
-          role="tab"
-          aria-controls="game-panel-purchases"
-          aria-selected={tab === 'purchases'}
-          tabIndex={tab === 'purchases' ? 0 : -1}
-          onKeyDown={onTabKeyDown}
-          onClick={() => setTab('purchases')}
-        >
-          购买记录 <span>{snapshot.purchases.length}</span>
-        </button>
-        <button
-          ref={messageTabRef}
-          id="game-tab-messages"
-          role="tab"
-          aria-controls="game-panel-messages"
-          aria-selected={tab === 'messages'}
-          tabIndex={tab === 'messages' ? 0 : -1}
-          onKeyDown={onTabKeyDown}
-          onClick={() => setTab('messages')}
-        >消息区 <span>{messages.length}</span></button>
+          type="button"
+          className={`voice-toggle${voiceEnabled ? ' voice-toggle--enabled' : ''}`}
+          aria-label={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
+          aria-pressed={voiceEnabled}
+          title={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
+          onClick={toggleVoice}
+        >{voiceEnabled ? '🔊' : '🔈'}</button>
       </div>
 
       {tab === 'table' ? (
