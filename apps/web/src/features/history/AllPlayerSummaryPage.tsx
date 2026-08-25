@@ -23,15 +23,16 @@ function requestFromSearch(search: URLSearchParams): AggregateRequest {
 const FALLBACK_AVATAR = '/avatars/preset-01.webp';
 
 function PlayerAvatar({ player }: { player: AllPlayerAggregationPlayerDto }) {
-  const [source, setSource] = useState(player.avatarUrl);
-
-  useEffect(() => setSource(player.avatarUrl), [player.avatarUrl]);
+  const [failedSource, setFailedSource] = useState<string | null>(null);
+  const source = failedSource === player.avatarUrl ? FALLBACK_AVATAR : player.avatarUrl;
 
   return (
     <img
       src={source}
       alt={`${player.nickname}的当前头像`}
-      onError={() => setSource((current) => current === FALLBACK_AVATAR ? current : FALLBACK_AVATAR)}
+      onError={() => {
+        if (source !== FALLBACK_AVATAR) setFailedSource(player.avatarUrl);
+      }}
     />
   );
 }
