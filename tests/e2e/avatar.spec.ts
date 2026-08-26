@@ -32,44 +32,30 @@ async function generatedPng(): Promise<Buffer> {
   }).png().toBuffer();
 }
 
-test('preset selection requires an explicit save and persists after reload', async ({ browser }) => {
+test('nickname avatar replaces the preset gallery and persists after reload', async ({ browser }) => {
   const browserSession = await loginContext(browser, 'player-a');
   const { page } = browserSession;
+  const presetCatalogRequests = watchRequestCount(page, 'GET', '/api/avatars/presets');
   const presetMutations = watchRequestCount(page, 'PUT', '/api/me/avatar/preset');
-  const sessionRefreshes = watchRequestCount(page, 'GET', '/api/auth/session');
   try {
     await page.goto('/profile');
     const currentAvatar = page.getByRole('img', { name: '当前头像' });
-    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
-
-    const preset14 = page.getByRole('radio', { name: '头像 14' });
-    await expect(preset14).toBeAttached();
-    await page.locator('label.preset-avatar').filter({ has: preset14 }).click();
-
-    await expect(preset14).toBeChecked();
+    const initial = accounts['player-a'].nickname.trim()[0]!;
+    await expect(currentAvatar).toHaveText(initial);
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    await expect(page.getByText('使用昵称首字作为头像')).toBeVisible();
+    await expect(page.getByRole('button', { name: '从相册选择', exact: true })).toBeVisible();
+    expect(presetCatalogRequests.requests).toHaveLength(0);
     expect(presetMutations.requests).toHaveLength(0);
-    await expect(page.getByText('头像已保存')).toHaveCount(0);
-    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
-
-    const sessionRefreshCountBeforeSave = sessionRefreshes.requests.length;
-    const savedResponse = page.waitForResponse((response) => (
-      isRequest(response.request(), 'PUT', '/api/me/avatar/preset')
-    ));
-    await page.getByRole('button', { name: '保存头像' }).click();
-    expect((await savedResponse).status()).toBe(200);
-
-    expect(presetMutations.requests).toHaveLength(1);
-    await expect.poll(() => sessionRefreshes.requests.length).toBe(sessionRefreshCountBeforeSave + 1);
-    await expect(page.getByRole('status')).toHaveText('头像已保存');
-    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-14.webp');
 
     await page.reload();
-    await expect(page.getByRole('radio', { name: '头像 14' })).toBeChecked();
-    await expect(page.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-14.webp');
-    expect(presetMutations.requests).toHaveLength(1);
+    await expect(page.getByRole('img', { name: '当前头像' })).toHaveText(initial);
+    await expect(page.getByRole('radio')).toHaveCount(0);
+    expect(presetCatalogRequests.requests).toHaveLength(0);
+    expect(presetMutations.requests).toHaveLength(0);
   } finally {
+    presetCatalogRequests.stop();
     presetMutations.stop();
-    sessionRefreshes.stop();
     await browserSession.context.close();
   }
 });
@@ -101,7 +87,7 @@ test('failed custom upload retains the crop and retries the same file before per
   try {
     await page.goto('/profile');
     const currentAvatar = page.getByRole('img', { name: '当前头像' });
-    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
+    await expect(currentAvatar).toHaveText(account.nickname.trim()[0]!);
 
     const albumButton = page.getByRole('button', { name: '从相册选择', exact: true });
     const fileInput = page.getByLabel('从相册选择文件');
@@ -192,7 +178,7 @@ test('failed custom upload retains the crop and retries the same file before per
     await expect(page.getByRole('alert')).toHaveText('数据库暂时不可用，请稍后重试');
 
     expect(uploadMutations.requests).toHaveLength(1);
-    await expect(currentAvatar).toHaveAttribute('src', '/avatars/preset-01.webp');
+    await expect(currentAvatar).toHaveText(account.nickname.trim()[0]!);
     await expect(cropDialog).toBeVisible();
     await expect(preview).toHaveAttribute('src', previewUrl!);
     await expect(horizontalPosition).toHaveValue('80');
@@ -251,7 +237,6 @@ test('failed custom upload retains the crop and retries the same file before per
     expect(uploadMutations.requests).toHaveLength(2);
     await sessionFetchReady;
     await expect(currentAvatar).toHaveAttribute('src', uploadedUrl);
-    for (const radio of await page.getByRole('radio').all()) await expect(radio).toBeDisabled();
     await expect(page.getByRole('button', { name: '从相册选择', exact: true })).toBeDisabled();
     await expect(fileInput).toBeDisabled();
     await expect(cropDialog).toBeVisible();
@@ -313,10 +298,11 @@ test('custom avatar upload is visible to an administrator and reset returns the 
     try {
       await browserSession.page.goto('/users');
       const card = browserSession.page.locator('.user-card').filter({ hasText: accounts['player-a'].nickname });
-      await expect(card.locator('img')).toHaveAttribute('src', `/avatars/uploads/${uploadBody.avatarValue}`);
-      await card.getByRole('button', { name: '重置头像' }).click();
+      await expect(card.locator('.user-avatar')).toHaveAttribute('src', `/avatars/uploads/${uploadBody.avatarValue}`);
+      await card.getByRole('button', { name: '恢复昵称头像' }).click();
       await browserSession.page.getByRole('button', { name: '确认重置' }).click();
-      await expect(card.locator('img')).toHaveAttribute('src', '/avatars/preset-13.webp');
+      await expect(card.locator('.user-avatar')).toHaveText(accounts['player-a'].nickname.trim()[0]!);
+      await expect(card.locator('img.user-avatar')).toHaveCount(0);
     } finally {
       await browserSession.context.close();
     }

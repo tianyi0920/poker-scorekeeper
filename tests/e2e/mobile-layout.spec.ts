@@ -328,7 +328,7 @@ test('four-seat table keeps sparse mobile geometry and reachable player cards at
         };
         const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]')).map((seat) => ({
           seat: inspect(seat),
-          image: inspect(seat.querySelector('img')),
+          avatar: inspect(seat.querySelector('.user-avatar')),
           nickname: inspect(seat.querySelector('strong')),
           hands: inspect(seat.querySelector(':scope > span:not(.visually-hidden)')),
           amount: inspect(seat.querySelector('b'))
