@@ -89,8 +89,8 @@ it('switches the home to history without loading current games and promotes mont
   ]);
 });
 
-it('makes the whole current-game card a link and shows the participating player avatars', async () => {
-  // Break caught: only the small footer enters the table, or the home card hides who is already playing.
+it('makes the whole current-game card a link and replaces preset portraits with nickname avatars', async () => {
+  // Break caught: legacy preset portraits leak back into player-facing surfaces instead of the approved nickname initials.
   mockHomeFetch({ games: [{
     ...currentGame(1),
     players: [
@@ -103,8 +103,9 @@ it('makes the whole current-game card a link and shows the participating player 
 
   const cardLink = await screen.findByRole('link', { name: '进入对局：8月17日晚场' });
   expect(cardLink).toHaveAttribute('href', '/games/game-1');
-  expect(within(cardLink).getByRole('img', { name: '西西的头像' })).toHaveAttribute('src', '/avatars/preset-01.webp');
-  expect(within(cardLink).getByRole('img', { name: 'test的头像' })).toHaveAttribute('src', '/avatars/preset-02.webp');
+  expect(within(cardLink).getByRole('img', { name: '西西的头像' })).toHaveTextContent('西');
+  expect(within(cardLink).getByRole('img', { name: 'test的头像' })).toHaveTextContent('T');
+  expect(within(cardLink).queryByRole('img', { name: '西西的头像' })?.tagName).toBe('SPAN');
   expect(within(cardLink).getByText('西西、test')).toBeInTheDocument();
 });
 

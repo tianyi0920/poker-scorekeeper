@@ -26,14 +26,17 @@ vi.mock('../../auth/AuthProvider.js', () => ({
 vi.mock('./AvatarPicker.js', () => ({
   AvatarPicker: ({
     currentAvatar,
-    onChanged
+    onChanged,
+    nickname
   }: {
     currentAvatar: { kind: string; value: string } | null;
     onChanged: (avatar: { kind: 'PRESET' | 'UPLOAD'; value: string }) => Promise<void> | void;
+    nickname?: string;
   }) => {
     avatarChanged = onChanged;
     return <div>
     <output>{currentAvatar === null ? 'missing' : `${currentAvatar.kind}:${currentAvatar.value}`}</output>
+    <output>{`昵称:${nickname ?? 'missing'}`}</output>
     <button type="button" onClick={() => void onChanged({ kind: 'PRESET', value: 'preset-13' })}>保存头像</button>
   </div>;
   }
@@ -64,9 +67,19 @@ it('initializes the picker from the authenticated avatar and refreshes the sessi
   render(<MemoryRouter><ProfilePage /></MemoryRouter>);
 
   expect(screen.getByText('UPLOAD:saved-avatar.webp')).toBeInTheDocument();
+  expect(screen.getByText('昵称:头像用户')).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '保存头像' }));
 
   expect(refreshSession).toHaveBeenCalledOnce();
+});
+
+it('places the standalone equity calculator under a tools section without adding a bottom tab', () => {
+  // Break caught: the calculator is hidden, or resurfaces as an unwanted third bottom-navigation item.
+  render(<MemoryRouter><ProfilePage /></MemoryRouter>);
+
+  expect(screen.getByRole('heading', { name: '工具' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: /胜率计算器/ })).toHaveAttribute('href', '/tools/equity');
+  expect(screen.queryByRole('link', { name: /^胜率$/ })).not.toBeInTheDocument();
 });
 
 it('returns the pending session refresh to the avatar picker', async () => {

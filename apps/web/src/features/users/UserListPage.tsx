@@ -7,6 +7,7 @@ import { Button } from '../../components/Button.js';
 import { Card } from '../../components/Card.js';
 import { Modal } from '../../components/Modal.js';
 import { Toast } from '../../components/Toast.js';
+import { UserAvatar } from '../../components/UserAvatar.js';
 
 const roleLabel = { SUPER_ADMIN: '超级管理员', ADMIN: '管理员', USER: '普通用户' } as const;
 
@@ -92,11 +93,11 @@ export function UserListPage() {
       const canEdit = actor?.role === 'SUPER_ADMIN' || target.role === 'USER';
       const canResetAvatar = target.deletedAt === null && (actor?.role === 'SUPER_ADMIN' || (actor?.role === 'ADMIN' && target.role === 'USER'));
       return <Card className="user-card" key={target.id}>
-        <div className="user-card-main"><img src={target.avatarKind === 'PRESET' ? `/avatars/${target.avatarValue}.webp` : `/avatars/uploads/${target.avatarValue}`} alt="" /><div><strong>{target.nickname}</strong><span>@{target.username}</span></div><span className="role-badge">{roleLabel[target.role]}</span></div>
+        <div className="user-card-main"><UserAvatar nickname={target.nickname} avatarKind={target.avatarKind} avatarValue={target.avatarValue} decorative /><div><strong>{target.nickname}</strong><span>@{target.username}</span></div><span className="role-badge">{roleLabel[target.role]}</span></div>
         <div className="user-meta"><span className={target.deletedAt ? 'status-dot status-dot--off' : 'status-dot'}>{target.deletedAt ? '已删除' : target.isActive ? '已启用' : '已停用'}</span><span>{target.rakeEnabled ? '参与抽成' : '不抽成'}</span></div>
         <div className="inline-actions">
           {canEdit && target.deletedAt === null && <Link className="secondary-link" to={`/users/${encodeURIComponent(target.id)}/edit`}>编辑</Link>}
-          {canResetAvatar && <Button variant="secondary" unsafe onClick={() => { setResetAvatarTarget(target); setResetAvatarError(null); }}>重置头像</Button>}
+          {canResetAvatar && target.avatarKind === 'UPLOAD' && <Button variant="secondary" unsafe onClick={() => { setResetAvatarTarget(target); setResetAvatarError(null); }}>恢复昵称头像</Button>}
           {actor?.role === 'SUPER_ADMIN' && target.deletedAt === null && <Button variant="danger" unsafe onClick={() => setConfirmDelete(target)}>删除</Button>}
           {actor?.role === 'SUPER_ADMIN' && target.deletedAt !== null && <Button variant="secondary" unsafe onClick={() => openRestore(target)}>恢复</Button>}
         </div>
@@ -109,8 +110,8 @@ export function UserListPage() {
       {restoreError !== null && <Toast tone="error" message={restoreError} />}
       <div className="button-stack"><Button unsafe disabled={restoring || restoreNickname.trim().length === 0} onClick={() => void restoreUser()}>{restoring ? '正在恢复…' : '确认恢复'}</Button><Button variant="ghost" disabled={restoring} onClick={() => setRestoreTarget(null)}>取消</Button></div>
     </div></Modal>}
-    {resetAvatarTarget !== null && <Modal title="确认重置头像" onClose={() => { if (!resettingAvatar) setResetAvatarTarget(null); }}><div className="modal-body">
-      <p>确认将 <strong>{resetAvatarTarget.nickname}</strong> 的头像恢复为系统默认头像？</p>
+    {resetAvatarTarget !== null && <Modal title="恢复昵称头像" onClose={() => { if (!resettingAvatar) setResetAvatarTarget(null); }}><div className="modal-body">
+      <p>确认移除 <strong>{resetAvatarTarget.nickname}</strong> 上传的照片，恢复显示昵称首字头像？</p>
       {resetAvatarError !== null && <Toast tone="error" message={resetAvatarError} />}
       <div className="button-stack"><Button variant="danger" unsafe disabled={resettingAvatar} onClick={() => void resetAvatar()}>{resettingAvatar ? '正在重置…' : '确认重置'}</Button><Button variant="ghost" disabled={resettingAvatar} onClick={() => setResetAvatarTarget(null)}>取消</Button></div>
     </div></Modal>}

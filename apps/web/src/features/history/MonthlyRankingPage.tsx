@@ -7,6 +7,7 @@ import { Card } from '../../components/Card.js';
 import { formatSignedMoney } from '../../components/money-format.js';
 import { Button } from '../../components/Button.js';
 import { Toast } from '../../components/Toast.js';
+import { UserAvatar } from '../../components/UserAvatar.js';
 
 interface RankingPeriod {
   year: number;
@@ -49,7 +50,7 @@ function RankingRow({ player, rank, currentUserId }: {
   const isSelf = player.userId === currentUserId;
   return <li className={`ranking-row${isSelf ? ' ranking-row--self' : ''}`}>
     <span className={`ranking-position ranking-position--${Math.min(rank, 4)}`}>{rank}</span>
-    <span className="ranking-player"><img src={player.avatarUrl} alt={`${player.nickname}的头像`} /><span><strong>{player.nickname}</strong>{isSelf && <small>我</small>}</span></span>
+    <span className="ranking-player"><UserAvatar nickname={player.nickname} avatarUrl={player.avatarUrl} /><span><strong>{player.nickname}</strong>{isSelf && <small>我</small>}</span></span>
     <strong className={`ranking-amount ${amountTone(player.finalAmount)}`}>{formatSignedMoney(player.finalAmount)}</strong>
   </li>;
 }

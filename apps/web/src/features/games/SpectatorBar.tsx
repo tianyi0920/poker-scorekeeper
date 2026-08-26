@@ -1,4 +1,5 @@
 import type { GameMessageDto, GameSpectatorSnapshotDto } from '@poker/contracts';
+import { UserAvatar } from '../../components/UserAvatar.js';
 
 export function SpectatorBar({
   spectators,
@@ -16,14 +17,14 @@ export function SpectatorBar({
         <div className="spectator-list">
           {fallbackMessage !== undefined && (
             <span className="spectator arena-latest-message" data-testid="arena-latest-message">
-              <img src={fallbackMessage.avatarUrl} alt={`${fallbackMessage.nickname}的头像`} />
+              <UserAvatar nickname={fallbackMessage.nickname} avatarUrl={fallbackMessage.avatarUrl} />
               <strong>{fallbackMessage.nickname}</strong>
               <em className="spectator-speech">{fallbackMessage.text}</em>
             </span>
           )}
           {spectators.map((spectator) => (
             <span className="spectator" key={spectator.userId}>
-              <img src={spectator.avatarUrl} alt="" />
+              <UserAvatar nickname={spectator.nickname} avatarUrl={spectator.avatarUrl} decorative />
               <span>{spectator.nickname}</span>
               {latestMessage?.userId === spectator.userId && <em className="spectator-speech">{latestMessage.text}</em>}
             </span>

@@ -16,6 +16,7 @@ import { AllPlayerSummaryPage } from '../features/history/AllPlayerSummaryPage.j
 import { GameSelectionPage } from '../features/history/GameSelectionPage.js';
 import { SettlementDetailPage } from '../features/history/SettlementDetailPage.js';
 import { MonthlyRankingPage } from '../features/history/MonthlyRankingPage.js';
+import { EquityCalculatorPage } from '../features/tools/EquityCalculatorPage.js';
 import { AppShell, OfflineBanner } from './AppShell.js';
 
 function ProtectedShell() {
@@ -34,6 +35,7 @@ export function AppRouter() {
       <Route path="history/summary" element={<AllPlayerSummaryPage />} />
       <Route path="history/:id" element={<SettlementDetailPage />} />
       <Route path="profile" element={<ProfilePage />} />
+      <Route path="tools/equity" element={<EquityCalculatorPage />} />
       <Route path="games/new" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><CreateGamePage /></RoleGate>} />
       <Route path="games/manage" element={<RoleGate roles={['SUPER_ADMIN']}><GameManagementPage /></RoleGate>} />
       <Route path="games/:id" element={<GamePage />} />

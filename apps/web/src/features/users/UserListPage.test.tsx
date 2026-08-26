@@ -60,11 +60,12 @@ it('keeps the restore dialog open so a conflicting nickname can be corrected', a
 it('offers avatar reset only for targets allowed by the actor role and keeps failures in the dialog', async () => {
   // Break caught: there was no avatar reset action or failure state in user management.
   let resetCalls = 0;
+  const uploadedUser = { ...ordinaryUser, avatarKind: 'UPLOAD', avatarValue: 'aming.webp' } as const;
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
     if (url.endsWith('/api/users') && (!init?.method || init.method === 'GET')) {
-      return jsonResponse({ users: [ordinaryUser, administrator] });
+      return jsonResponse({ users: [uploadedUser, administrator] });
     }
     if (url.endsWith('/api/users/user-1/avatar/reset') && init?.method === 'POST') {
       resetCalls += 1;
@@ -75,30 +76,32 @@ it('offers avatar reset only for targets allowed by the actor role and keeps fai
   const user = userEvent.setup();
   renderAt('/users', <App />);
 
-  const resetButtons = await screen.findAllByRole('button', { name: '重置头像' });
+  const resetButtons = await screen.findAllByRole('button', { name: '恢复昵称头像' });
   expect(resetButtons).toHaveLength(1);
   await user.click(resetButtons[0]!);
-  expect(screen.getByRole('dialog', { name: '确认重置头像' })).toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: '恢复昵称头像' })).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: '确认重置' }));
 
   expect(await screen.findByText('服务暂时不可用，请稍后重试')).toBeInTheDocument();
-  expect(screen.getByRole('dialog', { name: '确认重置头像' })).toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: '恢复昵称头像' })).toBeInTheDocument();
   expect(resetCalls).toBe(1);
 });
 
 it('allows a SUPER_ADMIN to reset avatars for every active role', async () => {
   // Regression caught: the ADMIN-only target filter must not be applied to SUPER_ADMIN.
-  const superTarget = { ...ordinaryUser, id: 'super-2', username: 'super2', nickname: '二号超管', role: 'SUPER_ADMIN' } as const;
+  const uploadedUser = { ...ordinaryUser, avatarKind: 'UPLOAD', avatarValue: 'user.webp' } as const;
+  const uploadedAdministrator = { ...administrator, avatarKind: 'UPLOAD', avatarValue: 'admin.webp' } as const;
+  const superTarget = { ...ordinaryUser, id: 'super-2', username: 'super2', nickname: '二号超管', role: 'SUPER_ADMIN', avatarKind: 'UPLOAD', avatarValue: 'super.webp' } as const;
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/api/auth/session')) return jsonResponse(session('SUPER_ADMIN'));
     if (url.endsWith('/api/users') && (!init?.method || init.method === 'GET')) {
-      return jsonResponse({ users: [ordinaryUser, administrator, superTarget] });
+      return jsonResponse({ users: [uploadedUser, uploadedAdministrator, superTarget] });
     }
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   }));
 
   renderAt('/users', <App />);
 
-  expect(await screen.findAllByRole('button', { name: '重置头像' })).toHaveLength(3);
+  expect(await screen.findAllByRole('button', { name: '恢复昵称头像' })).toHaveLength(3);
 });

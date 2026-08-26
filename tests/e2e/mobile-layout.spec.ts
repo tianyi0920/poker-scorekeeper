@@ -494,3 +494,70 @@ test('administrator end-game control and a long latest speech stay inside the fi
     if (gameId) await cleanupTaskGame(gameId);
   }
 });
+
+test('profile tools entry and standalone equity calculator fit mobile viewports', async ({ page }, testInfo) => {
+  test.skip(
+    !['chromium-320x568', 'chromium-360x800', 'webkit-430x932'].includes(testInfo.project.name),
+    '在最窄 Chromium、常用安卓和 iPhone WebKit 尺寸验证独立胜率工具。'
+  );
+
+  const self = tablePlayers[0];
+  await page.goto('/login');
+  await page.getByLabel('用户名').fill(self.username);
+  await page.getByLabel('密码').fill(self.password);
+  await page.getByRole('button', { name: '登录' }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole('link', { name: '我的' }).click();
+
+  const avatar = page.getByRole('img', { name: '当前头像' });
+  await expect(avatar).toHaveText(self.nickname.trim()[0]!);
+  const toolEntry = page.getByRole('link', { name: /胜率计算器/ });
+  await expect(toolEntry).toBeVisible();
+  await toolEntry.click();
+  await expect(page).toHaveURL(/\/tools\/equity$/);
+  await expect(page.getByRole('heading', { name: '胜率计算器' })).toBeVisible();
+
+  const chooseCards = async (
+    playerName: string,
+    cards: Array<{ rank: string; suit: '黑桃' | '红桃' | '梅花' | '方片' }>
+  ) => {
+    await page.getByRole('button', { name: `为${playerName} 选择手牌` }).click();
+    const dialog = page.getByRole('dialog');
+    await expect(dialog).toBeVisible();
+    for (const card of cards) {
+      await dialog.getByRole('button', { name: `选择点数 ${card.rank}` }).click();
+      await dialog.getByRole('button', { name: `选择花色 ${card.suit}` }).click();
+    }
+    await dialog.getByRole('button', { name: '确认选牌' }).click();
+  };
+  await chooseCards('玩家 1', [{ rank: 'A', suit: '方片' }, { rank: 'K', suit: '梅花' }]);
+  await chooseCards('玩家 2', [{ rank: 'Q', suit: '红桃' }, { rank: 'Q', suit: '黑桃' }]);
+  await page.getByRole('button', { name: '计算胜率' }).click();
+  await expect(page.getByLabel('玩家 1').getByText('权益')).toBeVisible();
+  await expect(page.getByLabel('玩家 2').getByText('权益')).toBeVisible();
+
+  const geometry = await page.evaluate(() => ({
+    horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    pageWidth: document.documentElement.getBoundingClientRect().width,
+    viewportWidth: window.innerWidth,
+    boardRight: document.querySelector<HTMLElement>('.equity-board-panel')?.getBoundingClientRect().right ?? Number.NaN,
+    playerRight: document.querySelector<HTMLElement>('.equity-players-panel')?.getBoundingClientRect().right ?? Number.NaN
+  }));
+  expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
+  expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.boardRight).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.playerRight).toBeLessThanOrEqual(geometry.viewportWidth);
+
+  const undersized = await page.locator('button:visible, a:visible').evaluateAll((elements) => elements
+    .filter((element) => !element.matches('.equity-player-cards'))
+    .map((element) => {
+      const rect = element.getBoundingClientRect();
+      return { label: element.getAttribute('aria-label') ?? element.textContent?.trim() ?? '', width: rect.width, height: rect.height };
+    })
+    .filter(({ width, height }) => width > 0 && height > 0 && (width < 44 || height < 44)));
+  expect(undersized, JSON.stringify(undersized)).toEqual([]);
+  await testInfo.attach(`standalone-equity-${testInfo.project.name}`, {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png'
+  });
+});

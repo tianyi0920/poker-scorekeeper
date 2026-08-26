@@ -1,6 +1,7 @@
 import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import type { CSSProperties } from 'react';
 import { formatSignedMoney, formatUnsignedMoney } from '../../components/money-format.js';
+import { UserAvatar } from '../../components/UserAvatar.js';
 import { holdemCardName, holdemCardText, holdemCardTone, type HoldemCard } from './holdem-equity.js';
 
 export function Seat({
@@ -39,7 +40,7 @@ export function Seat({
       aria-label={`${player.nickname}，${player.effectiveHands}手，买入负${ariaAmount}元`}
     >
       {self && <span className="visually-hidden" data-testid="seat-self" data-anchor="bottom">我的座位</span>}
-      <img src={player.avatarUrl} alt={`${player.nickname}的头像`} />
+      <UserAvatar nickname={player.nickname} avatarUrl={player.avatarUrl} />
       <strong title={player.nickname}>{player.nickname}</strong>
       <span className="seat-finance"><span>{player.effectiveHands}手</span><b>{formattedAmount}</b></span>
       {onSelectEquityCards !== undefined && (

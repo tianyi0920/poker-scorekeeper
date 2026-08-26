@@ -6,6 +6,7 @@ import { Button } from '../../components/Button.js';
 import { Card } from '../../components/Card.js';
 import { formatSignedMoney, formatUnsignedMoney } from '../../components/money-format.js';
 import { Toast } from '../../components/Toast.js';
+import { UserAvatar } from '../../components/UserAvatar.js';
 
 type AggregateRequest = Parameters<typeof scorekeeperApi.aggregateHistory>[0];
 type QuickKind = 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS';
@@ -20,21 +21,8 @@ function requestFromSearch(search: URLSearchParams): AggregateRequest {
   return { filter: { kind: quick } };
 }
 
-const FALLBACK_AVATAR = '/avatars/preset-01.webp';
-
 function PlayerAvatar({ player }: { player: AllPlayerAggregationPlayerDto }) {
-  const [failedSource, setFailedSource] = useState<string | null>(null);
-  const source = failedSource === player.avatarUrl ? FALLBACK_AVATAR : player.avatarUrl;
-
-  return (
-    <img
-      src={source}
-      alt={`${player.nickname}的当前头像`}
-      onError={() => {
-        if (source !== FALLBACK_AVATAR) setFailedSource(player.avatarUrl);
-      }}
-    />
-  );
+  return <UserAvatar nickname={player.nickname} avatarUrl={player.avatarUrl} label={`${player.nickname}的当前头像`} />;
 }
 
 function PlayerAggregateCard({ player }: { player: AllPlayerAggregationPlayerDto }) {

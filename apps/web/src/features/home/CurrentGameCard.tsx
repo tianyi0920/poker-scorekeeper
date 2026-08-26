@@ -1,5 +1,6 @@
 import type { GameSnapshotDto } from '@poker/contracts';
 import { Link } from 'react-router-dom';
+import { UserAvatar } from '../../components/UserAvatar.js';
 
 export function CurrentGameCard({ game }: { game: GameSnapshotDto }) {
   const totalBuyIn = game.players.reduce((sum, player) => sum + BigInt(player.buyInAmount), 0n);
@@ -14,7 +15,7 @@ export function CurrentGameCard({ game }: { game: GameSnapshotDto }) {
     <div className="current-game-players">
       {visiblePlayers.length > 0 ? <>
         <span className="current-game-avatar-stack">
-          {visiblePlayers.map((player) => <img key={player.id} className="current-game-avatar" src={player.avatarUrl} alt={`${player.nickname}的头像`} />)}
+          {visiblePlayers.map((player) => <UserAvatar key={player.id} className="current-game-avatar" nickname={player.nickname} avatarUrl={player.avatarUrl} />)}
           {game.players.length > visiblePlayers.length && <span className="current-game-avatar-more">+{game.players.length - visiblePlayers.length}</span>}
         </span>
         <span className="current-game-player-names">

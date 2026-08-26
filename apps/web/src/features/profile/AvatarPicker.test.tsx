@@ -10,13 +10,6 @@ const presets = Array.from({ length: 12 }, (_, index) => {
   return { id, path: `/avatars/${id}.webp` };
 });
 
-function avatarResponse(id: string): Response {
-  return new Response(JSON.stringify({ avatarKind: 'PRESET', avatarValue: id }), {
-    status: 200,
-    headers: { 'Content-Type': 'application/json' }
-  });
-}
-
 function deferred<T = void>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -29,12 +22,14 @@ function deferred<T = void>() {
 
 function renderPicker({
   currentAvatar = { kind: 'PRESET', value: 'preset-13' } as const,
-  onChanged = vi.fn()
+  onChanged = vi.fn(),
+  nickname = '头像用户'
 }: {
   currentAvatar?: { kind: 'PRESET' | 'UPLOAD'; value: string } | null;
   onChanged?: ReturnType<typeof vi.fn>;
+  nickname?: string;
 } = {}) {
-  return { onChanged, ...render(<AvatarPicker currentAvatar={currentAvatar} onChanged={onChanged} />) };
+  return { onChanged, ...render(<AvatarPicker nickname={nickname} currentAvatar={currentAvatar} onChanged={onChanged} />) };
 }
 
 function stubPresetFetch() {
@@ -87,372 +82,6 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
-});
-
-it('does not save when a preset is only selected', async () => {
-  // Break caught: a grid selection performs the avatar mutation before explicit confirmation.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) {
-      return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    }
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-
-  const user = userEvent.setup();
-  renderPicker();
-
-  expect(await screen.findAllByRole('radio')).toHaveLength(12);
-  await user.click(screen.getByRole('radio', { name: '头像 14' }));
-
-  expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain('/api/me/avatar/preset');
-  expect(screen.getByRole('radio', { name: '头像 14' })).toBeChecked();
-  expect(screen.getByRole('button', { name: '保存头像' })).toBeEnabled();
-  expect(screen.getByRole('button', { name: '取消修改' })).toBeEnabled();
-});
-
-it('uses native radio keyboard selection without saving', async () => {
-  // Break caught: keyboard users cannot stage a preset through the radio group.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    if (String(input).endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  renderPicker();
-
-  await screen.findByRole('radio', { name: '头像 13' });
-  await user.tab();
-  await user.keyboard('[ArrowRight]');
-
-  expect(screen.getByRole('radio', { name: '头像 14' })).toBeChecked();
-  expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain('/api/me/avatar/preset');
-});
-
-it('saves the pending preset once and refreshes the saved selection', async () => {
-  // Break caught: confirmation either skips the mutation or leaves the saved selection stale after a successful response.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { onChanged } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-
-  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1));
-  expect(onChanged).toHaveBeenCalledWith({ kind: 'PRESET', value: 'preset-14' });
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-  expect(screen.queryByRole('button', { name: '保存头像' })).not.toBeInTheDocument();
-  expect(screen.getByRole('radio', { name: '头像 14' })).toBeChecked();
-});
-
-it('keeps preset writes locked until the accepted avatar finishes session synchronization', async () => {
-  // Break caught: the mutation response unlocks a second preset write before its session echo settles.
-  const sessionSync = deferred();
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const onChanged = vi.fn(() => sessionSync.promise);
-  const user = userEvent.setup();
-  const view = render(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-13' }} onChanged={onChanged} />);
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  await waitFor(() => expect(onChanged).toHaveBeenCalledWith({ kind: 'PRESET', value: 'preset-14' }));
-
-  for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
-  expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
-  expect(screen.getByLabelText('从相册选择文件')).toBeDisabled();
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-  fireEvent.click(screen.getByRole('radio', { name: '头像 15' }));
-  expect(screen.getByRole('radio', { name: '头像 14' })).toBeChecked();
-
-  view.rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-14' }} onChanged={onChanged} />);
-  expect(screen.getByRole('radio', { name: '头像 14' })).toBeDisabled();
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-
-  await act(async () => sessionSync.resolve());
-
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeEnabled();
-  expect(screen.getByRole('button', { name: '从相册选择' })).toBeEnabled();
-  expect(screen.getByLabelText('从相册选择文件')).toBeEnabled();
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
-});
-
-it('keeps an accepted preset locally and retries only session synchronization after it rejects', async () => {
-  // Break caught: a post-mutation refresh failure hides the accepted avatar or retries the saved preset mutation.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const onChanged = vi.fn()
-    .mockRejectedValueOnce(new Error('session refresh failed'))
-    .mockResolvedValueOnce(undefined);
-  const user = userEvent.setup();
-  renderPicker({ onChanged });
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-
-  expect(await screen.findByRole('alert')).toHaveTextContent('头像已保存，但页面状态同步失败');
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-14.webp');
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-  expect(screen.getByRole('button', { name: '重试页面状态同步' })).toBeEnabled();
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
-  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
-
-  await user.click(screen.getByRole('button', { name: '重试页面状态同步' }));
-
-  await waitFor(() => expect(onChanged).toHaveBeenCalledTimes(2));
-  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-14.webp');
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-});
-
-it('ignores a delayed preset save after a newer session avatar arrives', async () => {
-  // Break caught: an old write response overwrites the newer session avatar and reports a stale change.
-  let resolveSelection!: (response: Response) => void;
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((resolve) => { resolveSelection = resolve; });
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { onChanged, rerender } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
-  await waitFor(() => expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp'));
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
-  expect(screen.getByLabelText('从相册选择文件')).toBeDisabled();
-
-  await act(async () => { resolveSelection(avatarResponse('preset-14')); });
-
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
-  expect(onChanged).not.toHaveBeenCalled();
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeEnabled();
-  expect(screen.getByLabelText('从相册选择文件')).toBeEnabled();
-});
-
-it('keeps avatar writes locked until a stale preset failure settles', async () => {
-  // Break caught: an external session update unlocks controls before the superseded request has settled.
-  let rejectSelection!: (reason: unknown) => void;
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((_resolve, reject) => { rejectSelection = reject; });
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { onChanged, rerender } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
-  await waitFor(() => expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp'));
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
-  expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
-  expect(screen.getByLabelText('从相册选择文件')).toBeDisabled();
-
-  await act(async () => { rejectSelection(new Error('网络中断')); });
-
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-  expect(onChanged).not.toHaveBeenCalled();
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeEnabled();
-  expect(screen.getByLabelText('从相册选择文件')).toBeEnabled();
-});
-
-it('ignores a delayed preset success after the picker unmounts', async () => {
-  // Break caught: a preset response from an unmounted picker calls its stale session callback.
-  let resolveSelection!: (response: Response) => void;
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((resolve) => { resolveSelection = resolve; });
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { onChanged, unmount } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  unmount();
-
-  await act(async () => { resolveSelection(avatarResponse('preset-14')); });
-
-  expect(onChanged).not.toHaveBeenCalled();
-  expect(screen.queryByRole('status')).not.toBeInTheDocument();
-  expect(screen.queryByRole('alert')).not.toBeInTheDocument();
-});
-
-it('clears saved feedback when an external session avatar replaces it', async () => {
-  // Break caught: a success message remains after another session update has superseded it.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { rerender } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  await screen.findByRole('status');
-  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={() => undefined} />);
-
-  await waitFor(() => expect(screen.queryByRole('status')).not.toBeInTheDocument());
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
-});
-
-it('clears stale save errors when an external session avatar changes', async () => {
-  // Break caught: an obsolete mutation error survives after the session supplies a new avatar.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return new Response('{}', { status: 500, headers: { 'Content-Type': 'application/json' } });
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { rerender } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  await screen.findByRole('alert');
-  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={() => undefined} />);
-
-  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
-  expect(screen.queryByRole('button', { name: '重试保存' })).not.toBeInTheDocument();
-});
-
-it('keeps saved feedback when the session refresh echoes the accepted avatar', async () => {
-  // Break caught: the normal refresh after a successful save dismisses its confirmation immediately.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return avatarResponse('preset-14');
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { rerender } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-  await screen.findByRole('status');
-  rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-14' }} onChanged={() => undefined} />);
-
-  expect(screen.getByRole('status')).toHaveTextContent('头像已保存');
-});
-
-it('cancels a pending preset without requesting and restores the saved radio', async () => {
-  // Break caught: cancel sends a write or leaves the unsaved choice selected.
-  const fetchMock = vi.fn(async (input: string | URL | Request) => String(input).endsWith('/api/avatars/presets')
-    ? new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-    : new Response('{}', { status: 404 }));
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '取消修改' }));
-
-  expect(fetchMock.mock.calls.map(([input]) => String(input))).not.toContain('/api/me/avatar/preset');
-  expect(screen.getByRole('radio', { name: '头像 13' })).toBeChecked();
-  expect(screen.queryByRole('button', { name: '保存头像' })).not.toBeInTheDocument();
-});
-
-it('keeps a failed pending preset and offers a retry that saves it', async () => {
-  // Break caught: a failed save discards the selected avatar or provides no usable retry.
-  let saveAttempts = 0;
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) {
-      saveAttempts += 1;
-      return saveAttempts === 1
-        ? new Response(JSON.stringify({ message: '保存失败，请重试' }), { status: 500, headers: { 'Content-Type': 'application/json' } })
-        : avatarResponse('preset-14');
-    }
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  const { onChanged } = renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  await user.click(screen.getByRole('button', { name: '保存头像' }));
-
-  expect(await screen.findByRole('alert')).toHaveTextContent('请求失败，请稍后重试');
-  expect(screen.getByRole('radio', { name: '头像 14' })).toBeChecked();
-  expect(screen.getByRole('button', { name: '重试保存' })).toBeEnabled();
-
-  await user.click(screen.getByRole('button', { name: '重试保存' }));
-  await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(2));
-  expect(onChanged).toHaveBeenCalledWith({ kind: 'PRESET', value: 'preset-14' });
-});
-
-it('prevents duplicate preset saves while the request is pending', async () => {
-  // Break caught: multiple confirmation clicks create more than one concurrent avatar write.
-  let resolveSelection!: (value: Response) => void;
-  const fetchMock = vi.fn(async (input: string | URL | Request) => {
-    const url = String(input);
-    if (url.endsWith('/api/avatars/presets')) return new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } });
-    if (url.endsWith('/api/me/avatar/preset')) return new Promise<Response>((resolve) => { resolveSelection = resolve; });
-    return new Response('{}', { status: 404 });
-  });
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  const save = screen.getByRole('button', { name: '保存头像' });
-  await user.click(save);
-  await user.click(save);
-
-  expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/api/me/avatar/preset'))).toHaveLength(1);
-  expect(save).toBeDisabled();
-  expect(screen.getByRole('radio', { name: '头像 15' })).toBeDisabled();
-
-  resolveSelection(avatarResponse('preset-14'));
-  await waitFor(() => expect(screen.queryByRole('button', { name: '保存头像' })).not.toBeInTheDocument());
-});
-
-it('keeps the changed save control visible but disabled after going offline', async () => {
-  // Break caught: losing network hides the unsaved state instead of preventing its mutation.
-  const fetchMock = vi.fn(async () => new Response(JSON.stringify({ presets }), { status: 200, headers: { 'Content-Type': 'application/json' } }));
-  vi.stubGlobal('fetch', fetchMock);
-  const user = userEvent.setup();
-  renderPicker();
-
-  await user.click(await screen.findByRole('radio', { name: '头像 14' }));
-  Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
-  fireEvent(window, new Event('offline'));
-
-  await waitFor(() => expect(screen.getByRole('button', { name: '保存头像' })).toBeDisabled());
 });
 
 it('uses a keyboard-operable album button while keeping the exact file input accessible and visually hidden', async () => {
@@ -531,7 +160,7 @@ it('keeps the same cropped blob and preview after failure and releases them only
   expect(screen.getByRole('button', { name: '重新选择照片' })).toBeEnabled();
   expect(harness.revokeObjectUrl).not.toHaveBeenCalled();
   expect(harness.encodeCrop).toHaveBeenCalledOnce();
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-13.webp');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveTextContent('头');
 
   fireEvent.click(screen.getByRole('button', { name: '重新上传' }));
 
@@ -619,7 +248,6 @@ it('keeps an accepted upload locally and retries only session synchronization af
   expect(screen.queryByRole('button', { name: '重新上传' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '重试页面状态同步' })).toBeEnabled();
   expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
-  for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
   expect(upload).toHaveBeenCalledOnce();
 
   await user.click(screen.getByRole('button', { name: '重试页面状态同步' }));
@@ -649,7 +277,7 @@ it('prioritizes a newer external session avatar over a late rejected upload sync
   view.rerender(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-15' }} onChanged={onChanged} />);
   await act(async () => sessionSync.reject(new Error('stale session refresh failed')));
 
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveTextContent('用');
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   expect(screen.queryByRole('button', { name: '重试页面状态同步' })).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '从相册选择' })).toBeEnabled();
@@ -693,7 +321,6 @@ it('keeps upload and modal writes locked until the accepted upload finishes sess
   expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/uploads/saved.webp');
   expect(screen.getByRole('dialog', { name: '裁剪头像' })).toBeInTheDocument();
   expect(screen.getByText('正在上传 100%')).toBeInTheDocument();
-  for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
   expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
   expect(screen.getByLabelText('从相册选择文件')).toBeDisabled();
   expect(screen.getByLabelText('水平位置')).toBeDisabled();
@@ -735,7 +362,7 @@ it('ignores a delayed upload success after a newer session avatar arrives', asyn
 
   await act(async () => resolveUpload({ avatarKind: 'UPLOAD', avatarValue: 'stale.webp' }));
 
-  expect(screen.getByRole('img', { name: '当前头像' })).toHaveAttribute('src', '/avatars/preset-15.webp');
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveTextContent('用');
   expect(onChanged).not.toHaveBeenCalled();
   expect(screen.getByRole('button', { name: '从相册选择' })).toBeEnabled();
 });
@@ -812,7 +439,7 @@ it('releases the object URL when crop is explicitly cancelled', async () => {
   expect(screen.queryByRole('dialog', { name: '裁剪头像' })).not.toBeInTheDocument();
 });
 
-it('disables preset, album, file and crop writes for the whole upload request', async () => {
+it('disables album, file and crop writes for the whole upload request', async () => {
   // Break caught: a concurrent avatar or crop write remains enabled while an upload is pending.
   stubPresetFetch();
   installCropHarness();
@@ -823,7 +450,6 @@ it('disables preset, album, file and crop writes for the whole upload request', 
   fireEvent.click(screen.getByRole('button', { name: '裁剪并上传' }));
   await screen.findByText('正在上传 0%');
 
-  for (const radio of screen.getAllByRole('radio')) expect(radio).toBeDisabled();
   expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
   expect(screen.getByLabelText('从相册选择文件')).toBeDisabled();
   expect(screen.getByLabelText('水平位置')).toBeDisabled();
@@ -923,8 +549,8 @@ it('crops to a 512 square and rejects an encoding failure', async () => {
   await expect(cropAvatar(image, { x: 0, y: 0, width: 10, height: 10 })).rejects.toThrow('AVATAR_ENCODE_FAILED');
 });
 
-it('disables every avatar mutation while offline', async () => {
-  // Break caught: preset and custom avatar writes remain actionable without a network connection.
+it('disables avatar upload while offline', async () => {
+  // Break caught: custom avatar writes remain actionable without a network connection.
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: false });
   vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ presets }), {
     status: 200,
@@ -933,8 +559,17 @@ it('disables every avatar mutation while offline', async () => {
 
   render(<AvatarPicker currentAvatar={{ kind: 'PRESET', value: 'preset-01' }} onChanged={() => undefined} />);
 
-  for (const radio of await screen.findAllByRole('radio')) {
-    expect(radio).toBeDisabled();
-  }
   expect(screen.getByLabelText('从相册选择文件')).toBeDisabled();
+  expect(screen.getByRole('button', { name: '从相册选择' })).toBeDisabled();
+});
+
+it('shows the nickname initial for legacy preset avatars without loading a preset gallery', () => {
+  const fetchMock = vi.fn();
+  vi.stubGlobal('fetch', fetchMock);
+
+  renderPicker({ nickname: ' 头像用户' });
+
+  expect(screen.getByRole('img', { name: '当前头像' })).toHaveTextContent('头');
+  expect(screen.queryByRole('radiogroup', { name: '默认头像' })).not.toBeInTheDocument();
+  expect(fetchMock).not.toHaveBeenCalled();
 });

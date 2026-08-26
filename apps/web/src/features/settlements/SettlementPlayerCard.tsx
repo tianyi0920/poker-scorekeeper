@@ -1,6 +1,7 @@
 import type { MoneyJson, SettlementBreakdownDto } from '@poker/contracts';
 import { useState } from 'react';
 import { finalMoneyPresentation, formatSignedMoney, formatUnsignedMoney, type MoneyTone } from '../../components/money-format.js';
+import { UserAvatar } from '../../components/UserAvatar.js';
 
 export function signedMoney(value: MoneyJson): string {
   return formatSignedMoney(value);
@@ -17,12 +18,6 @@ type Player = SettlementBreakdownDto['players'][number];
 function moneyTone(value: MoneyJson): MoneyTone {
   const amount = BigInt(value);
   return amount > 0n ? 'positive' : amount < 0n ? 'negative' : 'neutral';
-}
-
-function avatarUrl(player: Player): string {
-  return player.avatarKind === 'PRESET'
-    ? `/avatars/${player.avatarValue}.webp`
-    : `/avatars/uploads/${player.avatarValue}`;
 }
 
 function signedDeduction(value: bigint): string {
@@ -71,7 +66,7 @@ function HistoryPlayerCard({ player, titlePrefix, handPrice }: { player: Player;
 
   return <article className={`settlement-player-card settlement-player-card--history ${winner ? 'settlement-player-card--winner' : loser ? 'settlement-player-card--loser' : 'settlement-player-card--neutral'}`}>
     <header className="history-player-header">
-      <div className="history-player-identity"><img src={avatarUrl(player)} alt={`${player.nickname}的当前头像`} /><div><span className="seat-number">座位 {player.seatNo}</span><h3>{titlePrefix}{player.nickname}</h3></div></div>
+      <div className="history-player-identity"><UserAvatar nickname={player.nickname} avatarKind={player.avatarKind} avatarValue={player.avatarValue} label={`${player.nickname}的当前头像`} /><div><span className="seat-number">座位 {player.seatNo}</span><h3>{titlePrefix}{player.nickname}</h3></div></div>
       <strong className={`history-actual money--${finalTone}`}>{winner ? '本场实际盈利' : loser ? '本场实际亏损' : '本场实际收支'} {formatSignedMoney(player.finalAmount)}</strong>
     </header>
 

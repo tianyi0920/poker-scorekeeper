@@ -10,7 +10,8 @@ const breakdown = {
 it('prioritizes winning transfer actions and reveals purchase and accounting detail only on request', () => {
   // Break caught: the bank payment, separate expense, current avatar, hands, or remaining cash are missing or buried in equal-weight cells.
   render(<SettlementBreakdown breakdown={breakdown} mode="history" handPrice="300" />);
-  expect(screen.getByRole('img', { name: 'test的当前头像' })).toHaveAttribute('src', '/avatars/preset-24.webp');
+  expect(screen.getByRole('img', { name: 'test的当前头像' })).toHaveTextContent('T');
+  expect(screen.getByRole('img', { name: 'test的当前头像' }).tagName).toBe('SPAN');
   expect(screen.getByText('本场实际盈利 +¥2,088')).toHaveClass('money--positive');
   expect(screen.getByText('银行付款')).toBeInTheDocument();
   expect(screen.getByText('¥2,320')).toBeInTheDocument();

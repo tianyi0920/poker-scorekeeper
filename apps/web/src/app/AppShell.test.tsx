@@ -136,6 +136,29 @@ it('keeps only home and profile in the bottom navigation and treats history as p
   expect(within(navigation).queryByRole('link', { name: '战绩' })).not.toBeInTheDocument();
 });
 
+it('routes the profile tool entry to a protected standalone equity calculator', async () => {
+  // Break caught: the approved tools link falls through to home or becomes a third bottom-navigation tab.
+  window.history.replaceState({}, '', '/tools/equity');
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    if (String(input).endsWith('/api/auth/session')) return jsonResponse({
+      user: {
+        id: 'user-1', username: 'tianyi', nickname: '天一', role: 'USER', mustChangePassword: false,
+        avatarKind: 'PRESET', avatarValue: 'preset-13'
+      },
+      csrfToken
+    });
+    return jsonResponse({});
+  }));
+
+  render(<App />);
+
+  expect(await screen.findByRole('heading', { name: '胜率计算器' })).toBeInTheDocument();
+  const navigation = screen.getByRole('navigation', { name: '主导航' });
+  expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['首页', '我的']);
+  expect(within(navigation).getByRole('link', { name: '我的' })).toHaveClass('active');
+  expect(within(navigation).getByRole('link', { name: '我的' })).toHaveAttribute('aria-current', 'page');
+});
+
 it('uses a compact shell for monthly ranking without the oversized global branding', async () => {
   renderShell('/history/monthly');
   await screen.findByText('路由内容');
