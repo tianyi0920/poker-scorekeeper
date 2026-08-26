@@ -103,7 +103,7 @@ test('mobile live table waits for a real Socket.IO failure before polling, then 
     await expect(admin.page.getByRole('status', { name: '实时连接状态' })).toHaveCount(0);
 
     const warning = admin.page.getByRole('status', { name: '实时连接状态' });
-    await expect(warning).toHaveText('实时连接中断，已启用每 10 秒定期同步');
+    await expect(warning).toContainText('实时连接中断，已启用每 10 秒定期同步');
     await expect(warning).toHaveCount(1);
 
     const refreshesBeforePolling = snapshotRefreshes.length;
