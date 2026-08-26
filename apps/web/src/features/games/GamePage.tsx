@@ -33,23 +33,6 @@ import { GAME_DELETED_NOTICE } from './useGameDeletedSubscription.js';
 type GameTab = 'table' | 'purchases' | 'messages';
 type SocketFactory = () => GameSocketClient;
 const moneyFormatter = new Intl.NumberFormat('zh-CN');
-const VOICE_ENABLED_STORAGE_KEY = 'poker-scorekeeper:voice-enabled:v1';
-
-function readSavedVoicePreference(): boolean {
-  try {
-    return window.localStorage.getItem(VOICE_ENABLED_STORAGE_KEY) === 'true';
-  } catch {
-    return false;
-  }
-}
-
-function saveVoicePreference(enabled: boolean): void {
-  try {
-    window.localStorage.setItem(VOICE_ENABLED_STORAGE_KEY, String(enabled));
-  } catch {
-    // Keep the current-page control usable when browser storage is unavailable.
-  }
-}
 
 function totalBuyIn(snapshot: GameSnapshotDto): bigint {
   return snapshot.players.reduce((total, player) => total + BigInt(player.buyInAmount), 0n);
@@ -93,8 +76,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [tab, setTab] = useState<GameTab>('table');
   const [messages, setMessages] = useState<GameMessageDto[]>([]);
   const messagesRef = useRef<GameMessageDto[]>([]);
-  const [voiceEnabled, setVoiceEnabled] = useState(readSavedVoicePreference);
-  const voiceEnabledRef = useRef(voiceEnabled);
+  const [voiceEnabled, setVoiceEnabled] = useState(false);
+  const voiceEnabledRef = useRef(false);
   const announcedPurchaseIdsRef = useRef(new Set<string>());
   const announcedMessageIdsRef = useRef(new Set<string>());
   const messagesInitializedRef = useRef(false);
@@ -274,6 +257,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     if (voiceEnabledRef.current && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    voiceEnabledRef.current = false;
+    setVoiceEnabled(false);
     announcedPurchaseIdsRef.current.clear();
     announcedMessageIdsRef.current.clear();
     messagesInitializedRef.current = false;
@@ -311,6 +296,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     if (voiceEnabledRef.current && 'speechSynthesis' in window) {
       window.speechSynthesis.cancel();
     }
+    voiceEnabledRef.current = false;
+    setVoiceEnabled(false);
     announcedPurchaseIdsRef.current.clear();
     announcedMessageIdsRef.current.clear();
     messagesInitializedRef.current = false;
@@ -331,6 +318,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if (voiceEnabledRef.current && 'speechSynthesis' in window) {
         window.speechSynthesis.cancel();
       }
+      voiceEnabledRef.current = false;
       announcedPurchaseIdsRef.current.clear();
       announcedMessageIdsRef.current.clear();
       messagesInitializedRef.current = false;
@@ -557,12 +545,10 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
       if ('speechSynthesis' in window) window.speechSynthesis.cancel();
       voiceEnabledRef.current = false;
       setVoiceEnabled(false);
-      saveVoicePreference(false);
       return;
     }
     voiceEnabledRef.current = true;
     setVoiceEnabled(true);
-    saveVoicePreference(true);
     speak('语音播报已开启');
   };
 

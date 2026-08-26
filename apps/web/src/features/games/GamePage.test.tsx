@@ -300,21 +300,16 @@ it('keeps the current table layout and places the speaker in the upper game head
   expect(screen.getByRole('tablist', { name: '对局内容' })).toHaveTextContent('竞技区购买记录 1消息区 0');
 });
 
-it('restores the saved speaker preference after the page remounts and remembers turning it off', async () => {
-  // Break caught: a manual browser refresh resets the speaker to off even after the user chose to keep it on.
+it('does not persist the speaker preference after the page remounts', async () => {
+  // Break caught: a browser refresh restores an enabled icon even though speech needs a fresh user gesture.
   installSpeechSynthesis();
   const firstView = renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
   const user = userEvent.setup();
 
   await user.click(await screen.findByRole('button', { name: '开启语音播报' }));
+  expect(localStorage.getItem('poker-scorekeeper:voice-enabled:v1')).toBeNull();
   firstView.unmount();
 
-  const secondView = renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
-  const restoredToggle = await screen.findByRole('button', { name: '关闭语音播报' });
-  expect(restoredToggle).toHaveAttribute('aria-pressed', 'true');
-
-  await user.click(restoredToggle);
-  secondView.unmount();
   renderGame(new FakeGameSocket(), snapshot({ players: players(1) }));
 
   expect(await screen.findByRole('button', { name: '开启语音播报' }))
@@ -510,8 +505,8 @@ it('cancels queued speech when leaving the table page', async () => {
   expect(speech.cancelCount).toBe(1);
 });
 
-it('keeps the saved voice preference when entering another table', async () => {
-  // Break caught: changing tables forgets the browser-level speaker preference and silently disables announcements.
+it('returns voice announcements to the default off state when entering another table', async () => {
+  // Break caught: enabling one table silently carries voice playback into the next table after navigation.
   const speech = installSpeechSynthesis();
   const sockets: FakeGameSocket[] = [];
   const gameOne = snapshot({ id: 'game-1', name: '第一桌', players: players(1) });
@@ -545,13 +540,14 @@ it('keeps the saved voice preference when entering another table', async () => {
   await user.click(screen.getByRole('button', { name: '切换到第二桌' }));
 
   expect(await screen.findByRole('heading', { name: '第二桌' })).toBeInTheDocument();
-  expect(screen.getByRole('button', { name: '关闭语音播报' })).toHaveAttribute('aria-pressed', 'true');
+  expect(screen.getByRole('button', { name: '开启语音播报' })).toHaveAttribute('aria-pressed', 'false');
+  expect(speech.cancelCount).toBe(1);
   act(() => sockets.at(-1)?.fire('game.message.created', message({
     id: '018f5d0d-43a8-7a7a-9b0b-0e8d9de76e03',
     gameId: 'game-2',
     text: '第二桌消息'
   })));
-  expect(speech.spoken.map(({ text }) => text)).toEqual(['阿明说：第二桌消息']);
+  expect(speech.spoken).toEqual([]);
 });
 
 it('keeps the speech draft and offers a Chinese retry message after send failure', async () => {
