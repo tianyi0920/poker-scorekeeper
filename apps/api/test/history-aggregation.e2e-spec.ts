@@ -402,6 +402,9 @@ describe.sequential('authorized all-player history aggregation', () => {
     const unrelated = await seedCompleted('month-unrelated', new Date('2026-08-15T12:00:00.000Z'), [
       result(participant, 500n), result(thirdPlayer, -500n)
     ]);
+    const superAdminJoined = await seedCompleted('month-super-admin', new Date('2026-08-20T12:00:00.000Z'), [
+      result(superAdmin, 700n), result(thirdPlayer, -700n)
+    ]);
 
     const response = await aggregateAs(adminAuth, {
       filter: { kind: 'MY_MONTH', year: 2026, month: 8 }
@@ -418,6 +421,17 @@ describe.sequential('authorized all-player history aggregation', () => {
         { userId: admin.id, finalAmount: '1000' },
         { userId: opponent.id, finalAmount: '-1000' }
       ]);
+
+    const superAdminResponse = await aggregateAs(superAdminAuth, {
+      filter: { kind: 'MY_MONTH', year: 2026, month: 8 }
+    }).expect(200);
+    expect(superAdminResponse.body.gameIds).toEqual([superAdminJoined]);
+    expect(superAdminResponse.body.players.map(
+      ({ userId, finalAmount }: { userId: string; finalAmount: string }) => ({ userId, finalAmount })
+    )).toEqual([
+      { userId: superAdmin.id, finalAmount: '700' },
+      { userId: thirdPlayer.id, finalAmount: '-700' }
+    ]);
   });
 
   it('rejects invalid quick filter date ranges and detects derived signed BIGINT overflow', async () => {
