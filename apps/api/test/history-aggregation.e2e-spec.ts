@@ -379,11 +379,54 @@ describe.sequential('authorized all-player history aggregation', () => {
     expect(custom.body.gameIds).toEqual([customAtEnd, customAtStart]);
   }, 300_000);
 
+  it('builds a Shanghai calendar-month ranking from only games the requesting user joined', async () => {
+    // Break caught: monthly rankings use UTC month edges or let an administrator see tables they did not join.
+    const result = (user: User, finalAmount: bigint): ResultInput => ({
+      ...simpleResult(user),
+      rawProfit: finalAmount,
+      afterFeeProfit: finalAmount,
+      finalAmount
+    });
+    const beforeMonth = await seedCompleted('month-before', new Date('2026-07-31T15:59:59.999Z'), [
+      result(admin, 50n), result(opponent, -50n)
+    ]);
+    const atMonthStart = await seedCompleted('month-start', new Date('2026-07-31T16:00:00.000Z'), [
+      result(admin, 1200n), result(opponent, -1200n)
+    ]);
+    const atMonthEnd = await seedCompleted('month-end', new Date('2026-08-31T15:59:59.999Z'), [
+      result(admin, -200n), result(opponent, 200n)
+    ]);
+    const atNextMonth = await seedCompleted('month-after', new Date('2026-08-31T16:00:00.000Z'), [
+      result(admin, 90n), result(opponent, -90n)
+    ]);
+    const unrelated = await seedCompleted('month-unrelated', new Date('2026-08-15T12:00:00.000Z'), [
+      result(participant, 500n), result(thirdPlayer, -500n)
+    ]);
+
+    const response = await aggregateAs(adminAuth, {
+      filter: { kind: 'MY_MONTH', year: 2026, month: 8 }
+    }).expect(200);
+
+    expect(allPlayerAggregationSchema.parse(response.body)).toEqual(response.body);
+    expect(response.body.gameIds).toEqual([atMonthEnd, atMonthStart]);
+    expect(response.body.gameIds).not.toContain(beforeMonth);
+    expect(response.body.gameIds).not.toContain(atNextMonth);
+    expect(response.body.gameIds).not.toContain(unrelated);
+    expect(response.body).toMatchObject({ gameCount: 2, playerCount: 2 });
+    expect(response.body.players.map(({ userId, finalAmount }: { userId: string; finalAmount: string }) => ({ userId, finalAmount })))
+      .toEqual([
+        { userId: admin.id, finalAmount: '1000' },
+        { userId: opponent.id, finalAmount: '-1000' }
+      ]);
+  });
+
   it('rejects invalid quick filter date ranges and detects derived signed BIGINT overflow', async () => {
     // Break caught: inverted or offset-less dates become arbitrary scopes, or aggregate sums escape the signed BIGINT contract.
     for (const filter of [
       { kind: 'CUSTOM_DATE_RANGE', startAt: '2026-08-02T00:00:00.000Z', endAt: '2026-08-01T00:00:00.000Z' },
       { kind: 'CUSTOM_DATE_RANGE', startAt: '2026-08-01T00:00:00', endAt: '2026-08-02T00:00:00.000Z' },
+      { kind: 'MY_MONTH', year: 2026, month: 0 },
+      { kind: 'MY_MONTH', year: 2026, month: 13 },
       { kind: 'UNKNOWN' }
     ]) {
       await aggregateAs(adminAuth, { filter }).expect(400)

@@ -16,6 +16,11 @@ export const historyFilterSchema = z.discriminatedUnion('kind', [
   z.object({ kind: z.literal('LAST_30_DAYS') }).strict(),
   z.object({ kind: z.literal('LAST_90_DAYS') }).strict(),
   z.object({
+    kind: z.literal('MY_MONTH'),
+    year: z.number().int().min(2000).max(2100),
+    month: z.number().int().min(1).max(12)
+  }).strict(),
+  z.object({
     kind: z.literal('CUSTOM_DATE_RANGE'),
     startAt: offsetDateTimeSchema,
     endAt: offsetDateTimeSchema

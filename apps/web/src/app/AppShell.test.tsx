@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { AuthProvider } from '../auth/AuthProvider.js';
@@ -123,6 +123,28 @@ it.each([
   const header = screen.getByRole('banner');
   if (liveGame) expect(header).toHaveClass('app-header--game');
   else expect(header).not.toHaveClass('app-header--game');
+});
+
+it('keeps only home and profile in the bottom navigation and treats history as part of home', async () => {
+  renderShell('/history/select');
+  await screen.findByText('路由内容');
+
+  const navigation = screen.getByRole('navigation', { name: '主导航' });
+  expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['首页', '我的']);
+  expect(within(navigation).getByRole('link', { name: '首页' })).toHaveClass('active');
+  expect(within(navigation).getByRole('link', { name: '首页' })).toHaveAttribute('aria-current', 'page');
+  expect(within(navigation).queryByRole('link', { name: '战绩' })).not.toBeInTheDocument();
+});
+
+it('uses a compact shell for monthly ranking without the oversized global branding', async () => {
+  renderShell('/history/monthly');
+  await screen.findByText('路由内容');
+
+  expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+  expect(screen.queryByText('德州计分')).not.toBeInTheDocument();
+  expect(screen.queryByText(/晚上好/)).not.toBeInTheDocument();
+  expect(screen.getByText('路由内容').closest('.app-shell')).toHaveClass('app-shell--compact-detail');
+  expect(screen.getByRole('navigation', { name: '主导航' })).toBeVisible();
 });
 
 it('enables iPhone cover viewport so CSS safe-area insets are available', () => {

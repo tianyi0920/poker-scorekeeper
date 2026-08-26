@@ -58,6 +58,37 @@ it('requests only current games and omits personal summaries and recent results'
   expectOnlyCurrentRequests(fetchMock);
 });
 
+it('switches the home to history without loading current games and promotes monthly ranking', async () => {
+  // Break caught: history remains a third bottom-nav page or both home panels fetch in the background.
+  const fetchMock = vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session());
+    if (url.endsWith('/api/history?limit=10')) return jsonResponse({
+      items: [{
+        gameId: 'game-1',
+        name: '8月25日早场',
+        completedAt: '2026-08-25T12:00:00.000+08:00',
+        settledByNickname: '西西',
+        myFinalAmount: '800'
+      }],
+      nextCursor: null
+    });
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  });
+  vi.stubGlobal('fetch', fetchMock);
+
+  renderAt('/?tab=history', <App />);
+
+  expect(await screen.findByRole('tab', { name: '历史战绩' })).toHaveAttribute('aria-selected', 'true');
+  expect(screen.getByRole('tab', { name: '当前对局' })).toHaveAttribute('aria-selected', 'false');
+  expect(screen.getByRole('link', { name: /月度排名/ })).toHaveAttribute('href', '/history/monthly');
+  expect(screen.getByRole('link', { name: '选择牌局' })).toHaveAttribute('href', '/history/select');
+  expect(await screen.findByText('8月25日早场')).toBeInTheDocument();
+  expect(fetchMock.mock.calls.map(([input]) => String(input))).toEqual([
+    '/api/auth/session', '/api/history?limit=10'
+  ]);
+});
+
 it('makes the whole current-game card a link and shows the participating player avatars', async () => {
   // Break caught: only the small footer enters the table, or the home card hides who is already playing.
   mockHomeFetch({ games: [{

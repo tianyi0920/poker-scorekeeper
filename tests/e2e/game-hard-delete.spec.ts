@@ -283,7 +283,7 @@ test("super admin hard deletes a completed game from management, cached history,
     expect((await deletedResponse).status()).toBe(200);
     await expect(targetRow).toHaveCount(0);
 
-    await expect(participant.page).toHaveURL(/\/history$/);
+    await expect(participant.page).toHaveURL(/\/?\?tab=history$/);
     await expect(
       participant.page.locator(".result-row", { hasText: game.name }),
     ).toHaveCount(0);

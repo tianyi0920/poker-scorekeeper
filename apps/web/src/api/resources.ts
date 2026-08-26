@@ -124,7 +124,7 @@ export const scorekeeperApi = {
   }),
   history: (limit = 10, cursor?: string): Promise<HistoryResponseDto> => validatedApiFetch(historyResponseSchema, `/history?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`),
   historyDetail: (gameId: string): Promise<SettlementDetailDto> => validatedSettlementDetail(gameId, `/history/${encodeURIComponent(gameId)}`),
-  aggregateHistory: (body: { gameIds: string[] } | { filter: { kind: 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS' } | { kind: 'CUSTOM_DATE_RANGE'; startAt: string; endAt: string } }): Promise<AllPlayerAggregationDto> => validatedApiFetch(allPlayerAggregationSchema, '/history/aggregate', {
+  aggregateHistory: (body: { gameIds: string[] } | { filter: { kind: 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS' } | { kind: 'CUSTOM_DATE_RANGE'; startAt: string; endAt: string } | { kind: 'MY_MONTH'; year: number; month: number } }): Promise<AllPlayerAggregationDto> => validatedApiFetch(allPlayerAggregationSchema, '/history/aggregate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   createGame: (body: CreateGameRequest) => apiFetch<GameSnapshotDto>('/games', {

@@ -14,8 +14,8 @@ import { UserListPage } from '../features/users/UserListPage.js';
 import { SettlementWizardPage } from '../features/settlements/SettlementWizardPage.js';
 import { AllPlayerSummaryPage } from '../features/history/AllPlayerSummaryPage.js';
 import { GameSelectionPage } from '../features/history/GameSelectionPage.js';
-import { HistoryPage } from '../features/history/HistoryPage.js';
 import { SettlementDetailPage } from '../features/history/SettlementDetailPage.js';
+import { MonthlyRankingPage } from '../features/history/MonthlyRankingPage.js';
 import { AppShell, OfflineBanner } from './AppShell.js';
 
 function ProtectedShell() {
@@ -28,7 +28,8 @@ export function AppRouter() {
     <Route path="/change-password" element={<ProtectedRoute><ChangePasswordPage /></ProtectedRoute>} />
     <Route element={<ProtectedShell />}>
       <Route index element={<HomePage />} />
-      <Route path="history" element={<HistoryPage />} />
+      <Route path="history" element={<Navigate to="/?tab=history" replace />} />
+      <Route path="history/monthly" element={<MonthlyRankingPage />} />
       <Route path="history/select" element={<GameSelectionPage />} />
       <Route path="history/summary" element={<AllPlayerSummaryPage />} />
       <Route path="history/:id" element={<SettlementDetailPage />} />

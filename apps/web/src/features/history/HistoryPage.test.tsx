@@ -39,6 +39,8 @@ it.each([
 it('renders a valid live history response and persists only the parsed value', async () => {
   renderHistory({ items: [item, { ...item, gameId: 'game-2', name: '旁观牌局', myFinalAmount: null }], nextCursor: null });
   expect(await screen.findByText('网络牌局')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: /月度排名/ })).toHaveAttribute('href', '/history/monthly');
+  expect(screen.getByRole('link', { name: '选择牌局' })).toHaveAttribute('href', '/history/select');
   expect(screen.getByText('+¥100')).toBeInTheDocument();
   expect(screen.getByText('查看明细')).toBeInTheDocument();
   expect(JSON.parse(localStorage.getItem(listCacheKey) ?? 'null')?.value).toEqual({ items: [item, { ...item, gameId: 'game-2', name: '旁观牌局', myFinalAmount: null }], nextCursor: null });

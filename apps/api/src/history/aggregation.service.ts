@@ -9,6 +9,7 @@ import { historyScope } from './history-policy.js';
 
 const MIN_SIGNED_BIGINT = -9_223_372_036_854_775_808n;
 const MAX_SIGNED_BIGINT = 9_223_372_036_854_775_807n;
+const SHANGHAI_UTC_OFFSET_MS = 8 * 60 * 60 * 1_000;
 
 const aggregationInclude = {
   settlement: {
@@ -167,12 +168,15 @@ export class AggregationService {
   private async resolveQuickFilter(actor: AuthUser, filter: HistoryFilter): Promise<AggregationGame[]> {
     const now = new Date();
     const completedAt = this.completedAtForFilter(filter, now);
+    const scope = filter.kind === 'MY_MONTH'
+      ? { players: { some: { userId: actor.id } } }
+      : historyScope(actor);
     return this.prisma.game.findMany({
       where: {
         status: GameStatus.COMPLETED,
         completedAt,
         settlement: { isNot: null },
-        ...historyScope(actor)
+        ...scope
       },
       include: aggregationInclude,
       orderBy: [{ completedAt: 'desc' }, { id: 'desc' }],
@@ -189,6 +193,11 @@ export class AggregationService {
         return { gte: new Date(now.getTime() - 30 * 86_400_000) };
       case 'LAST_90_DAYS':
         return { gte: new Date(now.getTime() - 90 * 86_400_000) };
+      case 'MY_MONTH': {
+        const start = new Date(Date.UTC(filter.year, filter.month - 1, 1) - SHANGHAI_UTC_OFFSET_MS);
+        const end = new Date(Date.UTC(filter.year, filter.month, 1) - SHANGHAI_UTC_OFFSET_MS);
+        return { gte: start, lt: end };
+      }
       case 'CUSTOM_DATE_RANGE':
         return { gte: new Date(filter.startAt), lte: new Date(filter.endAt) };
     }

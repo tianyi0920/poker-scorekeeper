@@ -76,6 +76,12 @@ test('completed history is immutable, participant-visible in full, outsider-hidd
     await expect(resultRow.locator('.result-amount')).toHaveText(
       formatSignedMoney(participantFinalAmount)
     );
+    await browserSession.page.goto('/history/monthly');
+    await expect(browserSession.page.getByRole('heading', { name: '月度排名' })).toBeVisible();
+    await expect(browserSession.page.getByText('统计你参与的 1 场已结算牌局', { exact: true })).toBeVisible();
+    const monthlyRow = browserSession.page.locator('.ranking-row', { hasText: playerA.user.nickname });
+    await expect(monthlyRow).toHaveCount(1);
+    await expect(monthlyRow.locator('.ranking-amount')).toHaveText(formatSignedMoney(participantFinalAmount));
     await browserSession.page.goto(`/history/${gameId}`);
     await expect(browserSession.page.getByLabel('历史结算明细')).toBeVisible();
     await expect(browserSession.page.getByRole('button', { name: /永久锁定结算/ })).toHaveCount(0);
