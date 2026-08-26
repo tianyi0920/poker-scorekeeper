@@ -1,0 +1,157 @@
+import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
+import { HoldemCardPicker } from './HoldemCardPicker.js';
+import { calculateHoldemEquity, type HoldemCard } from './holdem-equity.js';
+import { RoundTable, type BoardSelectionTarget } from './RoundTable.js';
+
+type RoundTableProps = Omit<Parameters<typeof RoundTable>[0], 'equityControls'>;
+type PickerTarget = { type: 'board'; target: BoardSelectionTarget } | { type: 'player'; playerId: string };
+
+export interface HoldemEquityTableState {
+  boardCards: Array<HoldemCard | undefined>;
+  playerCards: Record<string, HoldemCard[]>;
+}
+
+export function createHoldemEquityTableState(): HoldemEquityTableState {
+  return {
+    boardCards: [undefined, undefined, undefined, undefined, undefined],
+    playerCards: {}
+  };
+}
+
+const sampleFormatter = new Intl.NumberFormat('zh-CN');
+
+export function HoldemEquityTable({
+  equityState,
+  onEquityStateChange,
+  ...props
+}: RoundTableProps & {
+  equityState: HoldemEquityTableState;
+  onEquityStateChange: Dispatch<SetStateAction<HoldemEquityTableState>>;
+}) {
+  const { boardCards, playerCards } = equityState;
+  const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
+  const participants = useMemo(() => props.players.flatMap((player) => {
+    const cards = playerCards[player.id];
+    return cards?.length === 2 ? [{ id: player.id, cards }] : [];
+  }), [playerCards, props.players]);
+  const visibleBoard = useMemo(
+    () => boardCards.filter((card): card is HoldemCard => card !== undefined),
+    [boardCards]
+  );
+  const calculation = useMemo(() => {
+    if (participants.length < 2) return undefined;
+    return calculateHoldemEquity({ players: participants, boardCards: visibleBoard });
+  }, [participants, visibleBoard]);
+  const percentages = calculation === undefined
+    ? {}
+    : Object.fromEntries(calculation.players.map(({ id, equityPercentage }) => [id, equityPercentage]));
+  const street = visibleBoard.length === 0 ? '翻牌前' : visibleBoard.length === 3 ? '翻牌' : visibleBoard.length === 4 ? '转牌' : '河牌';
+  const summary = calculation === undefined
+    ? `${street} · 选择至少2名玩家手牌`
+    : `${street} · ${calculation.mode === 'exact' ? `精算 ${sampleFormatter.format(calculation.samples)} 种` : `模拟 ${sampleFormatter.format(calculation.samples)} 次`} · ${participants.length}人`;
+  const disabledBoardTargets: BoardSelectionTarget[] = [
+    ...(visibleBoard.length < 3 ? ['turn', 'river'] as const : []),
+    ...(visibleBoard.length < 4 ? ['river'] as const : [])
+  ];
+
+  const currentPlayerIds = new Set(props.players.map(({ id }) => id));
+  const allVisibleCards = [
+    ...visibleBoard,
+    ...Object.entries(playerCards).flatMap(([playerId, cards]) => currentPlayerIds.has(playerId) ? cards : [])
+  ];
+  const picker = pickerTarget === null ? undefined : (() => {
+    if (pickerTarget.type === 'player') {
+      const player = props.players.find(({ id }) => id === pickerTarget.playerId);
+      return {
+        title: `选择${player?.nickname ?? '玩家'}的手牌`,
+        initialCards: playerCards[pickerTarget.playerId] ?? [],
+        requiredCount: 2
+      };
+    }
+    if (pickerTarget.target === 'flop') return { title: '选择翻牌（3张）', initialCards: visibleBoard.slice(0, 3), requiredCount: 3 };
+    if (pickerTarget.target === 'turn') return { title: '选择转牌', initialCards: boardCards[3] === undefined ? [] : [boardCards[3]], requiredCount: 1 };
+    return { title: '选择河牌', initialCards: boardCards[4] === undefined ? [] : [boardCards[4]], requiredCount: 1 };
+  })();
+  const excludedCards = picker === undefined
+    ? []
+    : allVisibleCards.filter((card) => !picker.initialCards.includes(card));
+
+  const clearPickerTarget = () => {
+    if (pickerTarget?.type === 'player') {
+      onEquityStateChange((current) => {
+        const next = { ...current.playerCards };
+        delete next[pickerTarget.playerId];
+        return { ...current, playerCards: next };
+      });
+    } else if (pickerTarget?.target === 'flop') {
+      onEquityStateChange((current) => ({ ...current, boardCards: [undefined, undefined, undefined, undefined, undefined] }));
+    } else if (pickerTarget?.target === 'turn') {
+      onEquityStateChange((current) => ({
+        ...current,
+        boardCards: [current.boardCards[0], current.boardCards[1], current.boardCards[2], undefined, undefined]
+      }));
+    } else if (pickerTarget?.target === 'river') {
+      onEquityStateChange((current) => ({
+        ...current,
+        boardCards: [current.boardCards[0], current.boardCards[1], current.boardCards[2], current.boardCards[3], undefined]
+      }));
+    }
+    setPickerTarget(null);
+  };
+
+  const confirmPickerTarget = (cards: HoldemCard[]) => {
+    if (pickerTarget?.type === 'player') {
+      onEquityStateChange((current) => ({
+        ...current,
+        playerCards: { ...current.playerCards, [pickerTarget.playerId]: cards }
+      }));
+    } else if (pickerTarget?.target === 'flop') {
+      onEquityStateChange((current) => ({
+        ...current,
+        boardCards: [cards[0], cards[1], cards[2], current.boardCards[3], current.boardCards[4]]
+      }));
+    } else if (pickerTarget?.target === 'turn') {
+      onEquityStateChange((current) => ({
+        ...current,
+        boardCards: [current.boardCards[0], current.boardCards[1], current.boardCards[2], cards[0], current.boardCards[4]]
+      }));
+    } else if (pickerTarget?.target === 'river') {
+      onEquityStateChange((current) => ({
+        ...current,
+        boardCards: [current.boardCards[0], current.boardCards[1], current.boardCards[2], current.boardCards[3], cards[0]]
+      }));
+    }
+    setPickerTarget(null);
+  };
+
+  return (
+    <>
+      <RoundTable
+        {...props}
+        equityControls={{
+          boardCards,
+          playerCards,
+          percentages,
+          summary,
+          disabledBoardTargets,
+          onSelectBoard: (target) => {
+            if (!disabledBoardTargets.includes(target)) setPickerTarget({ type: 'board', target });
+          },
+          onSelectPlayer: (playerId) => setPickerTarget({ type: 'player', playerId })
+        }}
+      />
+      {picker !== undefined && (
+        <HoldemCardPicker
+          key={`${pickerTarget?.type}:${pickerTarget?.type === 'player' ? pickerTarget.playerId : pickerTarget?.target}`}
+          title={picker.title}
+          initialCards={picker.initialCards}
+          requiredCount={picker.requiredCount}
+          excludedCards={excludedCards}
+          onClose={() => setPickerTarget(null)}
+          onClear={clearPickerTarget}
+          onConfirm={confirmPickerTarget}
+        />
+      )}
+    </>
+  );
+}

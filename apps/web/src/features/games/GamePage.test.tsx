@@ -316,6 +316,36 @@ it('does not persist the speaker preference after the page remounts', async () =
     .toHaveAttribute('aria-pressed', 'false');
 });
 
+it('embeds the local equity controls in the live table instead of adding a navigation tab', async () => {
+  // Break caught: the approved calculator becomes a separate bottom destination or is missing from the arena.
+  renderGame(new FakeGameSocket(), snapshot({ players: players(2) }));
+
+  expect(await screen.findByRole('button', { name: '选择翻牌，第1张' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '为我选择手牌' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '为牌友2选择手牌' })).toBeInTheDocument();
+  expect(screen.getByRole('status', { name: '胜率计算状态' })).toHaveTextContent('选择至少2名玩家手牌');
+  expect(screen.getByRole('tablist', { name: '对局内容' })).toHaveTextContent('竞技区购买记录 1消息区 0');
+  expect(screen.queryByRole('tab', { name: /胜率/ })).not.toBeInTheDocument();
+});
+
+it('keeps locally selected cards when checking another game tab', async () => {
+  // Break caught: reviewing purchases or messages silently clears the in-progress local equity comparison.
+  const user = userEvent.setup();
+  renderGame(new FakeGameSocket(), snapshot({ players: players(2) }));
+
+  await user.click(await screen.findByRole('button', { name: '为我选择手牌' }));
+  await user.click(screen.getByRole('button', { name: '选择点数 A' }));
+  await user.click(screen.getByRole('button', { name: '选择花色 黑桃' }));
+  await user.click(screen.getByRole('button', { name: '选择点数 K' }));
+  await user.click(screen.getByRole('button', { name: '选择花色 红桃' }));
+  await user.click(screen.getByRole('button', { name: '确认选牌' }));
+
+  await user.click(screen.getByRole('tab', { name: /^购买记录/ }));
+  await user.click(screen.getByRole('tab', { name: '竞技区' }));
+
+  expect(screen.getByRole('button', { name: '为我修改手牌，A黑桃 K红桃' })).toBeInTheDocument();
+});
+
 it('announces each new purchase or adjustment once without replaying the existing timeline', async () => {
   // Break caught: enabling voice replays old purchases or duplicate snapshots read the same purchase repeatedly.
   const speech = installSpeechSynthesis();
@@ -757,6 +787,26 @@ it('keeps the realtime warning hidden throughout the initial five-second connect
   await act(async () => { await vi.advanceTimersByTimeAsync(1); });
   expect(screen.getByRole('status', { name: '实时连接状态' }))
     .toHaveTextContent('实时连接中断，已启用每 10 秒定期同步');
+});
+
+it('lets the viewer dismiss the floating realtime fallback notice', async () => {
+  // Break caught: the fallback warning permanently consumes vertical table space after the viewer has acknowledged it.
+  vi.useFakeTimers();
+  const socket = new FakeGameSocket();
+  socket.autoConnect = false;
+  renderGame(socket, snapshot({ players: players(1) }));
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+  await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+
+  const notice = screen.getByRole('status', { name: '实时连接状态' });
+  expect(notice).toBeVisible();
+  act(() => within(notice).getByRole('button', { name: '关闭实时连接提示' }).click());
+  expect(screen.queryByRole('status', { name: '实时连接状态' })).not.toBeInTheDocument();
 });
 
 it('starts exactly one polling refresh every ten seconds after the fallback activates', async () => {

@@ -1,7 +1,20 @@
 import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import type { ReactNode } from 'react';
 import { formatUnsignedMoney } from '../../components/money-format.js';
+import { holdemCardName, holdemCardText, holdemCardTone, type HoldemCard } from './holdem-equity.js';
 import { Seat } from './Seat.js';
+
+export type BoardSelectionTarget = 'flop' | 'turn' | 'river';
+
+export interface RoundTableEquityControls {
+  boardCards: Array<HoldemCard | undefined>;
+  playerCards: Record<string, HoldemCard[]>;
+  percentages: Record<string, number>;
+  summary: string;
+  disabledBoardTargets?: BoardSelectionTarget[];
+  onSelectBoard: (target: BoardSelectionTarget) => void;
+  onSelectPlayer: (playerId: string) => void;
+}
 
 const compactSeatPositions = [
   [50, 80], [29, 81], [12, 63], [9, 45], [12, 27], [29, 9],
@@ -42,7 +55,8 @@ export function RoundTable({
   latestMessage,
   purchases = [],
   handPrice = '0',
-  children
+  children,
+  equityControls
 }: {
   players: GameSnapshotDto['players'];
   selfUserId: string;
@@ -50,6 +64,7 @@ export function RoundTable({
   purchases?: GameSnapshotDto['purchases'];
   handPrice?: string;
   children?: ReactNode;
+  equityControls?: RoundTableEquityControls;
 }) {
   const ordered = [...players].sort((left, right) => left.seatNo - right.seatNo);
   const selfIndex = ordered.findIndex(({ userId }) => userId === selfUserId);
@@ -76,17 +91,38 @@ export function RoundTable({
       data-testid="round-table"
       aria-label={`牌桌，${ordered.length} 名玩家`}
     >
-      <div className="poker-felt" aria-hidden="true">
-        <span className="felt-betting-line" />
-        <span className="felt-center-line felt-center-line--vertical" />
-        <span className="felt-center-line felt-center-line--horizontal" />
+      <div className="poker-felt">
+        <span className="felt-betting-line" aria-hidden="true" />
+        <span className="felt-center-line felt-center-line--vertical" aria-hidden="true" />
+        <span className="felt-center-line felt-center-line--horizontal" aria-hidden="true" />
         <span className="community-card-slots">
-          {Array.from({ length: 5 }, (_, index) => (
-            <i className="community-card community-card--back" key={index}>
-              <span className="community-card__mark">♠</span>
-            </i>
-          ))}
+          {Array.from({ length: 5 }, (_, index) => {
+            const card = equityControls?.boardCards[index];
+            const target: BoardSelectionTarget = index < 3 ? 'flop' : index === 3 ? 'turn' : 'river';
+            const streetName = target === 'flop' ? '翻牌' : target === 'turn' ? '转牌' : '河牌';
+            if (equityControls === undefined) {
+              return <i className="community-card community-card--back" key={index}><span className="community-card__mark">♠</span></i>;
+            }
+            const label = card === undefined
+              ? `选择${streetName}${target === 'flop' ? `，第${index + 1}张` : ''}`
+              : `修改${streetName}${target === 'flop' ? `，第${index + 1}张` : ''} ${holdemCardName(card)}`;
+            return (
+              <button
+                type="button"
+                className={`community-card community-card--selectable${card === undefined ? ' community-card--empty' : ` community-card--face community-card--${holdemCardTone(card)}`}`}
+                key={index}
+                aria-label={label}
+                disabled={equityControls.disabledBoardTargets?.includes(target)}
+                onClick={() => equityControls.onSelectBoard(target)}
+              >
+                {card === undefined ? '+' : holdemCardText(card)}
+              </button>
+            );
+          })}
         </span>
+        {equityControls !== undefined && (
+          <span className="table-equity-summary" role="status" aria-label="胜率计算状态">{equityControls.summary}</span>
+        )}
       </div>
       <div className="table-center">
         {latestPurchase !== undefined && latestBuyer !== undefined ? (
@@ -117,6 +153,9 @@ export function RoundTable({
             compact={compact}
             speechDirection={speechDirection}
             latestMessage={latestMessage?.userId === player.userId ? latestMessage : undefined}
+            equityCards={equityControls?.playerCards[player.id]}
+            equityPercentage={equityControls?.percentages[player.id]}
+            onSelectEquityCards={equityControls === undefined ? undefined : () => equityControls.onSelectPlayer(player.id)}
           />
         );
       })}

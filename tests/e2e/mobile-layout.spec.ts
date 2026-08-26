@@ -58,13 +58,15 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
       const controls = document.querySelector<HTMLElement>('.game-controls');
       const voiceToggle = document.querySelector<HTMLElement>('.voice-toggle');
       const spectatorBar = document.querySelector<HTMLElement>('.spectator-bar');
-      if (!table || !felt || !dock || !controls || !voiceToggle || !spectatorBar) throw new Error('竞技区关键元素未渲染');
+      const board = document.querySelector<HTMLElement>('.community-card-slots');
+      if (!table || !felt || !dock || !controls || !voiceToggle || !spectatorBar || !board) throw new Error('竞技区关键元素未渲染');
       const tableRect = table.getBoundingClientRect();
       const feltRect = felt.getBoundingClientRect();
       const dockRect = dock.getBoundingClientRect();
       const controlsRect = controls.getBoundingClientRect();
       const voiceToggleRect = voiceToggle.getBoundingClientRect();
       const spectatorRect = spectatorBar.getBoundingClientRect();
+      const boardRect = board.getBoundingClientRect();
       const seats = Array.from(document.querySelectorAll<HTMLElement>('[data-testid="table-seat"]'))
         .map((seat) => seat.getBoundingClientRect())
         .map((rect) => ({ left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom }));
@@ -96,7 +98,11 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
         spectatorTop: spectatorRect.top,
         spectatorBottom: spectatorRect.bottom,
         seats,
-        seatOverlaps
+        seatOverlaps,
+        boardSeatOverlaps: seats.flatMap((seat, index) => (
+          seat.left < boardRect.right && seat.right > boardRect.left &&
+          seat.top < boardRect.bottom && seat.bottom > boardRect.top ? [index + 1] : []
+        ))
       };
     });
     expect(arenaGeometry.scrollHeight).toBeLessThanOrEqual(arenaGeometry.viewportHeight);
@@ -110,6 +116,7 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
     expect(arenaGeometry.voiceToggleHeight).toBeGreaterThanOrEqual(44);
     expect(arenaGeometry.dockWidth).toBeLessThanOrEqual(arenaGeometry.viewportWidth - 40);
     expect(arenaGeometry.seatOverlaps).toEqual([]);
+    expect(arenaGeometry.boardSeatOverlaps).toEqual([]);
     expect(arenaGeometry.seats.every((seat) => (
       seat.left >= 0 &&
       seat.right <= arenaGeometry.viewportWidth &&
@@ -117,6 +124,7 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
       seat.bottom <= arenaGeometry.dockTop
     ))).toBe(true);
     const undersized = await page.locator('button:visible, a:visible').evaluateAll((elements) => elements
+      .filter((element) => !element.matches('.community-card--selectable, .seat-hole-cards'))
       .map((element) => {
         const rect = element.getBoundingClientRect();
         return { label: element.getAttribute('aria-label') ?? element.textContent?.trim() ?? '', width: rect.width, height: rect.height };
@@ -125,6 +133,126 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
     expect(undersized, JSON.stringify(undersized)).toEqual([]);
     expect(consoleErrors).toEqual([]);
     await testInfo.attach(`${playerCount}-seat-${testInfo.project.name}`, {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: 'image/png'
+    });
+  } finally {
+    await closeApiSessions(admin, ...playerSessions);
+    if (gameId) await cleanupTaskGame(gameId);
+  }
+});
+
+test('history keeps the monthly ranking entry compact', async ({ page }, testInfo) => {
+  test.skip(
+    !['chromium-360x800', 'webkit-430x932'].includes(testInfo.project.name),
+    '在常用安卓和 iPhone WebKit 尺寸验证历史页入口。'
+  );
+
+  const self = tablePlayers[0];
+  await page.goto('/login');
+  await page.getByLabel('用户名').fill(self.username);
+  await page.getByLabel('密码').fill(self.password);
+  await page.getByRole('button', { name: '登录' }).click();
+  await page.getByRole('tab', { name: '历史战绩' }).click();
+
+  const entry = page.getByRole('link', { name: /月度排名/ });
+  await expect(entry).toBeVisible();
+  const height = await entry.evaluate((element) => element.getBoundingClientRect().height);
+  expect(height).toBeGreaterThanOrEqual(44);
+  expect(height).toBeLessThanOrEqual(84);
+  await testInfo.attach(`monthly-ranking-entry-${testInfo.project.name}`, {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: 'image/png'
+  });
+});
+
+test('embedded equity picker fits the viewport and calculates preflop and flop odds', async ({ page }, testInfo) => {
+  test.skip(
+    !['chromium-320x568', 'chromium-360x800', 'webkit-430x932'].includes(testInfo.project.name),
+    '在最窄 Chromium、常用安卓和 iPhone WebKit 尺寸验证选牌完整流程。'
+  );
+
+  const admin = await apiLogin('admin');
+  const playerSessions: ApiSession[] = [];
+  let gameId: string | undefined;
+  try {
+    const self = tablePlayers[0];
+    await page.goto('/login');
+    await page.getByLabel('用户名').fill(self.username);
+    await page.getByLabel('密码').fill(self.password);
+    await page.getByRole('button', { name: '登录' }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    const game = await createStartedGame(
+      admin,
+      `胜率选牌布局 ${testInfo.project.name}`,
+      '300',
+      (createdGameId) => { gameId = createdGameId; }
+    );
+    gameId = game.id;
+    for (const [index, account] of tablePlayers.slice(0, 2).entries()) {
+      const session = await apiLoginAccount(account);
+      playerSessions.push(session);
+      expect((await apiBuyHands(session, game.id, 1, `equity-layout-${testInfo.project.name}-${index}`)).status()).toBe(201);
+    }
+
+    await page.goto(`/games/${game.id}`);
+    const chooseCards = async (
+      triggerName: string,
+      cards: Array<{ rank: string; suit: '黑桃' | '红桃' | '梅花' | '方片' }>,
+      attachmentName?: string
+    ) => {
+      await page.getByRole('button', { name: triggerName }).click();
+      const dialog = page.getByRole('dialog');
+      await expect(dialog).toBeVisible();
+      const geometry = await dialog.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.right,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          pageVerticalOverflow: document.documentElement.scrollHeight - window.innerHeight,
+          pageHorizontalOverflow: document.documentElement.scrollWidth - window.innerWidth
+        };
+      });
+      expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+      expect(geometry.left).toBeGreaterThanOrEqual(0);
+      expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+      expect(geometry.pageVerticalOverflow).toBeLessThanOrEqual(0);
+      expect(geometry.pageHorizontalOverflow).toBeLessThanOrEqual(0);
+      if (attachmentName !== undefined) {
+        await testInfo.attach(attachmentName, { body: await page.screenshot(), contentType: 'image/png' });
+      }
+      for (const card of cards) {
+        await dialog.getByRole('button', { name: `选择点数 ${card.rank}` }).click();
+        await dialog.getByRole('button', { name: `选择花色 ${card.suit}` }).click();
+      }
+      await dialog.getByRole('button', { name: '确认选牌' }).click();
+    };
+
+    await chooseCards('为我选择手牌', [
+      { rank: 'A', suit: '黑桃' },
+      { rank: 'K', suit: '红桃' }
+    ], `equity-picker-${testInfo.project.name}`);
+    await chooseCards(`为${tablePlayers[1]!.nickname}选择手牌`, [
+      { rank: 'Q', suit: '红桃' },
+      { rank: 'Q', suit: '黑桃' }
+    ]);
+    await expect(page.getByRole('status', { name: '胜率计算状态' })).toContainText('翻牌前 · 模拟 10,000 次 · 2人');
+
+    await chooseCards('选择翻牌，第1张', [
+      { rank: '2', suit: '梅花' },
+      { rank: '7', suit: '方片' },
+      { rank: '9', suit: '红桃' }
+    ]);
+    await expect(page.getByRole('status', { name: '胜率计算状态' })).toContainText('翻牌 · 精算 990 种 · 2人');
+    await expect(page.getByRole('button', { name: '选择转牌' })).toBeEnabled();
+    await expect(page.getByRole('button', { name: '选择河牌' })).toBeDisabled();
+    await testInfo.attach(`equity-result-${testInfo.project.name}`, {
       body: await page.screenshot({ fullPage: true }),
       contentType: 'image/png'
     });
@@ -287,7 +415,7 @@ test('administrator end-game control and a long latest speech stay inside the fi
     await expect(page.getByRole('button', { name: '结束对局' })).toBeVisible();
     await expect(page.getByRole('link', { name: '返回首页' })).toBeVisible();
     await expect(page.getByRole('status', { name: '最新购买记录' })).toBeVisible();
-    await expect(page.locator('.community-card--back')).toHaveCount(5);
+    await expect(page.locator('.community-card--selectable')).toHaveCount(5);
     const speechSenders = testInfo.project.name === 'chromium-320x568'
       ? playerSessions
       : [playerSessions[4]!];
@@ -308,15 +436,19 @@ test('administrator end-game control and a long latest speech stay inside the fi
         const spectatorBar = document.querySelector<HTMLElement>('.spectator-bar');
         const endButton = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
           .find((button) => button.textContent?.trim() === '结束对局');
+        const homeLink = document.querySelector<HTMLElement>('.game-home-link');
+        const voiceToggle = document.querySelector<HTMLElement>('.voice-toggle');
         const speechElement = Array.from(document.querySelectorAll<HTMLElement>('.seat-speech'))
           .find((element) => element.textContent === currentSpeechText);
-        if (!table || !dock || !spectatorBar || !endButton || !speechElement) {
+        if (!table || !dock || !spectatorBar || !endButton || !homeLink || !voiceToggle || !speechElement) {
           throw new Error('管理员竞技区关键元素未渲染');
         }
         const tableRect = table.getBoundingClientRect();
         const dockRect = dock.getBoundingClientRect();
         const spectatorRect = spectatorBar.getBoundingClientRect();
         const endRect = endButton.getBoundingClientRect();
+        const homeRect = homeLink.getBoundingClientRect();
+        const voiceRect = voiceToggle.getBoundingClientRect();
         const speechRect = speechElement.getBoundingClientRect();
         const ownSeat = speechElement.closest('[data-testid="table-seat"]');
         const ownAmount = ownSeat?.querySelector<HTMLElement>('b');
@@ -334,6 +466,8 @@ test('administrator end-game control and a long latest speech stay inside the fi
           tableBottom: tableRect.bottom,
           dockTop: dockRect.top,
           endHeight: endRect.height,
+          homeHeight: homeRect.height,
+          voiceHeight: voiceRect.height,
           speechLeft: speechRect.left,
           speechRight: speechRect.right,
           viewportWidth: window.innerWidth,
@@ -347,6 +481,8 @@ test('administrator end-game control and a long latest speech stay inside the fi
       expect(geometry.verticalOverflow).toBeLessThanOrEqual(0);
       expect(geometry.tableBottom - geometry.dockTop).toBeLessThanOrEqual(1);
       expect(geometry.endHeight).toBeGreaterThanOrEqual(44);
+      expect(geometry.homeHeight).toBe(geometry.endHeight);
+      expect(geometry.voiceHeight).toBe(geometry.endHeight);
       expect(geometry.speechLeft).toBeGreaterThanOrEqual(0);
       expect(geometry.speechRight).toBeLessThanOrEqual(geometry.viewportWidth);
       expect(geometry.overlapsSpectatorBar, speechText).toBe(false);

@@ -25,8 +25,12 @@ import { BuyInSheet } from '../buyins/BuyInSheet.js';
 import { GameTimer } from './GameTimer.js';
 import { GameMessagesPanel } from './GameMessagesPanel.js';
 import { GameSpeechSheet } from './GameSpeechSheet.js';
+import {
+  createHoldemEquityTableState,
+  HoldemEquityTable,
+  type HoldemEquityTableState
+} from './HoldemEquityTable.js';
 import { PurchaseTimeline } from './PurchaseTimeline.js';
-import { RoundTable } from './RoundTable.js';
 import { SpectatorBar } from './SpectatorBar.js';
 import { GAME_DELETED_NOTICE } from './useGameDeletedSubscription.js';
 
@@ -69,6 +73,8 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const [socketReady, setSocketReady] = useState(false);
   const [roomSynchronized, setRoomSynchronized] = useState(false);
   const [polling, setPolling] = useState(false);
+  const [connectionNoticeDismissed, setConnectionNoticeDismissed] = useState(false);
+  const [equityState, setEquityState] = useState<HoldemEquityTableState>(createHoldemEquityTableState);
   const [fallbackGeneration, setFallbackGeneration] = useState(0);
   const fallbackGenerationRef = useRef(0);
   const fallbackTimeoutRef = useRef<number | undefined>(undefined);
@@ -93,6 +99,14 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const writeAbortRef = useRef(new AbortController());
   const deletedRef = useRef(false);
   const hasSnapshot = snapshot?.id === gameId;
+
+  useEffect(() => {
+    if (!polling) setConnectionNoticeDismissed(false);
+  }, [polling]);
+
+  useEffect(() => {
+    setEquityState(createHoldemEquityTableState());
+  }, [gameId]);
 
   const updateMessages = useCallback((
     updater: (current: GameMessageDto[]) => GameMessageDto[]
@@ -660,10 +674,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         </div>
       </header>
 
-      {polling && (
+      {polling && !connectionNoticeDismissed && (
         <div className="connection-banner" role="status" aria-label="实时连接状态">
           <span className="connection-dot" aria-hidden="true" />
-          实时连接中断，已启用每 10 秒定期同步
+          <span>实时连接中断，已启用每 10 秒定期同步</span>
+          <button type="button" aria-label="关闭实时连接提示" onClick={() => setConnectionNoticeDismissed(true)}>×</button>
         </div>
       )}
 
@@ -717,12 +732,14 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             latestMessage={latestMessage}
             fallbackMessage={latestMessage !== undefined && !latestMessageHasVisibleSender ? latestMessage : undefined}
           />
-          <RoundTable
+          <HoldemEquityTable
             players={snapshot.players}
             selfUserId={user?.id ?? ''}
             latestMessage={latestMessage}
             purchases={snapshot.purchases}
             handPrice={snapshot.handPrice}
+            equityState={equityState}
+            onEquityStateChange={setEquityState}
           />
         </div>
       ) : tab === 'purchases' ? (

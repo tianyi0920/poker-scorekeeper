@@ -1,6 +1,6 @@
 import type { GameMessageDto, GameSnapshotDto } from '@poker/contracts';
 import { render, screen, within } from '@testing-library/react';
-import { expect, it } from 'vitest';
+import { expect, it, vi } from 'vitest';
 import { getTableDensity, RoundTable, seatPosition } from './RoundTable.js';
 
 function makePlayers(count: number): GameSnapshotDto['players'] {
@@ -57,6 +57,35 @@ it('renders a portrait poker arena with five recognizable face-down cards', () =
   expect(cards).toHaveLength(5);
   for (const card of cards) expect(card.querySelector('.community-card__mark')).not.toBeNull();
   expect(document.querySelector('.felt-betting-line')).toBeInTheDocument();
+});
+
+it('turns the board and every player hand into local equity controls', () => {
+  // Break caught: the calculator is rendered outside the live table or only some seated players can receive cards.
+  const selectBoard = vi.fn();
+  const selectPlayer = vi.fn();
+  render(<RoundTable
+    players={makePlayers(2)}
+    selfUserId="self"
+    equityControls={{
+      boardCards: ['As', 'Th', '7c', undefined, undefined],
+      playerCards: { 'player-1': ['Kd', 'Kc'] },
+      percentages: { 'player-1': 64.2 },
+      summary: '翻牌 · 精算 990 种 · 1人',
+      onSelectBoard: selectBoard,
+      onSelectPlayer: selectPlayer
+    }}
+  />);
+
+  expect(screen.getByRole('button', { name: '修改翻牌，第1张 A黑桃' })).toHaveTextContent('A♠');
+  expect(screen.getByRole('button', { name: '选择转牌' })).toHaveTextContent('+');
+  expect(screen.getByRole('button', { name: '为牌友1修改手牌，K方片 K梅花' })).toHaveTextContent('K♦K♣');
+  expect(screen.getByText('胜率 64.2%')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: '为我选择手牌' })).toHaveTextContent('++');
+
+  screen.getByRole('button', { name: '选择转牌' }).click();
+  screen.getByRole('button', { name: '为我选择手牌' }).click();
+  expect(selectBoard).toHaveBeenCalledWith('turn');
+  expect(selectPlayer).toHaveBeenCalledWith('player-2');
 });
 
 it('highlights the newest purchase with the matching player and amount in the table center', () => {

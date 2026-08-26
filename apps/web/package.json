@@ -10,6 +10,7 @@
     "lint": "eslint src"
   },
   "dependencies": {
+    "@poker-apprentice/hand-evaluator": "4.3.0",
     "@poker/contracts": "workspace:*",
     "@tanstack/react-query": "^5.0.0",
     "react": "^19.2.0",
