@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 
 interface UserAvatarProps {
   nickname: string;
@@ -28,7 +28,6 @@ export function UserAvatar(props: UserAvatarProps) {
   const { nickname, className = '', decorative = false } = props;
   const source = uploadedAvatarSource(props);
   const [failedSource, setFailedSource] = useState<string | null>(null);
-  useEffect(() => setFailedSource(null), [source]);
   const classes = ['user-avatar', `user-avatar--tone-${nicknameTone(nickname)}`, className].filter(Boolean).join(' ');
   const label = props.label ?? `${nickname}的头像`;
 
