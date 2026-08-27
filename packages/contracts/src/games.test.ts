@@ -28,7 +28,8 @@ function snapshot(overrides: Record<string, unknown> = {}): Record<string, unkno
 describe('game snapshot contract', () => {
   it('requires the game creator id in every snapshot', () => {
     expect(gameSnapshotSchema.parse(snapshot()).createdById).toBe('user-creator');
-    const { createdById: _removed, ...missing } = snapshot();
+    const missing = snapshot();
+    delete missing.createdById;
     expect(gameSnapshotSchema.safeParse(missing).success).toBe(false);
   });
 
