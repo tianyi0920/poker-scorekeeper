@@ -12,3 +12,27 @@ it('allows a fifth open game and rejects a sixth', () => {
   expect(policy.canOpenAnotherGame?.(4)).toBe(true);
   expect(policy.canOpenAnotherGame?.(5)).toBe(false);
 });
+
+it.each(['ADMIN', 'SUPER_ADMIN'] as const)('lets %s manage any game', (role) => {
+  expect(() => gamePolicy.assertCanManageGameLifecycle(
+    { id: 'admin', role },
+    { createdById: 'someone-else' }
+  )).not.toThrow();
+});
+
+it('lets a regular user manage only a game they created', () => {
+  expect(() => gamePolicy.assertCanManageGameLifecycle(
+    { id: 'owner', role: 'USER' },
+    { createdById: 'owner' }
+  )).not.toThrow();
+  expect(() => gamePolicy.assertCanManageGameLifecycle(
+    { id: 'outsider', role: 'USER' },
+    { createdById: 'owner' }
+  )).toThrowError(expect.objectContaining({ code: 'FORBIDDEN' }));
+});
+
+it('keeps assertGameManager restricted to administrators', () => {
+  expect(() => gamePolicy.assertGameManager({ role: 'USER' })).toThrowError(
+    expect.objectContaining({ code: 'FORBIDDEN' })
+  );
+});

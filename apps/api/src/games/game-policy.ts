@@ -20,6 +20,15 @@ export function assertGameManager(actor: Pick<AuthUser, 'role'>): void {
   if (actor.role !== 'ADMIN' && actor.role !== 'SUPER_ADMIN') throw forbidden('FORBIDDEN');
 }
 
+export function assertCanManageGameLifecycle(
+  actor: Pick<AuthUser, 'id' | 'role'>,
+  game: { createdById: string }
+): void {
+  if (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') return;
+  if (actor.role === 'USER' && actor.id === game.createdById) return;
+  throw forbidden('FORBIDDEN');
+}
+
 export function assertCanViewGameSnapshot(
   actor: Pick<AuthUser, 'id' | 'role'>,
   game: { status: GameStatus; players: ReadonlyArray<{ userId: string }> }
