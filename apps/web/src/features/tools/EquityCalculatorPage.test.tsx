@@ -203,15 +203,14 @@ it('invalidates a submitted result when players are added, removed, or a picker 
   expect(screen.getByRole('button', { name: '计算胜率' })).toBeDisabled();
 });
 
-it('keeps selected cards but clears stale values and shows the generic message when exact calculation fails', async () => {
-  // Break caught: an error leaks a previous result, loses the editable card selection, or exposes Worker details.
+it('keeps selected cards and shows the generic message when exact calculation fails', async () => {
+  // Break caught: an error loses the editable card selection or exposes Worker details.
   renderPage();
   await chooseCompleteHands();
-  await calculateToSuccess();
 
   await userEvent.setup().click(screen.getByRole('button', { name: '计算胜率' }));
   await waitFor(() => expect(screen.getByText(/正在精确计算…/)).toBeInTheDocument());
-  client().calculations[1]!.reject(new Error('internal evaluator details'));
+  client().calculations[0]!.reject(new Error('internal evaluator details'));
 
   await waitFor(() => expect(screen.getByText('翻牌前 · 精确计算失败，请重试')).toBeInTheDocument());
   expect(screen.queryByText('43.2%')).not.toBeInTheDocument();

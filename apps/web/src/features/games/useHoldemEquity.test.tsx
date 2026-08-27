@@ -89,6 +89,14 @@ function installClient(client: ControllableClient): void {
   vi.mocked(createHoldemEquityWorkerClient).mockReturnValue(client);
 }
 
+function suppressOnlyActWarnings(): ReturnType<typeof vi.spyOn> {
+  const reportUnexpectedError = console.error;
+  return vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+    if (args.some((arg) => String(arg).includes('not wrapped in act'))) return;
+    reportUnexpectedError(...args);
+  });
+}
+
 it('accepts only submitted input through its production API', () => {
   // Break caught: test-only Worker construction is exposed as a second production Hook argument.
   expectTypeOf<Parameters<typeof useHoldemEquity>['length']>().toEqualTypeOf<1>();
@@ -132,6 +140,27 @@ it('creates one client per mount and clears a previous result while a new submit
   expect(result.current).toEqual({ status: 'loading', result: null });
 });
 
+it('keeps a successful result without cancelling when a new submitted object has equivalent content', async () => {
+  // Break caught: a parent recreates an unchanged submission and needlessly restarts exact enumeration.
+  const client = new ControllableClient();
+  installClient(client);
+  const equivalentInputA = JSON.parse(JSON.stringify(inputA)) as HoldemEquityInput;
+  const { result, rerender } = renderHook(
+    ({ input }) => useHoldemEquity(input),
+    { initialProps: { input: inputA } }
+  );
+
+  await act(async () => {
+    client.calculations[0]!.resolve(firstResult);
+    await client.calculations[0]!.promise;
+  });
+  rerender({ input: equivalentInputA });
+
+  expect(client.inputs).toEqual([inputA]);
+  expect(client.cancelCalls).toBe(0);
+  expect(result.current).toEqual({ status: 'success', result: firstResult });
+});
+
 it('does not return a prior success on the first render after submitted input changes', async () => {
   // Break caught: a native card-confirmation click commits new input while the Hook still returns A's
   // success until its passive effect clears state, briefly rendering A's equity against B's cards.
@@ -156,7 +185,7 @@ it('does not return a prior success on the first render after submitted input ch
   });
   expect(screen.getByRole('status')).toHaveTextContent('success:aces');
 
-  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  const consoleError = suppressOnlyActWarnings();
   try {
     screen.getByRole('button', { name: 'replace submitted input' }).dispatchEvent(
       new MouseEvent('click', { bubbles: true })
@@ -191,13 +220,52 @@ it('returns idle synchronously when submitted input is cleared', async () => {
   });
   expect(screen.getByRole('status')).toHaveTextContent('success:aces');
 
-  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  const consoleError = suppressOnlyActWarnings();
   try {
     screen.getByRole('button', { name: 'clear submitted input' }).dispatchEvent(
       new MouseEvent('click', { bubbles: true })
     );
     await Promise.resolve();
     expect(screen.getByRole('status')).toHaveTextContent('idle:none');
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it('hides a previous error on the first render after submitted input changes', async () => {
+  // Break caught: a native card-confirmation click displays A's error against B's submitted cards.
+  const client = new ControllableClient();
+  installClient(client);
+
+  function SubmittedInputSwitcher() {
+    const [input, setInput] = useState<HoldemEquityInput>(inputA);
+    const state = useHoldemEquity(input);
+    return (
+      <>
+        <button type="button" onClick={() => setInput(inputB)}>replace submitted input</button>
+        <output>{state.status}:{state.result?.players[0]?.id ?? 'none'}</output>
+      </>
+    );
+  }
+
+  render(<SubmittedInputSwitcher />);
+  await act(async () => {
+    client.calculations[0]!.reject(new Error('worker failed'));
+    try {
+      await client.calculations[0]!.promise;
+    } catch {
+      // The Hook owns the failure presentation; this test only waits for its state update.
+    }
+  });
+  expect(screen.getByRole('status')).toHaveTextContent('error:none');
+
+  const consoleError = suppressOnlyActWarnings();
+  try {
+    screen.getByRole('button', { name: 'replace submitted input' }).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await Promise.resolve();
+    expect(screen.getByRole('status')).toHaveTextContent('loading:none');
   } finally {
     consoleError.mockRestore();
   }

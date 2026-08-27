@@ -16,7 +16,6 @@ const idleState: HoldemEquityState = { status: 'idle', result: null };
 const loadingState: HoldemEquityState = { status: 'loading', result: null };
 
 interface InputBoundState {
-  input: HoldemEquityInput | null;
   inputSignature: string | null;
   state: HoldemEquityState;
 }
@@ -29,7 +28,6 @@ export function useHoldemEquity(submittedInput: HoldemEquityInput | null): Holde
   const clientRef = useRef<HoldemEquityWorkerClient | null>(null);
   const disposalGenerationRef = useRef(0);
   const [inputBoundState, setInputBoundState] = useState<InputBoundState>({
-    input: null,
     inputSignature: null,
     state: idleState
   });
@@ -54,23 +52,21 @@ export function useHoldemEquity(submittedInput: HoldemEquityInput | null): Holde
 
   useEffect(() => {
     if (submittedInput === null) {
-      setInputBoundState({ input: null, inputSignature: null, state: idleState });
+      setInputBoundState({ inputSignature: null, state: idleState });
       return;
     }
 
     let active = true;
-    setInputBoundState({ input: submittedInput, inputSignature: submittedInputSignature, state: loadingState });
+    setInputBoundState({ inputSignature: submittedInputSignature, state: loadingState });
     void client.calculate(submittedInput).then(
       (result) => {
         if (active) setInputBoundState({
-          input: submittedInput,
           inputSignature: submittedInputSignature,
           state: { status: 'success', result }
         });
       },
       () => {
         if (active) setInputBoundState({
-          input: submittedInput,
           inputSignature: submittedInputSignature,
           state: { status: 'error', result: null }
         });
@@ -81,10 +77,10 @@ export function useHoldemEquity(submittedInput: HoldemEquityInput | null): Holde
       active = false;
       client.cancel();
     };
-  }, [submittedInput, submittedInputSignature]);
+  }, [submittedInputSignature]);
 
   if (submittedInput === null) return idleState;
-  return inputBoundState.input === submittedInput && inputBoundState.inputSignature === submittedInputSignature
+  return inputBoundState.inputSignature === submittedInputSignature
     ? inputBoundState.state
     : loadingState;
 }
