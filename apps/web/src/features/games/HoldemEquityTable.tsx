@@ -1,7 +1,8 @@
 import { useMemo, useState, type Dispatch, type SetStateAction } from 'react';
 import { HoldemCardPicker } from './HoldemCardPicker.js';
-import { calculateHoldemEquity, type HoldemCard } from './holdem-equity.js';
+import type { HoldemCard } from './holdem-equity.js';
 import { RoundTable, type BoardSelectionTarget } from './RoundTable.js';
+import { useHoldemEquity } from './useHoldemEquity.js';
 
 type RoundTableProps = Omit<Parameters<typeof RoundTable>[0], 'equityControls'>;
 type PickerTarget = { type: 'board'; target: BoardSelectionTarget } | { type: 'player'; playerId: string };
@@ -19,6 +20,7 @@ export function createHoldemEquityTableState(): HoldemEquityTableState {
 }
 
 const sampleFormatter = new Intl.NumberFormat('zh-CN');
+const validBoardCounts = new Set([0, 3, 4, 5]);
 
 export function HoldemEquityTable({
   equityState,
@@ -38,17 +40,22 @@ export function HoldemEquityTable({
     () => boardCards.filter((card): card is HoldemCard => card !== undefined),
     [boardCards]
   );
-  const calculation = useMemo(() => {
-    if (participants.length < 2) return undefined;
-    return calculateHoldemEquity({ players: participants, boardCards: visibleBoard });
+  const submittedInput = useMemo(() => {
+    if (participants.length < 2 || !validBoardCounts.has(visibleBoard.length)) return null;
+    return { players: participants, boardCards: visibleBoard };
   }, [participants, visibleBoard]);
-  const percentages = calculation === undefined
-    ? {}
-    : Object.fromEntries(calculation.players.map(({ id, equityPercentage }) => [id, equityPercentage]));
+  const calculation = useHoldemEquity(submittedInput);
+  const percentages = calculation.status === 'success'
+    ? Object.fromEntries(calculation.result.players.map(({ id, equityPercentage }) => [id, equityPercentage]))
+    : {};
   const street = visibleBoard.length === 0 ? '翻牌前' : visibleBoard.length === 3 ? '翻牌' : visibleBoard.length === 4 ? '转牌' : '河牌';
-  const summary = calculation === undefined
+  const summary = calculation.status === 'idle'
     ? `${street} · 选择至少2名玩家手牌`
-    : `${street} · ${calculation.mode === 'exact' ? `精算 ${sampleFormatter.format(calculation.samples)} 种` : `模拟 ${sampleFormatter.format(calculation.samples)} 次`} · ${participants.length}人`;
+    : calculation.status === 'loading'
+      ? `${street} · 正在精确计算…`
+      : calculation.status === 'error'
+        ? `${street} · 精确计算失败，请重试`
+        : `${street} · 精确穷举 · 共计算 ${sampleFormatter.format(calculation.result.samples)} 种牌面 · ${participants.length}人`;
   const disabledBoardTargets: BoardSelectionTarget[] = [
     ...(visibleBoard.length < 3 ? ['turn', 'river'] as const : []),
     ...(visibleBoard.length < 4 ? ['river'] as const : [])
