@@ -364,6 +364,7 @@ describe.sequential('recoverable settlement drafts', () => {
       previewReady: true
     }));
 
+    await prisma.activePlayerLock.deleteMany({ where: { gameId: owned.game.id } });
     const other = await seedActiveGame('creator-other');
     await beginSettlement(other);
     await write(playerAAuth, 'put', `/api/games/${other.game.id}/settlement-draft`, {
@@ -403,8 +404,8 @@ describe.sequential('recoverable settlement drafts', () => {
       .expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
   });
 
-  it('rejects disabled and deleted creators at the locked draft-save boundary', async () => {
-    // Break caught: a session issued before disablement or deletion can still mutate the creator's draft.
+  it('rejects disabled and deleted creators when their session is revalidated before draft save', async () => {
+    // Break caught: a session issued before disablement or deletion remains authenticated for draft mutation.
     const disabled = await seedActiveGame('disabled-creator', playerA);
     await beginSettlement(disabled, playerAAuth);
     await prisma.user.update({ where: { id: playerA.id }, data: { isActive: false } });
@@ -412,7 +413,7 @@ describe.sequential('recoverable settlement drafts', () => {
       await write(playerAAuth, 'put', `/api/games/${disabled.game.id}/settlement-draft`, {
         version: 1,
         payload: balancedPayload(disabled)
-      }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+      }).expect(401).expect(({ body }) => expect(body.code).toBe('UNAUTHENTICATED'));
     } finally {
       playerA = await prisma.user.update({ where: { id: playerA.id }, data: { isActive: true } });
     }
@@ -424,14 +425,14 @@ describe.sequential('recoverable settlement drafts', () => {
       await write(playerAAuth, 'put', `/api/games/${deleted.game.id}/settlement-draft`, {
         version: 1,
         payload: balancedPayload(deleted)
-      }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+      }).expect(401).expect(({ body }) => expect(body.code).toBe('UNAUTHENTICATED'));
     } finally {
       playerA = await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: null } });
     }
   });
 
   it('does not advertise editability after the draft editor is demoted', async () => {
-    const fixture = await seedActiveGame('demoted-editor');
+    const fixture = await seedActiveGame('demoted-editor', adminB);
     await beginSettlement(fixture);
     await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.USER } });
     try {

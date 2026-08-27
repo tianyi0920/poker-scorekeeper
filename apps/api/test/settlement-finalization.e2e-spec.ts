@@ -378,6 +378,7 @@ describe.sequential('atomic final settlement', () => {
       confirmationToken: otherToken
     }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
 
+    await prisma.activePlayerLock.deleteMany({ where: { gameId: other.game.id } });
     const administratorOwned = await seedFixture('admin-cross-finalize', playerA, admin);
     const administratorToken = await confirmationToken(administratorOwned);
     await write(adminAuth, `/api/games/${administratorOwned.game.id}/settlement-finalize`, {
@@ -390,8 +391,8 @@ describe.sequential('atomic final settlement', () => {
     }));
   });
 
-  it('rejects a deleted creator whose session predates finalization', async () => {
-    // Break caught: finalization trusts the session actor instead of the locked current user row.
+  it('rejects a deleted creator when the session is revalidated before finalization', async () => {
+    // Break caught: a session issued before deletion remains authenticated for finalization.
     const fixture = await seedFixture('deleted-creator-finalize', playerA, playerA);
     const token = await confirmationToken(fixture, playerAuth);
     await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: new Date() } });
@@ -400,7 +401,7 @@ describe.sequential('atomic final settlement', () => {
         draftVersion: fixture.draftVersion,
         settingsVersion: 7,
         confirmationToken: token
-      }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+      }).expect(401).expect(({ body }) => expect(body.code).toBe('UNAUTHENTICATED'));
     } finally {
       playerA = await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: null } });
     }
