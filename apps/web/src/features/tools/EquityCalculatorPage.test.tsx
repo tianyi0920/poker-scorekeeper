@@ -203,19 +203,28 @@ it('invalidates a submitted result when players are added, removed, or a picker 
   expect(screen.getByRole('button', { name: '计算胜率' })).toBeDisabled();
 });
 
-it('keeps selected cards and shows the generic message when exact calculation fails', async () => {
-  // Break caught: an error loses the editable card selection or exposes Worker details.
+it('clears stale values, keeps selected cards, and retries the same exact calculation after failure', async () => {
+  // Break caught: an error leaks stale results, loses cards, exposes Worker details, or leaves retry inert.
   renderPage();
   await chooseCompleteHands();
+  await calculateToSuccess();
 
   await userEvent.setup().click(screen.getByRole('button', { name: '计算胜率' }));
   await waitFor(() => expect(screen.getByText(/正在精确计算…/)).toBeInTheDocument());
-  client().calculations[0]!.reject(new Error('internal evaluator details'));
+  expect(screen.queryByText('43.2%')).not.toBeInTheDocument();
+  client().calculations[1]!.reject(new Error('internal evaluator details'));
 
   await waitFor(() => expect(screen.getByText('翻牌前 · 精确计算失败，请重试')).toBeInTheDocument());
   expect(screen.queryByText('43.2%')).not.toBeInTheDocument();
   expect(screen.getByRole('button', { name: '计算胜率' })).toBeEnabled();
   expect(screen.getByRole('button', { name: '为玩家 1 选择手牌' })).toHaveTextContent('A♦K♣');
+
+  await userEvent.setup().click(screen.getByRole('button', { name: '计算胜率' }));
+  await waitFor(() => expect(screen.getByText(/正在精确计算…/)).toBeInTheDocument());
+  expect(client().calculations).toHaveLength(3);
+  client().calculations[2]!.resolve(exactResult);
+  await waitFor(() => expect(screen.getByText(/精确穷举 · 共计算/)).toBeInTheDocument());
+  expect(screen.getByText('43.2%')).toBeInTheDocument();
 });
 
 it('cancels current work and returns to an empty two-player state when reset', async () => {

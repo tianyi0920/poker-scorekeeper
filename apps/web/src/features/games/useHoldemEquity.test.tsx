@@ -7,7 +7,7 @@ import {
   createHoldemEquityWorkerClient,
   type HoldemEquityWorkerClient
 } from './holdem-equity-worker-client.js';
-import { useHoldemEquity } from './useHoldemEquity.js';
+import { useHoldemEquity, type HoldemEquitySubmission } from './useHoldemEquity.js';
 
 vi.mock('./holdem-equity-worker-client.js', () => ({
   createHoldemEquityWorkerClient: vi.fn()
@@ -89,6 +89,10 @@ function installClient(client: ControllableClient): void {
   vi.mocked(createHoldemEquityWorkerClient).mockReturnValue(client);
 }
 
+function submission(input: HoldemEquityInput, requestId = 0): HoldemEquitySubmission {
+  return { input, requestId };
+}
+
 function suppressOnlyActWarnings(): ReturnType<typeof vi.spyOn> {
   const reportUnexpectedError = console.error;
   return vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -108,7 +112,7 @@ it('stays idle for null input and cancels an active calculation when the submitt
   installClient(client);
   const { result, rerender } = renderHook(
     ({ input }) => useHoldemEquity(input),
-    { initialProps: { input: inputA as HoldemEquityInput | null } }
+    { initialProps: { input: submission(inputA) as HoldemEquitySubmission | null } }
   );
 
   expect(result.current).toEqual({ status: 'loading', result: null });
@@ -124,7 +128,7 @@ it('creates one client per mount and clears a previous result while a new submit
   installClient(client);
   const { result, rerender } = renderHook(
     ({ input }) => useHoldemEquity(input),
-    { initialProps: { input: inputA } }
+    { initialProps: { input: submission(inputA) } }
   );
 
   await act(async () => {
@@ -133,7 +137,7 @@ it('creates one client per mount and clears a previous result while a new submit
   });
   expect(result.current).toEqual({ status: 'success', result: firstResult });
 
-  rerender({ input: inputB });
+  rerender({ input: submission(inputB) });
 
   expect(createHoldemEquityWorkerClient).toHaveBeenCalledTimes(1);
   expect(client.inputs).toEqual([inputA, inputB]);
@@ -147,14 +151,14 @@ it('keeps a successful result without cancelling when a new submitted object has
   const equivalentInputA = JSON.parse(JSON.stringify(inputA)) as HoldemEquityInput;
   const { result, rerender } = renderHook(
     ({ input }) => useHoldemEquity(input),
-    { initialProps: { input: inputA } }
+    { initialProps: { input: submission(inputA) } }
   );
 
   await act(async () => {
     client.calculations[0]!.resolve(firstResult);
     await client.calculations[0]!.promise;
   });
-  rerender({ input: equivalentInputA });
+  rerender({ input: submission(equivalentInputA) });
 
   expect(client.inputs).toEqual([inputA]);
   expect(client.cancelCalls).toBe(0);
@@ -168,11 +172,11 @@ it('does not return a prior success on the first render after submitted input ch
   installClient(client);
 
   function SubmittedInputSwitcher() {
-    const [input, setInput] = useState<HoldemEquityInput>(inputA);
+    const [input, setInput] = useState<HoldemEquitySubmission>(submission(inputA));
     const state = useHoldemEquity(input);
     return (
       <>
-        <button type="button" onClick={() => setInput(inputB)}>replace submitted input</button>
+        <button type="button" onClick={() => setInput(submission(inputB))}>replace submitted input</button>
         <output>{state.status}:{state.result?.players[0]?.id ?? 'none'}</output>
       </>
     );
@@ -203,7 +207,7 @@ it('returns idle synchronously when submitted input is cleared', async () => {
   installClient(client);
 
   function SubmittedInputClearer() {
-    const [input, setInput] = useState<HoldemEquityInput | null>(inputA);
+    const [input, setInput] = useState<HoldemEquitySubmission | null>(submission(inputA));
     const state = useHoldemEquity(input);
     return (
       <>
@@ -238,11 +242,11 @@ it('hides a previous error on the first render after submitted input changes', a
   installClient(client);
 
   function SubmittedInputSwitcher() {
-    const [input, setInput] = useState<HoldemEquityInput>(inputA);
+    const [input, setInput] = useState<HoldemEquitySubmission>(submission(inputA));
     const state = useHoldemEquity(input);
     return (
       <>
-        <button type="button" onClick={() => setInput(inputB)}>replace submitted input</button>
+        <button type="button" onClick={() => setInput(submission(inputB))}>replace submitted input</button>
         <output>{state.status}:{state.result?.players[0]?.id ?? 'none'}</output>
       </>
     );
@@ -275,7 +279,7 @@ it('publishes a resolved calculation as a successful exact-equity state', async 
   // Break caught: a valid Worker result never reaches the shared UI state.
   const client = new ControllableClient();
   installClient(client);
-  const { result } = renderHook(() => useHoldemEquity(inputA));
+  const { result } = renderHook(() => useHoldemEquity(submission(inputA)));
 
   await act(async () => {
     client.calculations[0]!.resolve(firstResult);
@@ -289,7 +293,7 @@ it('clears the result and publishes an error state when calculation rejects', as
   // Break caught: a failed Worker calculation leaks a stale success result or leaves the Hook loading forever.
   const client = new ControllableClient();
   installClient(client);
-  const { result } = renderHook(() => useHoldemEquity(inputA));
+  const { result } = renderHook(() => useHoldemEquity(submission(inputA)));
 
   await act(async () => {
     client.calculations[0]!.reject(new Error('worker failed'));
@@ -309,10 +313,10 @@ it('does not publish input A after input B replaces it and A resolves late', asy
   installClient(client);
   const { result, rerender } = renderHook(
     ({ input }) => useHoldemEquity(input),
-    { initialProps: { input: inputA } }
+    { initialProps: { input: submission(inputA) } }
   );
 
-  rerender({ input: inputB });
+  rerender({ input: submission(inputB) });
   await act(async () => {
     client.calculations[0]!.resolve(firstResult);
     await client.calculations[0]!.promise;
@@ -332,10 +336,10 @@ it('does not publish an error when input A rejects after input B replaces it', a
   installClient(client);
   const { result, rerender } = renderHook(
     ({ input }) => useHoldemEquity(input),
-    { initialProps: { input: inputA } }
+    { initialProps: { input: submission(inputA) } }
   );
 
-  rerender({ input: inputB });
+  rerender({ input: submission(inputB) });
   await act(async () => {
     client.calculations[0]!.reject(new Error('late worker failure'));
     try {
@@ -358,7 +362,7 @@ it('disposes exactly once after unmount and ignores a late result without a Reac
   const client = new ControllableClient();
   installClient(client);
   const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
-  const { unmount } = renderHook(() => useHoldemEquity(inputA));
+  const { unmount } = renderHook(() => useHoldemEquity(submission(inputA)));
 
   unmount();
   await act(async () => {
@@ -375,7 +379,7 @@ it('remains usable through StrictMode effect cleanup without replacing its mount
   // Break caught: StrictMode's setup-cleanup-setup cycle disposes the mounted client before its live request can settle.
   const client = new ControllableClient();
   installClient(client);
-  const { result, unmount } = renderHook(() => useHoldemEquity(inputA), { wrapper: strictMode });
+  const { result, unmount } = renderHook(() => useHoldemEquity(submission(inputA)), { wrapper: strictMode });
 
   expect(createHoldemEquityWorkerClient).toHaveBeenCalledTimes(1);
   expect(client.disposeCalls).toBe(0);

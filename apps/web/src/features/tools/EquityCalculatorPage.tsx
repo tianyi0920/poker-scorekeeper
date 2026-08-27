@@ -6,8 +6,7 @@ import {
   holdemCardTone,
   type HoldemCard
 } from '../games/holdem-equity.js';
-import type { HoldemEquityInput } from '../games/holdem-equity-worker-protocol.js';
-import { useHoldemEquity } from '../games/useHoldemEquity.js';
+import { useHoldemEquity, type HoldemEquitySubmission } from '../games/useHoldemEquity.js';
 
 type Player = { id: string };
 type PickerTarget = { type: 'player'; playerId: string } | { type: 'board'; street: 'flop' | 'turn' | 'river' };
@@ -24,29 +23,30 @@ function CardFace({ card }: { card: HoldemCard | undefined }) {
 
 export function EquityCalculatorPage() {
   const nextPlayerId = useRef(3);
+  const nextRequestId = useRef(1);
   const [players, setPlayers] = useState<Player[]>(initialPlayers);
   const [boardCards, setBoardCards] = useState<Array<HoldemCard | undefined>>(emptyBoard);
   const [playerCards, setPlayerCards] = useState<Record<string, HoldemCard[]>>({});
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
-  const [submittedInput, setSubmittedInput] = useState<HoldemEquityInput | null>(null);
+  const [submission, setSubmission] = useState<HoldemEquitySubmission | null>(null);
   const visibleBoard = boardCards.filter((card): card is HoldemCard => card !== undefined);
   const completePlayers = players.flatMap((player) => {
     const cards = playerCards[player.id];
     return cards?.length === 2 ? [{ id: player.id, cards }] : [];
   });
-  const calculation = useHoldemEquity(submittedInput);
+  const calculation = useHoldemEquity(submission);
   const canCalculate = completePlayers.length === players.length && players.length >= 2 && calculation.status !== 'loading';
   const result = calculation.status === 'success' ? calculation.result : null;
   const resultByPlayer = useMemo(() => new Map(result?.players.map((entry) => [entry.id, entry]) ?? []), [result]);
 
-  const invalidate = () => setSubmittedInput(null);
+  const invalidate = () => setSubmission(null);
   const reset = () => {
     nextPlayerId.current = 3;
     setPlayers(initialPlayers());
     setBoardCards(emptyBoard());
     setPlayerCards({});
     setPickerTarget(null);
-    setSubmittedInput(null);
+    setSubmission(null);
   };
   const addPlayer = () => {
     if (players.length >= 9) return;
@@ -110,9 +110,12 @@ export function EquityCalculatorPage() {
   };
   const calculate = () => {
     if (!canCalculate) return;
-    setSubmittedInput({
-      players: completePlayers.map(({ id, cards }) => ({ id, cards: [...cards] })),
-      boardCards: [...visibleBoard]
+    setSubmission({
+      input: {
+        players: completePlayers.map(({ id, cards }) => ({ id, cards: [...cards] })),
+        boardCards: [...visibleBoard]
+      },
+      requestId: nextRequestId.current++
     });
   };
   const street = visibleBoard.length === 0 ? '翻牌前' : visibleBoard.length === 3 ? '翻牌' : visibleBoard.length === 4 ? '转牌' : '河牌';

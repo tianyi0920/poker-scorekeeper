@@ -68,7 +68,11 @@ export function HoldemEquityTable({
     ) return null;
     return { players: participants, boardCards: visibleBoard };
   }, [participants, visibleBoard]);
-  const calculation = useHoldemEquity(submittedInput);
+  const submission = useMemo(() => submittedInput === null ? null : {
+    input: submittedInput,
+    requestId: 0
+  }, [submittedInput]);
+  const calculation = useHoldemEquity(submission);
   const percentages = calculation.status === 'success'
     ? Object.fromEntries(calculation.result.players.map(({ id, equityPercentage }) => [id, equityPercentage]))
     : {};
