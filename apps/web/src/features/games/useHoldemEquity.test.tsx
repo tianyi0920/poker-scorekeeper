@@ -1,5 +1,5 @@
-import { act, renderHook } from '@testing-library/react';
-import { StrictMode, type ReactNode } from 'react';
+import { act, render, renderHook, screen } from '@testing-library/react';
+import { StrictMode, useState, type ReactNode } from 'react';
 import { afterEach, expect, expectTypeOf, it, vi } from 'vitest';
 import type { HoldemEquityResult } from './holdem-equity.js';
 import type { HoldemEquityInput } from './holdem-equity-worker-protocol.js';
@@ -130,6 +130,77 @@ it('creates one client per mount and clears a previous result while a new submit
   expect(createHoldemEquityWorkerClient).toHaveBeenCalledTimes(1);
   expect(client.inputs).toEqual([inputA, inputB]);
   expect(result.current).toEqual({ status: 'loading', result: null });
+});
+
+it('does not return a prior success on the first render after submitted input changes', async () => {
+  // Break caught: a native card-confirmation click commits new input while the Hook still returns A's
+  // success until its passive effect clears state, briefly rendering A's equity against B's cards.
+  const client = new ControllableClient();
+  installClient(client);
+
+  function SubmittedInputSwitcher() {
+    const [input, setInput] = useState<HoldemEquityInput>(inputA);
+    const state = useHoldemEquity(input);
+    return (
+      <>
+        <button type="button" onClick={() => setInput(inputB)}>replace submitted input</button>
+        <output>{state.status}:{state.result?.players[0]?.id ?? 'none'}</output>
+      </>
+    );
+  }
+
+  render(<SubmittedInputSwitcher />);
+  await act(async () => {
+    client.calculations[0]!.resolve(firstResult);
+    await client.calculations[0]!.promise;
+  });
+  expect(screen.getByRole('status')).toHaveTextContent('success:aces');
+
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    screen.getByRole('button', { name: 'replace submitted input' }).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await Promise.resolve();
+    expect(screen.getByRole('status')).toHaveTextContent('loading:none');
+  } finally {
+    consoleError.mockRestore();
+  }
+});
+
+it('returns idle synchronously when submitted input is cleared', async () => {
+  // Break caught: clearing the submitted deal renders its former success/error until a passive effect runs.
+  const client = new ControllableClient();
+  installClient(client);
+
+  function SubmittedInputClearer() {
+    const [input, setInput] = useState<HoldemEquityInput | null>(inputA);
+    const state = useHoldemEquity(input);
+    return (
+      <>
+        <button type="button" onClick={() => setInput(null)}>clear submitted input</button>
+        <output>{state.status}:{state.result?.players[0]?.id ?? 'none'}</output>
+      </>
+    );
+  }
+
+  render(<SubmittedInputClearer />);
+  await act(async () => {
+    client.calculations[0]!.resolve(firstResult);
+    await client.calculations[0]!.promise;
+  });
+  expect(screen.getByRole('status')).toHaveTextContent('success:aces');
+
+  const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+  try {
+    screen.getByRole('button', { name: 'clear submitted input' }).dispatchEvent(
+      new MouseEvent('click', { bubbles: true })
+    );
+    await Promise.resolve();
+    expect(screen.getByRole('status')).toHaveTextContent('idle:none');
+  } finally {
+    consoleError.mockRestore();
+  }
 });
 
 it('publishes a resolved calculation as a successful exact-equity state', async () => {

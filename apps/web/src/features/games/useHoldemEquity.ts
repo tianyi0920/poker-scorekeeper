@@ -13,11 +13,27 @@ export type HoldemEquityState =
   | { status: 'error'; result: null };
 
 const idleState: HoldemEquityState = { status: 'idle', result: null };
+const loadingState: HoldemEquityState = { status: 'loading', result: null };
+
+interface InputBoundState {
+  input: HoldemEquityInput | null;
+  inputSignature: string | null;
+  state: HoldemEquityState;
+}
+
+function inputSignature(input: HoldemEquityInput): string {
+  return JSON.stringify(input);
+}
 
 export function useHoldemEquity(submittedInput: HoldemEquityInput | null): HoldemEquityState {
   const clientRef = useRef<HoldemEquityWorkerClient | null>(null);
   const disposalGenerationRef = useRef(0);
-  const [state, setState] = useState<HoldemEquityState>(idleState);
+  const [inputBoundState, setInputBoundState] = useState<InputBoundState>({
+    input: null,
+    inputSignature: null,
+    state: idleState
+  });
+  const submittedInputSignature = submittedInput === null ? null : inputSignature(submittedInput);
 
   let client = clientRef.current;
   if (client === null) {
@@ -38,18 +54,26 @@ export function useHoldemEquity(submittedInput: HoldemEquityInput | null): Holde
 
   useEffect(() => {
     if (submittedInput === null) {
-      setState(idleState);
+      setInputBoundState({ input: null, inputSignature: null, state: idleState });
       return;
     }
 
     let active = true;
-    setState({ status: 'loading', result: null });
+    setInputBoundState({ input: submittedInput, inputSignature: submittedInputSignature, state: loadingState });
     void client.calculate(submittedInput).then(
       (result) => {
-        if (active) setState({ status: 'success', result });
+        if (active) setInputBoundState({
+          input: submittedInput,
+          inputSignature: submittedInputSignature,
+          state: { status: 'success', result }
+        });
       },
       () => {
-        if (active) setState({ status: 'error', result: null });
+        if (active) setInputBoundState({
+          input: submittedInput,
+          inputSignature: submittedInputSignature,
+          state: { status: 'error', result: null }
+        });
       }
     );
 
@@ -57,7 +81,10 @@ export function useHoldemEquity(submittedInput: HoldemEquityInput | null): Holde
       active = false;
       client.cancel();
     };
-  }, [submittedInput]);
+  }, [submittedInput, submittedInputSignature]);
 
-  return state;
+  if (submittedInput === null) return idleState;
+  return inputBoundState.input === submittedInput && inputBoundState.inputSignature === submittedInputSignature
+    ? inputBoundState.state
+    : loadingState;
 }
