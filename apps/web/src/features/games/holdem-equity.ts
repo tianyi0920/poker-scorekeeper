@@ -1,4 +1,4 @@
-import { equityHoldem, simulateHoldem } from '@poker-apprentice/hand-evaluator';
+import { equityHoldem } from '@poker-apprentice/hand-evaluator';
 
 export type HoldemCard = `${'2' | '3' | '4' | '5' | '6' | '7' | '8' | '9' | 'T' | 'J' | 'Q' | 'K' | 'A'}${'c' | 'd' | 'h' | 's'}`;
 
@@ -8,7 +8,7 @@ export interface HoldemEquityPlayer {
 }
 
 export interface HoldemEquityResult {
-  mode: 'exact' | 'simulated';
+  mode: 'exact';
   samples: number;
   players: Array<{
     id: string;
@@ -40,12 +40,10 @@ function percentage(value: number): number {
 
 export function calculateHoldemEquity({
   players,
-  boardCards,
-  simulationSamples = 10_000
+  boardCards
 }: {
   players: HoldemEquityPlayer[];
   boardCards: HoldemCard[];
-  simulationSamples?: number;
 }): HoldemEquityResult {
   if (players.length < 2) throw new Error('至少需要两名已选择手牌的玩家');
   if (players.some(({ cards }) => cards.length !== 2)) throw new Error('每名玩家必须选择两张手牌');
@@ -56,14 +54,7 @@ export function calculateHoldemEquity({
 
   const evaluatorHands = players.map(({ cards }) => cards) as Parameters<typeof equityHoldem>[0];
   const evaluatorBoard = boardCards as Parameters<typeof equityHoldem>[1];
-  const mode = boardCards.length === 0 ? 'simulated' : 'exact';
-  const evaluated = mode === 'exact'
-    ? equityHoldem(evaluatorHands, evaluatorBoard)
-    : simulateHoldem({
-      allHoleCards: evaluatorHands,
-      communityCards: evaluatorBoard,
-      samplesPerUpdate: simulationSamples
-    }).next().value;
+  const evaluated = equityHoldem(evaluatorHands, evaluatorBoard);
 
   const calculatedPlayers = players.map(({ id }, index) => {
     const player = evaluated[index]!;
@@ -83,7 +74,7 @@ export function calculateHoldemEquity({
   ).toFixed(1));
 
   return {
-    mode,
+    mode: 'exact',
     samples: evaluated[0]?.total ?? 0,
     players: calculatedPlayers
   };

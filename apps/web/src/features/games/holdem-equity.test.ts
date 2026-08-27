@@ -54,19 +54,18 @@ describe('calculateHoldemEquity', () => {
     expect(result.players.reduce((total, player) => total + player.equityPercentage, 0)).toBeCloseTo(100, 5);
   });
 
-  it('uses a bounded simulation before the flop and preserves the whole pot', () => {
-    // Break caught: pre-flop calculation freezes on exhaustive enumeration or percentages no longer total 100%.
+  it('enumerates every legal five-card board before the flop', () => {
+    // Break caught: pre-flop calculation falls back to a bounded simulation instead of exact enumeration.
     const result = calculateHoldemEquity({
       players: [
         { id: 'aces', cards: ['As', 'Ah'] },
         { id: 'kings', cards: ['Kc', 'Kd'] }
       ],
-      boardCards: [],
-      simulationSamples: 1_000
+      boardCards: []
     });
 
-    expect(result.mode).toBe('simulated');
-    expect(result.samples).toBe(1_000);
+    expect(result.mode).toBe('exact');
+    expect(result.samples).toBe(1_712_304);
     expect(result.players.reduce((total, player) => total + player.equityPercentage, 0)).toBeCloseTo(100, 5);
   });
 
