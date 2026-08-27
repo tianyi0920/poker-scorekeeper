@@ -1,6 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { HoldemEquityResult } from './holdem-equity.js';
-import type { HoldemEquityInput } from './holdem-equity-worker-protocol.js';
+import {
+  isHoldemEquityWorkerResponse,
+  type HoldemEquityInput
+} from './holdem-equity-worker-protocol.js';
 import {
   HOLD_EM_EQUITY_CALCULATION_CANCELLED_MESSAGE,
   HOLD_EM_EQUITY_CALCULATION_DISPOSED_MESSAGE,
@@ -141,6 +144,60 @@ describe('createHoldemEquityWorkerClient', () => {
     workers[0]?.respond({ requestId: 0, ok: true, result: firstResult });
 
     await expect(calculation).rejects.toThrow(HOLD_EM_EQUITY_WORKER_FAILURE_MESSAGE);
+  });
+
+  it('rejects and terminates the active Worker when a success envelope has a different valid request ID', async () => {
+    // Break caught: a valid-but-wrong ID from the active Worker leaves the calculation promise pending forever.
+    const { client, workers } = createClientWithFakeWorkers();
+    const calculation = client.calculate(input);
+    let rejection: Error | null = null;
+    void calculation.catch((error: unknown) => {
+      rejection = error instanceof Error ? error : new Error(String(error));
+    });
+
+    workers[0]?.respond({ requestId: 2, ok: true, result: firstResult });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    try {
+      expect(rejection).toHaveProperty('message', HOLD_EM_EQUITY_WORKER_FAILURE_MESSAGE);
+      expect(workers[0]?.terminateCalls).toBe(1);
+    } finally {
+      client.cancel();
+      await calculation.catch(() => undefined);
+    }
+  });
+
+  it('rejects and terminates the active Worker when a failure envelope has a different valid request ID', async () => {
+    // Break caught: an active Worker can retain a pending calculation by returning ok:false with a wrong ID.
+    const { client, workers } = createClientWithFakeWorkers();
+    const calculation = client.calculate(input);
+    let rejection: Error | null = null;
+    void calculation.catch((error: unknown) => {
+      rejection = error instanceof Error ? error : new Error(String(error));
+    });
+
+    workers[0]?.respond({ requestId: 2, ok: false, message: 'mismatched ID' });
+    await Promise.resolve();
+    await Promise.resolve();
+
+    try {
+      expect(rejection).toHaveProperty('message', HOLD_EM_EQUITY_WORKER_FAILURE_MESSAGE);
+      expect(workers[0]?.terminateCalls).toBe(1);
+    } finally {
+      client.cancel();
+      await calculation.catch(() => undefined);
+    }
+  });
+
+  it('fails closed on unsafe protocol request IDs and sample counts', () => {
+    // Break caught: integer-looking values beyond JavaScript's exact range can be accepted as protocol counters.
+    expect(isHoldemEquityWorkerResponse({ requestId: Number.MAX_SAFE_INTEGER + 1, ok: true, result: firstResult })).toBe(false);
+    expect(isHoldemEquityWorkerResponse({
+      requestId: 1,
+      ok: true,
+      result: { ...firstResult, samples: Number.MAX_SAFE_INTEGER + 1 }
+    })).toBe(false);
   });
 
   it('rejects an explicit Worker failure without exposing its message', async () => {

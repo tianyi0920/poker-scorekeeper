@@ -89,7 +89,10 @@ class PerInstanceHoldemEquityWorkerClient implements HoldemEquityWorkerClient {
       this.rejectActive(active, HOLD_EM_EQUITY_WORKER_FAILURE_MESSAGE);
       return;
     }
-    if (value.requestId !== active.requestId) return;
+    if (value.requestId !== active.requestId) {
+      this.rejectActive(active, HOLD_EM_EQUITY_WORKER_FAILURE_MESSAGE);
+      return;
+    }
     if (!value.ok) {
       this.rejectActive(active, HOLD_EM_EQUITY_WORKER_FAILURE_MESSAGE);
       return;

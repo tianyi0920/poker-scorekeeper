@@ -29,7 +29,7 @@ function isPercentage(value: unknown): value is number {
 }
 
 export function isHoldemEquityRequestId(value: unknown): value is number {
-  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value > 0;
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0;
 }
 
 export function isHoldemEquityInput(value: unknown): value is HoldemEquityInput {
@@ -45,7 +45,7 @@ export function isHoldemEquityInput(value: unknown): value is HoldemEquityInput 
 
 export function isHoldemEquityResult(value: unknown): value is HoldemEquityResult {
   if (!isRecord(value) || value.mode !== 'exact') return false;
-  if (typeof value.samples !== 'number' || !Number.isFinite(value.samples) || !Number.isInteger(value.samples) || value.samples < 0) {
+  if (typeof value.samples !== 'number' || !Number.isSafeInteger(value.samples) || value.samples < 0) {
     return false;
   }
   if (!Array.isArray(value.players) || value.players.length < 2) return false;
