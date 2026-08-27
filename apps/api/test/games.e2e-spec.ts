@@ -35,9 +35,11 @@ describe.sequential('game lifecycle and snapshots', () => {
   let superUser: User;
   let adminUser: User;
   let regularUser: User;
+  let otherRegularUser: User;
   let superAuth: AuthContext;
   let adminAuth: AuthContext;
   let userAuth: AuthContext;
+  let otherUserAuth: AuthContext;
 
   async function seedUser(suffix: string, role: Role): Promise<User> {
     const username = `${prefix}-${suffix}`;
@@ -101,7 +103,7 @@ describe.sequential('game lifecycle and snapshots', () => {
 
   async function ownedGameIds(): Promise<string[]> {
     return (await prisma.game.findMany({
-      where: { createdById: { in: [superUser.id, adminUser.id] } },
+      where: { createdById: { in: [superUser.id, adminUser.id, regularUser.id, otherRegularUser.id] } },
       select: { id: true }
     })).map(({ id }) => id);
   }
@@ -143,9 +145,11 @@ describe.sequential('game lifecycle and snapshots', () => {
     superUser = await seedUser('super', Role.SUPER_ADMIN);
     adminUser = await seedUser('admin', Role.ADMIN);
     regularUser = await seedUser('user', Role.USER);
+    otherRegularUser = await seedUser('other-user', Role.USER);
     superAuth = await login(superUser);
     adminAuth = await login(adminUser);
     userAuth = await login(regularUser);
+    otherUserAuth = await login(otherRegularUser);
   }, 30_000);
 
   beforeEach(async () => {
@@ -210,6 +214,24 @@ describe.sequential('game lifecycle and snapshots', () => {
     });
   });
 
+  it('lets a USER create an ACTIVE game under their own creator identity', async () => {
+    const created = await write(userAuth, 'post', '/api/games', {
+      name: `${prefix}-user-created`,
+      handPrice: '300',
+      rakeEnabled: true
+    }).expect(201);
+
+    expect(created.body).toMatchObject({
+      status: 'ACTIVE',
+      createdById: regularUser.id
+    });
+    await expect(prisma.game.findUniqueOrThrow({ where: { id: created.body.id } }))
+      .resolves.toMatchObject({
+        status: GameStatus.ACTIVE,
+        createdById: regularUser.id
+      });
+  });
+
   it('leaves no game when atomic create exceeds the open-table limit', async () => {
     await seedGame(`${prefix}-open-a`, GameStatus.ACTIVE);
     await seedGame(`${prefix}-open-b`, GameStatus.SETTLING, { stoppedAt: new Date() });
@@ -239,7 +261,6 @@ describe.sequential('game lifecycle and snapshots', () => {
   });
 
   it.each([
-    ['normal user', () => write(userAuth, 'post', '/api/games', {}), 403, 'FORBIDDEN'],
     ['zero hand price', () => write(adminAuth, 'post', '/api/games', { handPrice: '0' }), 400, 'VALIDATION_ERROR'],
     ['negative hand price', () => write(adminAuth, 'post', '/api/games', { handPrice: '-1' }), 400, 'VALIDATION_ERROR'],
     ['non-canonical hand price', () => write(adminAuth, 'post', '/api/games', { handPrice: '0300' }), 400, 'VALIDATION_ERROR'],
@@ -307,6 +328,49 @@ describe.sequential('game lifecycle and snapshots', () => {
     expect(await prisma.auditLog.count({
       where: { action: 'GAME_SETTLEMENT_BEGUN', entityId: active.id }
     })).toBe(1);
+  });
+
+  it('lets a USER begin settlement only for their own game while admins can begin any game', async () => {
+    const owned = await prisma.game.create({
+      data: {
+        name: `${prefix}-owned-settlement`,
+        handPrice: 300n,
+        rakeEnabled: true,
+        status: GameStatus.ACTIVE,
+        version: 1,
+        createdById: regularUser.id,
+        startedAt: new Date()
+      }
+    });
+    const otherUserOwned = await prisma.game.create({
+      data: {
+        name: `${prefix}-other-user-owned-settlement`,
+        handPrice: 300n,
+        rakeEnabled: true,
+        status: GameStatus.ACTIVE,
+        version: 1,
+        createdById: otherRegularUser.id,
+        startedAt: new Date()
+      }
+    });
+
+    await write(otherUserAuth, 'post', `/api/games/${owned.id}/begin-settlement`)
+      .expect(403)
+      .expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    await write(userAuth, 'post', `/api/games/${owned.id}/begin-settlement`).expect(200);
+    await write(adminAuth, 'post', `/api/games/${otherUserOwned.id}/begin-settlement`).expect(200);
+  });
+
+  it.each([
+    ['start', GameStatus.DRAFT, 'post', 'start'],
+    ['delete draft', GameStatus.DRAFT, 'delete', 'draft'],
+    ['void', GameStatus.ACTIVE, 'post', 'void']
+  ] as const)('keeps %s restricted from USER roles', async (_label, status, method, action) => {
+    const game = await seedGame(`${prefix}-user-restricted-${action}`, status);
+
+    await write(userAuth, method, `/api/games/${game.id}/${action}`)
+      .expect(403)
+      .expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
   });
 
   it('stores and lists a validated current-game message for an authenticated spectator', async () => {

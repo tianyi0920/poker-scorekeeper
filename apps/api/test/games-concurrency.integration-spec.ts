@@ -40,8 +40,13 @@ describe.sequential('game lifecycle concurrency', () => {
   let prisma: PrismaService;
   let games: GamesService;
   let actor: User;
+  let userActor: User;
 
-  async function seedGame(name: string, status: GameStatus = GameStatus.DRAFT): Promise<Game> {
+  async function seedGame(
+    name: string,
+    status: GameStatus = GameStatus.DRAFT,
+    createdBy: User = actor
+  ): Promise<Game> {
     return prisma.game.create({
       data: {
         name: `${prefix}-${name}`,
@@ -49,7 +54,7 @@ describe.sequential('game lifecycle concurrency', () => {
         rakeEnabled: true,
         status,
         version: 1,
-        createdById: actor.id,
+        createdById: createdBy.id,
         startedAt: status === GameStatus.DRAFT ? null : new Date()
       }
     });
@@ -102,6 +107,18 @@ describe.sequential('game lifecycle concurrency', () => {
         activeNormalizedNickname: normalize(`并发管理员-${runId}`),
         passwordHash: 'not-used-by-service-integration-tests',
         role: Role.ADMIN,
+        avatarValue: 'preset-01'
+      }
+    });
+    const userUsername = `${prefix}-user`;
+    userActor = await prisma.user.create({
+      data: {
+        username: userUsername,
+        normalizedUsername: normalize(userUsername),
+        nickname: `并发普通用户-${runId}`,
+        activeNormalizedNickname: normalize(`并发普通用户-${runId}`),
+        passwordHash: 'not-used-by-service-integration-tests',
+        role: Role.USER,
         avatarValue: 'preset-01'
       }
     });
@@ -178,7 +195,7 @@ describe.sequential('game lifecycle concurrency', () => {
     actor = await prisma.user.update({ where: { id: actor.id }, data: { role: Role.ADMIN } });
   }, 15_000);
 
-  it('re-authorizes begin-settlement after its actor row is concurrently demoted', async () => {
+  it('lets a creator begin settlement after their actor row is concurrently demoted to USER', async () => {
     const active = await seedGame('actor-row-demotion', GameStatus.ACTIVE);
     let actorLocked!: () => void;
     let releaseActor!: () => void;
@@ -208,17 +225,36 @@ describe.sequential('game lifecycle concurrency', () => {
 
     try {
       await expect(settlementResult).resolves.toMatchObject({
-        status: 'rejected', reason: { code: 'FORBIDDEN' }
+        status: 'fulfilled', value: { id: active.id, status: GameStatus.SETTLING, version: 2 }
       });
       await expect(prisma.game.findUniqueOrThrow({ where: { id: active.id } }))
-        .resolves.toMatchObject({ status: GameStatus.ACTIVE, version: 1, stoppedAt: null });
+        .resolves.toMatchObject({ status: GameStatus.SETTLING, version: 2 });
       await expect(prisma.auditLog.count({
         where: { action: 'GAME_SETTLEMENT_BEGUN', entityId: active.id }
-      })).resolves.toBe(0);
+      })).resolves.toBe(1);
     } finally {
       actor = await prisma.user.update({ where: { id: actor.id }, data: { role: Role.ADMIN } });
     }
   }, 15_000);
+
+  it('serializes simultaneous USER-owned begin-settlement attempts so exactly one transitions', async () => {
+    const active = await seedGame('user-owned-settlement-race', GameStatus.ACTIVE, userActor);
+
+    const results = await Promise.allSettled([
+      games.beginSettlement(active.id, authUser(userActor)),
+      games.beginSettlement(active.id, authUser(userActor))
+    ]);
+
+    expect(results.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(results.find(({ status }) => status === 'rejected')).toMatchObject({
+      status: 'rejected', reason: { code: 'GAME_STATE_CONFLICT' }
+    });
+    await expect(prisma.game.findUniqueOrThrow({ where: { id: active.id } }))
+      .resolves.toMatchObject({ status: GameStatus.SETTLING, version: 2 });
+    await expect(prisma.auditLog.count({
+      where: { action: 'GAME_SETTLEMENT_BEGUN', entityId: active.id }
+    })).resolves.toBe(1);
+  });
 
   it('keeps simultaneous start and begin-settlement transitions in a valid serial order', async () => {
     const draft = await seedGame('transition-race');

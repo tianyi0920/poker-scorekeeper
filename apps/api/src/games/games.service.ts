@@ -15,6 +15,7 @@ import { PresenceService } from '../realtime/presence.service.js';
 import { defaultSettlementDraftPayload } from '../settlements/settlement-draft.schema.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
 import {
+  assertCanManageGameLifecycle,
   assertCanViewGameSnapshot,
   assertGameManager,
   assertGameTransition,
@@ -63,7 +64,7 @@ export class GamesService {
   async create(actor: AuthUser, input: CreateGameRequest): Promise<GameSnapshotDto> {
     const snapshot = await this.prisma.$transaction(async (transaction) => {
       await lockGameLifecycleCoordinator(transaction);
-      const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
+      const currentActor = await this.lockCurrentActor(transaction, actor.id);
       const openCount = await transaction.game.count({
         where: { status: { in: [...OPEN_STATUSES] } }
       });
@@ -109,7 +110,8 @@ export class GamesService {
     const snapshot = await this.prisma.$transaction(async (transaction) => {
       await lockGameLifecycleCoordinator(transaction);
       const before = await lockGameForUpdate(transaction, id);
-      const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
+      const currentActor = await this.lockCurrentActor(transaction, actor.id);
+      assertGameManager(currentActor);
       assertGameTransition(before.status, GameStatus.ACTIVE);
 
       const openCount = await transaction.game.count({
@@ -143,7 +145,8 @@ export class GamesService {
   async beginSettlement(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
     const snapshot = await this.prisma.$transaction(async (transaction) => {
       const before = await lockGameForUpdate(transaction, id);
-      const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
+      const currentActor = await this.lockCurrentActor(transaction, actor.id);
+      assertCanManageGameLifecycle(currentActor, before);
       assertGameTransition(before.status, GameStatus.SETTLING);
       const now = new Date();
       const changed = await transaction.game.updateMany({
@@ -186,7 +189,8 @@ export class GamesService {
   async deleteDraft(id: string, actor: AuthUser): Promise<void> {
     await this.prisma.$transaction(async (transaction) => {
       const before = await lockGameForUpdate(transaction, id);
-      const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
+      const currentActor = await this.lockCurrentActor(transaction, actor.id);
+      assertGameManager(currentActor);
       if (before.status !== GameStatus.DRAFT) throw conflict('GAME_STATE_CONFLICT');
       const [players, locks, purchases, drafts, settlements] = await Promise.all([
         transaction.gamePlayer.count({ where: { gameId: id } }),
@@ -216,7 +220,8 @@ export class GamesService {
   async void(id: string, actor: AuthUser): Promise<GameSnapshotDto> {
     const snapshot = await this.prisma.$transaction(async (transaction) => {
       const before = await lockGameForUpdate(transaction, id);
-      const currentActor = await this.lockAndAuthorizeActor(transaction, actor.id);
+      const currentActor = await this.lockCurrentActor(transaction, actor.id);
+      assertGameManager(currentActor);
       assertGameTransition(before.status, GameStatus.VOIDED);
       if (await transaction.buyinEvent.count({ where: { gameId: id } }) > 0) {
         throw conflict('GAME_HAS_BUYINS');
@@ -278,14 +283,12 @@ export class GamesService {
     await this.events.publishCommittedGame(gameId).catch(() => undefined);
   }
 
-  private async lockAndAuthorizeActor(
+  private async lockCurrentActor(
     transaction: Prisma.TransactionClient,
     actorId: string
   ) {
     const locked = await lockUsersInOrder(transaction, [actorId]);
-    const currentActor = requireCurrentActor(locked, actorId);
-    assertGameManager(currentActor);
-    return currentActor;
+    return requireCurrentActor(locked, actorId);
   }
 
   private async recordTransition(

@@ -52,7 +52,7 @@ export class GamesController {
   ) {}
 
   @Post()
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.USER, Role.ADMIN, Role.SUPER_ADMIN)
   async create(
     @CurrentUser() actor: AuthUser,
     @Body(new ZodValidationPipe(createGameSchema)) body: CreateGameRequest,
@@ -72,7 +72,7 @@ export class GamesController {
 
   @Post(':id/begin-settlement')
   @HttpCode(200)
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.USER, Role.ADMIN, Role.SUPER_ADMIN)
   beginSettlement(
     @CurrentUser() actor: AuthUser,
     @Param('id') id: string
