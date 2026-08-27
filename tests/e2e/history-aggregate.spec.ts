@@ -84,8 +84,28 @@ test('completed history is immutable, participant-visible in full, outsider-hidd
     await expect(monthlyRow.locator('.ranking-amount')).toHaveText(formatSignedMoney(participantFinalAmount));
     await browserSession.page.goto(`/history/${gameId}`);
     await expect(browserSession.page.getByLabel('历史结算明细')).toBeVisible();
+    await expect(browserSession.page.getByRole('link', { name: '返回主页' })).toHaveAttribute('href', '/');
+    await expect(browserSession.page.getByRole('heading', { name: '对局结算' })).toBeVisible();
+    await expect(browserSession.page.getByText('德州计分', { exact: true })).toHaveCount(0);
+    const bankReceivables = browserSession.page.getByRole('region', { name: '银行应收积分' });
+    await expect(bankReceivables).toContainText(admin.user.nickname);
+    await expect(bankReceivables.locator('.money--negative')).toHaveText(/−[\d,]+/);
+    const bankPayables = browserSession.page.getByRole('region', { name: '银行应付积分' });
+    await expect(bankPayables).toContainText(playerA.user.nickname);
+    await expect(bankPayables.getByText('银行需付')).toBeVisible();
+    await expect(bankPayables.locator('.money--positive')).toHaveText(/\+[\d,]+/);
+    await expect(browserSession.page.getByRole('region', { name: '经费积分' })).toHaveCount(0);
+    await expect(browserSession.page.getByRole('heading', { name: '个人明细' })).toBeVisible();
     await expect(browserSession.page.getByRole('button', { name: /永久锁定结算/ })).toHaveCount(0);
     await expect(browserSession.page.locator('input')).toHaveCount(0);
+    const settlementOverflow = await browserSession.page.evaluate(
+      () => document.documentElement.scrollWidth - window.innerWidth
+    );
+    expect(settlementOverflow).toBeLessThanOrEqual(0);
+    await testInfo.attach(`结算结果-${testInfo.project.name}`, {
+      body: await browserSession.page.screenshot({ fullPage: true }),
+      contentType: 'image/png'
+    });
     await browserSession.page.goto(`/history/summary?games=${gameId}`);
     await expect(browserSession.page.getByRole('heading', { name: '全员汇总' })).toBeVisible();
     await expect(browserSession.page.locator('.aggregate-card')).toHaveCount(3);

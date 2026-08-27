@@ -1,6 +1,6 @@
 import type { MoneyJson, SettlementBreakdownDto } from '@poker/contracts';
 import { useState } from 'react';
-import { finalMoneyPresentation, formatSignedMoney, formatUnsignedMoney, type MoneyTone } from '../../components/money-format.js';
+import { finalMoneyPresentation, formatSignedMoney, formatSignedPoints, formatUnsignedMoney, type MoneyTone } from '../../components/money-format.js';
 import { UserAvatar } from '../../components/UserAvatar.js';
 
 export function signedMoney(value: MoneyJson): string {
@@ -63,35 +63,37 @@ function HistoryPlayerCard({ player, titlePrefix, handPrice }: { player: Player;
   const afterFeeDirection = BigInt(player.afterFeeProfit) > 0n ? '应收' : BigInt(player.afterFeeProfit) < 0n ? '应付' : '收支';
   const detailId = `history-calculation-${player.playerId}`;
   const toggleVerb = expanded ? '收起' : '展开';
+  const hasBankTransfer = finalAmount !== 0n;
+  const hasExpense = BigInt(player.rakeAmount) !== 0n;
+  const hasDataDetails = BigInt(player.buyIn) !== 0n || BigInt(player.cashOut) !== 0n;
+  const hasCalculationDetails = BigInt(player.rawProfit) !== 0n || feeTotal !== 0n || BigInt(player.afterFeeProfit) !== 0n || BigInt(player.rakeAmount) !== 0n || finalAmount !== 0n;
+  const hasExpandableDetails = hasDataDetails || hasCalculationDetails;
 
-  return <article className={`settlement-player-card settlement-player-card--history ${winner ? 'settlement-player-card--winner' : loser ? 'settlement-player-card--loser' : 'settlement-player-card--neutral'}`}>
+  return <article aria-label={`${player.nickname}个人明细`} className={`settlement-player-card settlement-player-card--history ${winner ? 'settlement-player-card--winner' : loser ? 'settlement-player-card--loser' : 'settlement-player-card--neutral'}`}>
     <header className="history-player-header">
       <div className="history-player-identity"><UserAvatar nickname={player.nickname} avatarKind={player.avatarKind} avatarValue={player.avatarValue} label={`${player.nickname}的当前头像`} /><div><span className="seat-number">座位 {player.seatNo}</span><h3>{titlePrefix}{player.nickname}</h3></div></div>
       <strong className={`history-actual money--${finalTone}`}>{winner ? '本场实际盈利' : loser ? '本场实际亏损' : '本场实际收支'} {formatSignedMoney(player.finalAmount)}</strong>
     </header>
 
-    {winner ? <>
-      <div className="history-transfer-grid">
-        <div className="history-transfer-action history-transfer-action--bank"><span>银行付款</span><strong>{formatUnsignedMoney(player.afterFeeProfit)}</strong><small>费用后盈亏 · 抽成前应收</small></div>
-        <div className="history-transfer-action history-transfer-action--expense"><span>另付经费</span><strong>{formatUnsignedMoney(player.rakeAmount)}</strong><small>单独付给固定人员</small></div>
-      </div>
-      <p className="history-transfer-equation">银行付款 {formatUnsignedMoney(player.afterFeeProfit)} − 另付经费 {formatUnsignedMoney(player.rakeAmount)} = 本场实际盈利 {formatUnsignedMoney(player.finalAmount)}</p>
-    </> : loser ? <div className="history-transfer-action history-transfer-action--loss"><span>转给银行</span><strong>{formatUnsignedMoney((-finalAmount).toString())}</strong><small>理论转给银行 = 本场实际亏损</small></div> : <div className="history-transfer-action history-transfer-action--neutral"><span>无需转账</span><strong>¥0</strong><small>本场实际收支为零</small></div>}
+    {(hasBankTransfer || hasExpense) && <dl className="history-personal-summary">
+      {hasBankTransfer && <div><dt>{winner ? '银行应付' : '银行应收'}</dt><dd className={`money--${finalTone}`}>{formatSignedPoints(winner ? player.afterFeeProfit : player.finalAmount)}</dd></div>}
+      {hasExpense && <div><dt>经费</dt><dd className="rake-value">{formatSignedPoints((-BigInt(player.rakeAmount)).toString())}</dd></div>}
+    </dl>}
 
-    <button type="button" className="history-detail-toggle" aria-expanded={expanded} aria-controls={detailId} aria-label={`${toggleVerb}${player.nickname}的计算明细`} onClick={() => setExpanded((value) => !value)}><span aria-hidden="true">{toggleVerb}计算明细</span><span className="history-detail-chevron" aria-hidden="true">{expanded ? '⌃' : '⌄'}</span></button>
-    {expanded && <div id={detailId} className="history-detail-panel">
-      <section><h4>本局数据</h4><dl className="history-data-grid">
-        <DetailCell label="买入手数" value={purchasedHands(player.buyIn, handPrice)} />
-        <DetailCell label="买入金额" value={formatUnsignedMoney(player.buyIn)} />
-        <DetailCell label="最终剩余" value={formatUnsignedMoney(player.cashOut)} />
-      </dl></section>
-      <section><h4>金额计算</h4><dl className="history-calculation-grid">
-        <DetailCell label="牌局盈亏" value={formatSignedMoney(player.rawProfit)} tone={moneyTone(player.rawProfit)} />
-        <DetailCell label="费用扣减" value={signedDeduction(feeTotal)} tone="expense" />
-        <DetailCell label={`费用后盈亏 · 抽成前${afterFeeDirection}`} value={formatSignedMoney(player.afterFeeProfit)} tone={moneyTone(player.afterFeeProfit)} />
-        {winner && <DetailCell label="抽成扣减" value={signedDeduction(BigInt(player.rakeAmount))} tone="rake" />}
-        <DetailCell label={`最终金额 · ${final.label}`} value={formatSignedMoney(player.finalAmount)} tone={final.tone} />
-      </dl></section>
+    {hasExpandableDetails && <button type="button" className="history-detail-toggle" aria-expanded={expanded} aria-controls={detailId} aria-label={`${toggleVerb}${player.nickname}的计算明细`} onClick={() => setExpanded((value) => !value)}><span aria-hidden="true">{toggleVerb}计算明细</span><span className="history-detail-chevron" aria-hidden="true">{expanded ? '⌃' : '⌄'}</span></button>}
+    {expanded && hasExpandableDetails && <div id={detailId} className="history-detail-panel">
+      {hasDataDetails && <section><h4>本局数据</h4><dl className="history-data-grid">
+        {BigInt(player.buyIn) !== 0n && <DetailCell label="买入手数" value={purchasedHands(player.buyIn, handPrice)} />}
+        {BigInt(player.buyIn) !== 0n && <DetailCell label="买入金额" value={formatUnsignedMoney(player.buyIn)} />}
+        {BigInt(player.cashOut) !== 0n && <DetailCell label="最终剩余" value={formatUnsignedMoney(player.cashOut)} />}
+      </dl></section>}
+      {hasCalculationDetails && <section><h4>金额计算</h4><dl className="history-calculation-grid">
+        {BigInt(player.rawProfit) !== 0n && <DetailCell label="牌局盈亏" value={formatSignedMoney(player.rawProfit)} tone={moneyTone(player.rawProfit)} />}
+        {feeTotal !== 0n && <DetailCell label="费用扣减" value={signedDeduction(feeTotal)} tone="expense" />}
+        {BigInt(player.afterFeeProfit) !== 0n && <DetailCell label={`费用后盈亏 · 抽成前${afterFeeDirection}`} value={formatSignedMoney(player.afterFeeProfit)} tone={moneyTone(player.afterFeeProfit)} />}
+        {BigInt(player.rakeAmount) !== 0n && <DetailCell label="抽成扣减" value={signedDeduction(BigInt(player.rakeAmount))} tone="rake" />}
+        {finalAmount !== 0n && <DetailCell label={`最终金额 · ${final.label}`} value={formatSignedMoney(player.finalAmount)} tone={final.tone} />}
+      </dl></section>}
     </div>}
   </article>;
 }

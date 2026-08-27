@@ -60,6 +60,8 @@ it.each([
 it('renders a valid live detail and persists only the parsed value', async () => {
   renderDetail(detail);
   expect(await screen.findByRole('heading', { name: '网络结算' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: '返回主页' })).toHaveAttribute('href', '/');
+  expect(screen.getByRole('heading', { name: '对局结算' })).toBeInTheDocument();
   expect(screen.getByLabelText('历史结算明细').querySelector('.settlement-breakdown-total')).toHaveTextContent('总抽成 ¥0');
   expect(JSON.parse(localStorage.getItem(detailCacheKey) ?? 'null')?.value).toEqual(detail);
 });

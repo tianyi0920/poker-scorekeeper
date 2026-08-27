@@ -20,12 +20,17 @@ function isLiveGameRoute(pathname: string) {
   return /^\/games\/[^/]+\/?$/.test(pathname) && !isReservedGameRoute(pathname);
 }
 
+function isCompactHistoryRoute(pathname: string) {
+  const match = /^\/history\/([^/]+)\/?$/.exec(pathname);
+  return match !== null && !['select', 'summary'].includes(match[1] ?? '');
+}
+
 export function AppShell() {
   const { user, logout } = useAuth();
   const { pathname } = useLocation();
   const focused = isFocusedGameRoute(pathname);
   const liveGame = isLiveGameRoute(pathname);
-  const compactDetail = /^\/history\/monthly\/?$/.test(pathname);
+  const compactDetail = isCompactHistoryRoute(pathname);
   const historyRoute = /^\/history(?:\/|$)/.test(pathname);
   const profileRoute = pathname === '/profile' || /^\/tools(?:\/|$)/.test(pathname);
   const shellClassName = ['app-shell', focused && 'app-shell--focus', liveGame && 'app-shell--game', compactDetail && 'app-shell--compact-detail'].filter(Boolean).join(' ');

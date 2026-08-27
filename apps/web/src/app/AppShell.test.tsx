@@ -115,7 +115,6 @@ it.each([
   ['/games/game-1/settlement/', true, false],
   ['/games/new/', false, false],
   ['/games/new/settlement/', false, false],
-  ['/history/game-1', false, false],
 ])('uses focused shell mode and hides global chrome only for the active game workspace: %s', async (pathname, focused, liveGame) => {
   // Break caught: the live table loses vertical space to the redundant global brand/logout header.
   renderShell(pathname);
@@ -205,6 +204,18 @@ it('lets a regular user reach the settlement route where the API remains authori
 
 it('uses a compact shell for monthly ranking without the oversized global branding', async () => {
   renderShell('/history/monthly');
+  await screen.findByText('路由内容');
+
+  expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+  expect(screen.queryByText('德州计分')).not.toBeInTheDocument();
+  expect(screen.queryByText(/晚上好/)).not.toBeInTheDocument();
+  expect(screen.getByText('路由内容').closest('.app-shell')).toHaveClass('app-shell--compact-detail');
+  expect(screen.getByRole('navigation', { name: '主导航' })).toBeVisible();
+});
+
+it('uses a compact shell for a completed settlement without the oversized global branding', async () => {
+  // Break caught: the completed settlement wastes its first viewport on the global brand, logout, and greeting.
+  renderShell('/history/game-1');
   await screen.findByText('路由内容');
 
   expect(screen.queryByRole('banner')).not.toBeInTheDocument();

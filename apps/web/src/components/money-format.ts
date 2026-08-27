@@ -16,6 +16,16 @@ export function formatUnsignedMoney(value: MoneyJson): string {
   return `¥${formatAbsolute(BigInt(value))}`;
 }
 
+export function formatSignedPoints(value: MoneyJson): string {
+  const parsed = BigInt(value);
+  const prefix = parsed > 0n ? '+' : parsed < 0n ? '−' : '';
+  return `${prefix}${formatAbsolute(parsed)}`;
+}
+
+export function formatUnsignedPoints(value: MoneyJson): string {
+  return formatAbsolute(BigInt(value));
+}
+
 export function finalMoneyPresentation(value: MoneyJson): { label: '最终应收' | '最终应付' | '最终收支'; amount: string; tone: MoneyTone } {
   const parsed = BigInt(value);
   return {
