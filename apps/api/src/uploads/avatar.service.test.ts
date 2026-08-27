@@ -134,6 +134,7 @@ describe('AvatarService append-only uploads', () => {
 
     expect(mapGameSnapshot({
       id: 'game-1',
+      createdById: 'user-creator',
       name: '遗留头像牌局',
       status: 'ACTIVE',
       version: 1,
@@ -150,6 +151,10 @@ describe('AvatarService append-only uploads', () => {
         seatNo: 1
       }],
       buyinEvents: []
-    }).players[0]?.avatarUrl).toBe('/avatars/preset-01.webp');
+    }),
+    ).toMatchObject({
+      createdById: 'user-creator',
+      players: [{ avatarUrl: '/avatars/preset-01.webp' }]
+    });
   });
 });

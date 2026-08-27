@@ -65,6 +65,7 @@ export const gameSpectatorSnapshotSchema = z.object({
 
 export const gameSnapshotSchema = z.object({
   id: z.string(),
+  createdById: z.string(),
   name: z.string(),
   status: gameStatusSchema,
   version: z.number().int().positive(),

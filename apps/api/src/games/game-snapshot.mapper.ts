@@ -8,6 +8,7 @@ import { foldBuyinEvents } from '../buyins/buyin-ledger.js';
 
 export interface SnapshotGameRecord {
   id: string;
+  createdById: string;
   name: string;
   status: GameStatus;
   version: number;
@@ -82,6 +83,7 @@ export function mapGameSnapshot(
 
   return {
     id: game.id,
+    createdById: game.createdById,
     name: game.name,
     status: game.status,
     version: game.version,

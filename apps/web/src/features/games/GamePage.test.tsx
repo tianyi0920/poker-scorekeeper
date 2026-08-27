@@ -100,7 +100,7 @@ function players(count: number): GameSnapshotDto['players'] {
 
 function snapshot(overrides: Partial<GameSnapshotDto> = {}): GameSnapshotDto {
   return {
-    id: 'game-1', name: '8月17日晚场', status: 'ACTIVE', version: 1,
+    id: 'game-1', createdById: 'user-creator', name: '8月17日晚场', status: 'ACTIVE', version: 1,
     handPrice: '300', rakeEnabled: true, startedAt: '2026-08-17T12:00:00.000Z',
     stoppedAt: null, serverNow: '2026-08-17T13:00:00.000Z', players: players(12),
     purchases: [{

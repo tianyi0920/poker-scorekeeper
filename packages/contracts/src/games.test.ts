@@ -9,6 +9,7 @@ import {
 function snapshot(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
     id: 'game-1',
+    createdById: 'user-creator',
     name: '8月17日晚场',
     status: 'ACTIVE',
     version: 1,
@@ -25,6 +26,12 @@ function snapshot(overrides: Record<string, unknown> = {}): Record<string, unkno
 }
 
 describe('game snapshot contract', () => {
+  it('requires the game creator id in every snapshot', () => {
+    expect(gameSnapshotSchema.parse(snapshot()).createdById).toBe('user-creator');
+    const { createdById: _removed, ...missing } = snapshot();
+    expect(gameSnapshotSchema.safeParse(missing).success).toBe(false);
+  });
+
   it('requires timestamps with an explicit UTC offset', () => {
     expect(gameSnapshotSchema.safeParse(snapshot()).success).toBe(true);
     expect(gameSnapshotSchema.safeParse(snapshot({
