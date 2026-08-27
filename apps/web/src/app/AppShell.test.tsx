@@ -7,6 +7,17 @@ import { AuthProvider } from '../auth/AuthProvider.js';
 import { App } from './App.js';
 import { AppShell, isFocusedGameRoute } from './AppShell.js';
 
+vi.mock('../api/game-socket.js', () => ({
+  createGameSocket: () => ({
+    connected: false,
+    on() { return this; },
+    off() { return this; },
+    emit() { return this; },
+    connect() { return this; },
+    disconnect() { return this; }
+  })
+}));
+
 const csrfToken = 'a'.repeat(64);
 
 function jsonResponse(body: unknown, status = 200): Response {
@@ -157,6 +168,34 @@ it('routes the profile tool entry to a protected standalone equity calculator', 
   expect(within(navigation).getAllByRole('link').map((link) => link.textContent)).toEqual(['首页', '我的']);
   expect(within(navigation).getByRole('link', { name: '我的' })).toHaveClass('active');
   expect(within(navigation).getByRole('link', { name: '我的' })).toHaveAttribute('aria-current', 'page');
+});
+
+it('lets a regular user reach the settlement route where the API remains authoritative', async () => {
+  // Break caught: a creator's settlement link redirects at the route gate before the server can enforce ownership.
+  window.history.replaceState({}, '', '/games/game-1/settlement');
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse({
+      user: {
+        id: 'user-1', username: 'user', nickname: '玩家', role: 'USER', mustChangePassword: false,
+        avatarKind: 'PRESET', avatarValue: 'preset-01'
+      },
+      csrfToken
+    });
+    if (url.endsWith('/api/games/game-1/settlement-draft')) return jsonResponse({
+      gameId: 'game-1', version: 1, editorUserId: 'user-1', editorNickname: '玩家',
+      leaseExpiresAt: '2026-08-27T12:00:00.000+08:00', canEdit: true, canTakeOver: false,
+      payload: { cashOutByPlayerId: { 'player-1': '100' }, roomFee: '0', roomPayerIds: [], otherFee: '0', otherFeeNote: '', otherPayerIds: [] },
+      totals: { buyIn: '100', cashOut: '100', roomFee: '0', otherFee: '0', rake: '0', final: '0' },
+      players: [{ playerId: 'player-1', nickname: '玩家', avatarKind: 'PRESET', avatarValue: 'preset-01', seatNo: 1, buyIn: '100', cashOut: '100', rawProfit: '0', roomFeeShare: '0', otherFeeShare: '0', afterFeeProfit: '0', rakeEligible: false, rakeAmount: '0', finalAmount: '0' }],
+      draftVersion: 1, settingsVersion: 1, previewReady: true, validationCode: null, confirmationToken: 'token'
+    });
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+
+  render(<App />);
+
+  expect(await screen.findByRole('heading', { name: '结算向导' })).toBeInTheDocument();
 });
 
 it('uses a compact shell for monthly ranking without the oversized global branding', async () => {

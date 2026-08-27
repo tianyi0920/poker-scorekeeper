@@ -9,12 +9,12 @@ afterEach(() => {
   Object.defineProperty(navigator, 'onLine', { configurable: true, value: true });
 });
 
-it('creates one active game and navigates without a confirmation modal', async () => {
-  // Break caught: creating a game either exposes a second action or does not enter the active table immediately.
+it('lets a regular user create one active game and navigates without a confirmation modal', async () => {
+  // Break caught: a regular user is redirected before reaching the authorized create-game form.
   const calls: string[] = [];
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('USER'));
     if (url.endsWith('/api/games') && init?.method === 'POST') {
       calls.push('create');
       return jsonResponse(currentGame(1));

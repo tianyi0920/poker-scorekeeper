@@ -144,9 +144,9 @@ it('shows at most five open games and reports the current capacity', async () =>
   expect(screen.queryByText('8月22日晚场')).not.toBeInTheDocument();
 });
 
-it('disables game creation for an administrator when five games are already open', async () => {
-  // Break caught: administrators can enter the creation flow even though the open-table capacity is full.
-  mockHomeFetch({ games: Array.from({ length: 5 }, (_, index) => currentGame(index + 1)) }, 'ADMIN');
+it.each(['USER', 'ADMIN', 'SUPER_ADMIN'] as const)('disables game creation for a %s when five games are already open', async (role) => {
+  // Break caught: any signed-in role can enter the creation flow even though the open-table capacity is full.
+  mockHomeFetch({ games: Array.from({ length: 5 }, (_, index) => currentGame(index + 1)) }, role);
 
   renderAt('/', <App />);
 
@@ -156,11 +156,14 @@ it('disables game creation for an administrator when five games are already open
 });
 
 it('shows the current-game empty state without loading history', async () => {
+  // Break caught: an ordinary signed-in user cannot start a table from an empty home page.
   const fetchMock = mockHomeFetch({ games: [] });
 
   renderAt('/', <App />);
 
   expect(await screen.findByText('当前没有进行中的对局')).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: '创建对局' })).toHaveAttribute('href', '/games/new');
+  expect(screen.getByRole('link', { name: '创建一场' })).toHaveAttribute('href', '/games/new');
   expectOnlyCurrentRequests(fetchMock);
 });
 

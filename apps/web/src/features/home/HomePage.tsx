@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import type { GameSnapshotDto } from '@poker/contracts';
 import { scorekeeperApi } from '../../api/resources.js';
-import { useAuth } from '../../auth/AuthProvider.js';
 import { Card } from '../../components/Card.js';
 import { Toast } from '../../components/Toast.js';
 import { CurrentGameCard } from './CurrentGameCard.js';
@@ -20,7 +19,6 @@ function readDeletedGameNotice(state: unknown): string | null {
 }
 
 function CurrentGamesPanel() {
-  const { user } = useAuth();
   const [current, setCurrent] = useState<GameSnapshotDto[]>([]);
   const [currentLoading, setCurrentLoading] = useState(true);
   const [currentError, setCurrentError] = useState<string | null>(null);
@@ -34,7 +32,6 @@ function CurrentGamesPanel() {
     return () => { active = false; };
   }, []);
 
-  const canManageGames = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
   const capacityReached = current.length >= MAX_OPEN_GAMES;
 
   return <section className="home-panel" id="current-games-panel" aria-labelledby="current-games-title">
@@ -43,13 +40,13 @@ function CurrentGamesPanel() {
         <span className="section-kicker">实时牌桌</span>
         <div className="current-game-section-actions">
           {!currentLoading && currentError === null && <span className="current-game-capacity">当前 {current.length} / {MAX_OPEN_GAMES} 场</span>}
-          {canManageGames && (capacityReached
+          {capacityReached
             ? <span className="compact-link compact-link--disabled" aria-disabled="true">已达 {MAX_OPEN_GAMES} 场上限</span>
-            : <Link className="compact-link" to="/games/new">创建对局</Link>)}
+            : <Link className="compact-link" to="/games/new">创建对局</Link>}
         </div>
       </div>
       {currentError !== null ? <Toast tone="error" message={currentError} /> : currentLoading ? <p className="muted">正在加载对局…</p> : current.length === 0
-        ? <Card className="empty-card"><span aria-hidden="true">◇</span><p>当前没有进行中的对局</p>{canManageGames && <Link className="action-link" to="/games/new">创建一场</Link>}</Card>
+        ? <Card className="empty-card"><span aria-hidden="true">◇</span><p>当前没有进行中的对局</p><Link className="action-link" to="/games/new">创建一场</Link></Card>
         : <div className="card-list">{current.map((game) => <CurrentGameCard key={game.id} game={game} />)}</div>}
     </section>;
 }

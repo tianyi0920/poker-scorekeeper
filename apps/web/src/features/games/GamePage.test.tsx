@@ -1528,16 +1528,11 @@ it('resets snapshot version state before loading a different game route', async 
   await waitFor(() => expect(sockets.at(-1)?.joined.at(-1)).toEqual({ gameId: 'game-2', knownVersion: 1 }));
 });
 
-it('lets only an administrator confirm the ACTIVE to SETTLING transition and then enters settlement', async () => {
-  // Break caught: a normal user can end the table, or an administrator needs a second navigation action after confirmation.
+it('lets a game creator confirm the ACTIVE to SETTLING transition and then enters settlement', async () => {
+  // Break caught: the creator cannot end their own active table, or a successful transition needs a second navigation action.
   const userSocket = new FakeGameSocket();
-  const userView = renderGame(userSocket, snapshot({ players: players(1) }), 'USER');
+  const userView = renderGame(userSocket, snapshot({ createdById: 'user-1', players: players(1) }), 'USER');
   await screen.findByTestId('round-table');
-  expect(screen.queryByRole('button', { name: '结束对局' })).not.toBeInTheDocument();
-  userView.unmount();
-
-  const adminSocket = new FakeGameSocket();
-  const { unmount } = renderGame(adminSocket, snapshot({ players: players(1) }), 'ADMIN');
   const user = userEvent.setup();
   const endButton = await screen.findByRole('button', { name: '结束对局' });
   await user.click(endButton);
@@ -1547,13 +1542,39 @@ it('lets only an administrator confirm the ACTIVE to SETTLING transition and the
   expect(await screen.findByText('已进入结算页')).toBeInTheDocument();
   expect(screen.getByTestId('settlement-navigation-type')).toHaveTextContent('REPLACE');
   expect(screen.queryByRole('link', { name: '进入结算' })).not.toBeInTheDocument();
-  unmount();
+  userView.unmount();
 });
 
-it('gives an administrator a settlement recovery entry when the loaded game is already SETTLING', async () => {
-  // Break caught: reload after a successful transition strands the administrator on the table page.
+it('gives a game creator a settlement recovery entry when the loaded game is already SETTLING', async () => {
+  // Break caught: reload after a successful transition strands the creator on the table page.
   const socket = new FakeGameSocket();
-  renderGame(socket, snapshot({ status: 'SETTLING', stoppedAt: '2026-08-17T13:00:00.000Z' }), 'ADMIN');
+  renderGame(socket, snapshot({ createdById: 'user-1', status: 'SETTLING', stoppedAt: '2026-08-17T13:00:00.000Z' }), 'USER');
+  expect(await screen.findByRole('link', { name: '继续结算' })).toHaveAttribute('href', '/games/game-1/settlement');
+});
+
+it('does not show lifecycle controls to a regular user who did not create the game', async () => {
+  // Break caught: a regular user can start or resume settlement for another player's game.
+  const activeSocket = new FakeGameSocket();
+  const activeView = renderGame(activeSocket, snapshot({ createdById: 'user-creator', players: players(1) }), 'USER');
+  await screen.findByTestId('round-table');
+  expect(screen.queryByRole('button', { name: '结束对局' })).not.toBeInTheDocument();
+  activeView.unmount();
+
+  const settlingSocket = new FakeGameSocket();
+  renderGame(settlingSocket, snapshot({ createdById: 'user-creator', status: 'SETTLING', stoppedAt: '2026-08-17T13:00:00.000Z' }), 'USER');
+  await screen.findByTestId('round-table');
+  expect(screen.queryByRole('link', { name: '继续结算' })).not.toBeInTheDocument();
+});
+
+it.each(['ADMIN', 'SUPER_ADMIN'] as const)('keeps both lifecycle controls available to a %s for another creator\'s game', async (role) => {
+  // Break caught: administrator lifecycle access becomes tied to the game's creator.
+  const activeSocket = new FakeGameSocket();
+  const activeView = renderGame(activeSocket, snapshot({ createdById: 'user-creator', players: players(1) }), role);
+  expect(await screen.findByRole('button', { name: '结束对局' })).toBeInTheDocument();
+  activeView.unmount();
+
+  const settlingSocket = new FakeGameSocket();
+  renderGame(settlingSocket, snapshot({ createdById: 'user-creator', status: 'SETTLING', stoppedAt: '2026-08-17T13:00:00.000Z' }), role);
   expect(await screen.findByRole('link', { name: '继续结算' })).toHaveAttribute('href', '/games/game-1/settlement');
 });
 

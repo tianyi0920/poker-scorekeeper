@@ -36,10 +36,10 @@ export function AppRouter() {
       <Route path="history/:id" element={<SettlementDetailPage />} />
       <Route path="profile" element={<ProfilePage />} />
       <Route path="tools/equity" element={<EquityCalculatorPage />} />
-      <Route path="games/new" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><CreateGamePage /></RoleGate>} />
+      <Route path="games/new" element={<CreateGamePage />} />
       <Route path="games/manage" element={<RoleGate roles={['SUPER_ADMIN']}><GameManagementPage /></RoleGate>} />
       <Route path="games/:id" element={<GamePage />} />
-      <Route path="games/:id/settlement" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><SettlementWizardPage /></RoleGate>} />
+      <Route path="games/:id/settlement" element={<SettlementWizardPage />} />
       <Route path="users" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserListPage /></RoleGate>} />
       <Route path="users/new" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserFormPage mode="create" /></RoleGate>} />
       <Route path="users/:id/edit" element={<RoleGate roles={['ADMIN', 'SUPER_ADMIN']}><UserFormPage mode="edit" /></RoleGate>} />

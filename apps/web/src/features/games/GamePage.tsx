@@ -24,6 +24,7 @@ import { AdjustBuyInDialog } from '../buyins/AdjustBuyInDialog.js';
 import { BuyInSheet } from '../buyins/BuyInSheet.js';
 import { GameTimer } from './GameTimer.js';
 import { GameMessagesPanel } from './GameMessagesPanel.js';
+import { canManageGameLifecycle } from './game-permissions.js';
 import { GameSpeechSheet } from './GameSpeechSheet.js';
 import {
   createHoldemEquityTableState,
@@ -596,7 +597,7 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
   const selfPlayer = snapshot.players.find(({ userId }) => user?.id === userId);
   const active = snapshot.status === 'ACTIVE';
   const fullForViewer = snapshot.players.length >= 12 && selfPlayer === undefined;
-  const canManage = user?.role === 'ADMIN' || user?.role === 'SUPER_ADMIN';
+  const canManage = canManageGameLifecycle(user, snapshot);
 
   const sendMessage = async (text: string) => {
     if (!active) return;
