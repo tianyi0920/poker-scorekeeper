@@ -70,20 +70,28 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .card-heading h3 { margin: 9px 0 0; }
 .live-pill { display: inline-flex; min-height: 24px; align-items: center; padding: 3px 9px; border-radius: var(--radius-pill); background: rgb(112 224 169 / .12); color: var(--positive); font-size: .72rem; font-weight: 800; }
 .table-orbit { display: grid; width: 42px; height: 42px; place-items: center; border: 1px solid rgb(240 202 115 / .32); border-radius: 50%; color: var(--gold); }
-.current-game-card { position: relative; display: block; overflow: hidden; color: inherit; text-decoration: none; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
+.card.current-game-card { position: relative; display: grid; grid-template-rows: auto auto auto; gap: 8px; overflow: hidden; padding: clamp(10px, 3vw, 14px); color: inherit; text-decoration: none; transition: border-color .18s ease, box-shadow .18s ease, transform .18s ease; }
 .current-game-card::after { position: absolute; top: -58px; right: -54px; width: 132px; height: 132px; border: 1px solid rgb(240 202 115 / .16); border-radius: 50%; box-shadow: 0 0 0 15px rgb(240 202 115 / .025); content: ""; pointer-events: none; }
 .current-game-card:hover, .current-game-card:focus-visible { border-color: rgb(240 202 115 / .72); box-shadow: 0 15px 32px rgb(0 0 0 / .3); transform: translateY(-1px); }
 .current-game-card > * { position: relative; z-index: 1; }
-.current-game-players { display: flex; min-width: 0; align-items: center; gap: 10px; margin-top: 14px; }
-.current-game-avatar-stack { display: flex; flex: 0 0 auto; align-items: center; padding-left: 7px; }
-.current-game-avatar, .current-game-avatar-more { width: 34px; height: 34px; margin-left: -7px; border: 2px solid #29365c; border-radius: 50%; background: var(--surface-soft); }
+.current-game-card .card-heading { min-width: 0; align-items: center; gap: 8px; }
+.current-game-card .card-heading > div { display: flex; min-width: 0; flex: 1 1 auto; align-items: center; gap: 7px; }
+.current-game-card .card-heading h3 { min-width: 0; margin: 0; overflow: hidden; font-size: .94rem; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
+.current-game-card .live-pill { min-height: 22px; flex: 0 0 auto; padding: 2px 7px; font-size: .67rem; }
+.current-game-card .table-orbit { width: 30px; height: 30px; flex: 0 0 auto; font-size: .82rem; }
+.current-game-players { display: flex; min-width: 0; min-height: 28px; align-items: center; gap: 8px; margin: 0; }
+.current-game-avatar-stack { display: flex; flex: 0 0 auto; align-items: center; padding-left: 6px; }
+.current-game-avatar, .current-game-avatar-more { width: 28px; height: 28px; margin-left: -6px; border: 2px solid #29365c; border-radius: 50%; background: var(--surface-soft); }
 .current-game-avatar { object-fit: cover; }
-.current-game-avatar-more { display: grid; place-items: center; color: var(--gold); font-size: .65rem; font-weight: 900; }
-.current-game-player-names { min-width: 0; overflow: hidden; color: var(--muted); font-size: .74rem; text-overflow: ellipsis; white-space: nowrap; }
+.current-game-avatar-more { display: grid; place-items: center; color: var(--gold); font-size: .59rem; font-weight: 900; }
+.current-game-player-names { min-width: 0; overflow: hidden; color: var(--muted); font-size: .7rem; line-height: 1.2; text-overflow: ellipsis; white-space: nowrap; }
 .stat-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 17px 0; }
 .stat-grid div { min-width: 0; padding: 10px 7px; border-radius: 10px; background: var(--surface-soft); text-align: center; }
 .stat-grid dt { color: var(--muted); font-size: .7rem; }.stat-grid dd { margin: 5px 0 0; overflow-wrap: anywhere; font-weight: 800; }
-.current-game-enter { display: flex; min-height: var(--touch-target); align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: var(--gold); font-size: .82rem; font-weight: 800; }
+.current-game-card .stat-grid { gap: 6px; margin: 0; }
+.current-game-card .stat-grid div { min-height: 44px; padding: 5px 4px; border-radius: 8px; }
+.current-game-card .stat-grid dt { font-size: .62rem; line-height: 1.1; }
+.current-game-card .stat-grid dd { margin-top: 3px; overflow: hidden; font-size: .78rem; line-height: 1.1; text-overflow: ellipsis; white-space: nowrap; }
 .action-link { display: flex; min-height: var(--touch-target); align-items: center; justify-content: space-between; border-top: 1px solid var(--line); color: var(--gold); font-weight: 800; text-decoration: none; }
 .empty-card { display: grid; min-height: 130px; place-items: center; align-content: center; gap: 6px; color: var(--muted); text-align: center; }
 .empty-card > span { color: var(--gold); font-size: 1.8rem; }.empty-card p { margin: 0; }

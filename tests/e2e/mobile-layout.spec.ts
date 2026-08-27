@@ -142,6 +142,79 @@ for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table h
   }
 });
 
+test('current game card keeps its three compact rows visible and navigable on mobile', async ({ page }, testInfo) => {
+  test.skip(
+    !['chromium-320x568', 'chromium-360x800', 'webkit-430x932'].includes(testInfo.project.name),
+    '在最窄 Chromium、常用安卓和 iPhone WebKit 尺寸验证首页紧凑对局卡。'
+  );
+
+  const admin = await apiLogin('admin');
+  const playerSessions: ApiSession[] = [];
+  let gameId: string | undefined;
+  try {
+    const self = tablePlayers[0];
+    await page.goto('/login');
+    await page.getByLabel('用户名').fill(self.username);
+    await page.getByLabel('密码').fill(self.password);
+    await page.getByRole('button', { name: '登录' }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    const game = await createStartedGame(
+      admin,
+      `首页紧凑卡片 ${testInfo.project.name}`,
+      '300',
+      (createdGameId) => { gameId = createdGameId; }
+    );
+    gameId = game.id;
+    for (const [index, account] of tablePlayers.slice(0, 6).entries()) {
+      const session = await apiLoginAccount(account);
+      playerSessions.push(session);
+      expect((await apiBuyHands(session, game.id, 1, `compact-card-${testInfo.project.name}-${index}`)).status()).toBe(201);
+    }
+
+    await page.goto('/');
+    const card = page.getByRole('link', { name: `进入对局：${game.name}` });
+    await expect(card).toBeVisible();
+    await expect(card).toHaveAttribute('href', `/games/${game.id}`);
+    const geometry = await card.evaluate((element) => {
+      const rect = element.getBoundingClientRect();
+      const playerRow = element.querySelector<HTMLElement>('.current-game-players')?.getBoundingClientRect();
+      const stats = Array.from(element.querySelectorAll<HTMLElement>('.stat-grid > div')).map((stat) => stat.getBoundingClientRect());
+      if (!playerRow) throw new Error('玩家行未渲染');
+      return {
+        card: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom, width: rect.width, height: rect.height },
+        playerRow: { left: playerRow.left, right: playerRow.right, top: playerRow.top, bottom: playerRow.bottom, width: playerRow.width, height: playerRow.height },
+        stats: stats.map((stat) => ({ left: stat.left, right: stat.right, top: stat.top, bottom: stat.bottom, width: stat.width, height: stat.height })),
+        scrollWidth: document.documentElement.scrollWidth,
+        clientWidth: document.documentElement.clientWidth
+      };
+    });
+    expect(geometry.card.height).toBeLessThanOrEqual(165);
+    expect(geometry.scrollWidth).toBeLessThanOrEqual(geometry.clientWidth);
+    expect(geometry.stats).toHaveLength(3);
+    expect(geometry.stats.every((stat) => (
+      stat.width > 0 && stat.height > 0 &&
+      stat.left >= geometry.card.left && stat.right <= geometry.card.right &&
+      stat.top >= geometry.playerRow.bottom && stat.bottom <= geometry.card.bottom
+    )), JSON.stringify(geometry)).toBe(true);
+
+    await card.click();
+    await expect(page).toHaveURL(`/games/${game.id}`);
+    await page.goto('/');
+    await card.focus();
+    await expect(card).toBeFocused();
+    await page.keyboard.press('Enter');
+    await expect(page).toHaveURL(`/games/${game.id}`);
+    await testInfo.attach(`current-game-card-${testInfo.project.name}`, {
+      body: JSON.stringify(geometry, null, 2),
+      contentType: 'application/json'
+    });
+  } finally {
+    await closeApiSessions(admin, ...playerSessions);
+    if (gameId) await cleanupTaskGame(gameId);
+  }
+});
+
 test('history keeps the monthly ranking entry compact', async ({ page }, testInfo) => {
   test.skip(
     !['chromium-360x800', 'webkit-430x932'].includes(testInfo.project.name),
