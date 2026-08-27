@@ -2,12 +2,12 @@ import { useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { HoldemCardPicker } from '../games/HoldemCardPicker.js';
 import {
-  calculateHoldemEquity,
   holdemCardText,
   holdemCardTone,
-  type HoldemCard,
-  type HoldemEquityResult
+  type HoldemCard
 } from '../games/holdem-equity.js';
+import type { HoldemEquityInput } from '../games/holdem-equity-worker-protocol.js';
+import { useHoldemEquity } from '../games/useHoldemEquity.js';
 
 type Player = { id: string };
 type PickerTarget = { type: 'player'; playerId: string } | { type: 'board'; street: 'flop' | 'turn' | 'river' };
@@ -28,23 +28,25 @@ export function EquityCalculatorPage() {
   const [boardCards, setBoardCards] = useState<Array<HoldemCard | undefined>>(emptyBoard);
   const [playerCards, setPlayerCards] = useState<Record<string, HoldemCard[]>>({});
   const [pickerTarget, setPickerTarget] = useState<PickerTarget | null>(null);
-  const [result, setResult] = useState<HoldemEquityResult | null>(null);
+  const [submittedInput, setSubmittedInput] = useState<HoldemEquityInput | null>(null);
   const visibleBoard = boardCards.filter((card): card is HoldemCard => card !== undefined);
   const completePlayers = players.flatMap((player) => {
     const cards = playerCards[player.id];
     return cards?.length === 2 ? [{ id: player.id, cards }] : [];
   });
-  const canCalculate = completePlayers.length === players.length && players.length >= 2;
+  const calculation = useHoldemEquity(submittedInput);
+  const canCalculate = completePlayers.length === players.length && players.length >= 2 && calculation.status !== 'loading';
+  const result = calculation.status === 'success' ? calculation.result : null;
   const resultByPlayer = useMemo(() => new Map(result?.players.map((entry) => [entry.id, entry]) ?? []), [result]);
 
-  const invalidate = () => setResult(null);
+  const invalidate = () => setSubmittedInput(null);
   const reset = () => {
     nextPlayerId.current = 3;
     setPlayers(initialPlayers());
     setBoardCards(emptyBoard());
     setPlayerCards({});
     setPickerTarget(null);
-    setResult(null);
+    setSubmittedInput(null);
   };
   const addPlayer = () => {
     if (players.length >= 9) return;
@@ -108,7 +110,10 @@ export function EquityCalculatorPage() {
   };
   const calculate = () => {
     if (!canCalculate) return;
-    setResult(calculateHoldemEquity({ players: completePlayers, boardCards: visibleBoard }));
+    setSubmittedInput({
+      players: completePlayers.map(({ id, cards }) => ({ id, cards: [...cards] })),
+      boardCards: [...visibleBoard]
+    });
   };
   const street = visibleBoard.length === 0 ? '翻牌前' : visibleBoard.length === 3 ? '翻牌' : visibleBoard.length === 4 ? '转牌' : '河牌';
 
@@ -165,9 +170,13 @@ export function EquityCalculatorPage() {
     </section>
 
     <button type="button" className="button button--primary equity-calculate" disabled={!canCalculate} onClick={calculate}>计算胜率</button>
-    <p className="equity-tool-summary">{result === null
+    <p className="equity-tool-summary">{calculation.status === 'idle'
       ? `${street} · 选完所有玩家手牌后计算`
-      : `${street} · ${result.mode === 'exact' ? '精算' : '模拟'} ${sampleFormatter.format(result.samples)} ${result.mode === 'exact' ? '种' : '次'} · ${players.length}人`}</p>
+      : calculation.status === 'loading'
+        ? `${street} · 正在精确计算…`
+        : calculation.status === 'error'
+          ? `${street} · 精确计算失败，请重试`
+          : `${street} · 精确穷举 · 共计算 ${sampleFormatter.format(calculation.result.samples)} 种牌面 · ${players.length}人`}</p>
     <p className="equity-tool-local-note">仅在本机计算，不上传牌面</p>
 
     {picker !== null && <HoldemCardPicker
