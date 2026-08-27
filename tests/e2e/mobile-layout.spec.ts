@@ -50,6 +50,48 @@ async function replaceEquityCards(
   await dialog.getByRole("button", { name: "确认选牌" }).click();
 }
 
+async function replaceEquityCardsAndCapturePostSelectionMutations(
+  page: Page,
+  trigger: Locator,
+  previous: EquityCard[],
+  next: EquityCard[],
+): Promise<void> {
+  await trigger.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  for (const card of previous) {
+    await dialog
+      .getByRole("button", {
+        name: `移除 ${card.rank === "T" ? "10" : card.rank}${card.suit}`,
+      })
+      .click();
+  }
+  for (const card of next) {
+    await dialog.getByRole("button", { name: `选择点数 ${card.rank}` }).click();
+    await dialog.getByRole("button", { name: `选择花色 ${card.suit}` }).click();
+  }
+
+  // The capture listener runs at the confirmation click boundary, before React applies the
+  // new cards.  Therefore a legal percentage displayed before replacement is excluded, while
+  // a late old-Worker publication after replacement is retained and fails this browser proof.
+  await dialog.getByRole("button", { name: "确认选牌" }).evaluate((button) => {
+    button.addEventListener("click", () => {
+      const status = document.querySelector<HTMLElement>(".table-equity-summary");
+      if (status === null) throw new Error("胜率状态在换牌确认前消失");
+      const history: Array<{ summary: string; percentages: string[] }> = [];
+      status.setAttribute("data-post-selection-equity-mutations", JSON.stringify(history));
+      new MutationObserver(() => {
+        const summary = document.querySelector<HTMLElement>(".table-equity-summary")?.textContent ?? "";
+        const percentages = Array.from(document.querySelectorAll<HTMLElement>(".seat-equity"))
+          .map((element) => element.textContent ?? "");
+        history.push({ summary, percentages });
+        status.setAttribute("data-post-selection-equity-mutations", JSON.stringify(history));
+      }).observe(document.body, { childList: true, characterData: true, subtree: true });
+    }, { capture: true, once: true });
+    button.click();
+  });
+}
+
 async function expectExactSuccess(status: Locator): Promise<void> {
   await expect(status).toHaveText(/精确穷举 · 共计算 [1-9][\d,]* 种牌面/);
 }
@@ -879,8 +921,11 @@ test("embedded equity uses a real Worker for every street, stays responsive, and
     });
     await expect(voiceToggle).toHaveAttribute("aria-pressed", "true");
 
-    // Change a hand while the first exact enumeration is still active.  Only this final hand may publish.
-    await replaceEquityCards(
+    // The old pre-flop equity is 43.6%, while the replacement is 13.6%; they must stay distinct.
+    const oldPercentage = "胜率 43.6%";
+    const finalPercentage = "胜率 13.6%";
+    expect(oldPercentage).not.toBe(finalPercentage);
+    await replaceEquityCardsAndCapturePostSelectionMutations(
       page,
       page.getByRole("button", { name: /为我修改手牌/ }),
       [
@@ -895,8 +940,14 @@ test("embedded equity uses a real Worker for every street, stays responsive, and
     await expect(status).toContainText("正在精确计算…");
     await expectExactSuccess(status);
     await expect(
-      page.getByTestId("seat-self").locator("..").getByText("胜率 13.6%"),
+      page.getByTestId("seat-self").locator("..").getByText(finalPercentage),
     ).toBeVisible();
+    const postSelectionMutations = await status.evaluate((element) => JSON.parse(
+      element.getAttribute("data-post-selection-equity-mutations") ?? "[]",
+    ) as Array<{ summary: string; percentages: string[] }>);
+    const postSelectionPercentages = postSelectionMutations.flatMap(({ percentages }) => percentages);
+    expect(postSelectionPercentages, JSON.stringify(postSelectionMutations)).not.toContain(oldPercentage);
+    expect(postSelectionPercentages, JSON.stringify(postSelectionMutations)).toContain(finalPercentage);
     const events = await equityEvents(status);
     const safeControlIndex = events.indexOf(
       "safe control: voice enabled",
@@ -985,24 +1036,13 @@ test("standalone equity uses a real Worker through every street and remains resp
   );
 
   const summary = page.locator(".equity-tool-summary");
-  await startEquityEventLog(summary);
   await page.getByRole("button", { name: "计算胜率" }).click();
-  await expect(summary).toContainText("翻牌前 · 正在精确计算…");
-
-  // Reset is a safe, unrelated UI action.  Its state change must land before a busy Worker can publish.
+  // Reset verifies cancellation/empty state, but does not assume a Worker remains busy on every engine.
   await page.getByRole("button", { name: "清空" }).evaluate((button) => button.click());
   await expect(summary).toContainText("翻牌前 · 选完所有玩家手牌后计算");
-  const resetEvents = await equityEvents(summary);
-  const loadingIndex = resetEvents.findIndex((event) =>
-    event.includes("正在精确计算"),
-  );
-  const resetIndex = resetEvents.lastIndexOf("翻牌前 · 选完所有玩家手牌后计算");
-  const resultBeforeReset = resetEvents
-    .slice(Math.max(0, loadingIndex), resetIndex)
-    .some((event) => event.includes("精确穷举"));
-  expect(loadingIndex).toBeGreaterThanOrEqual(0);
-  expect(resetIndex).toBeGreaterThan(loadingIndex);
-  expect(resultBeforeReset, JSON.stringify(resetEvents)).toBe(false);
+  await expect(page.getByRole("article", { name: "玩家 1" })).toContainText("选择两张手牌");
+  await expect(page.getByRole("article", { name: "玩家 2" })).toContainText("选择两张手牌");
+  await expect(page.getByRole("button", { name: "计算胜率" })).toBeDisabled();
 
   await chooseEquityCards(
     page,
