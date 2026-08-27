@@ -15,7 +15,7 @@ export class SettlementFinalizationController {
   constructor(@Inject(SettlementFinalizationService) private readonly finalization: SettlementFinalizationService) {}
 
   @Post('settlement-finalize')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.USER, Role.ADMIN, Role.SUPER_ADMIN)
   finalize(
     @CurrentUser() actor: AuthUser,
     @Param('gameId') gameId: string,

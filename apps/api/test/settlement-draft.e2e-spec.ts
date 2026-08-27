@@ -58,6 +58,7 @@ describe.sequential('recoverable settlement drafts', () => {
   let adminAAuth: AuthContext;
   let adminBAuth: AuthContext;
   let playerAAuth: AuthContext;
+  let playerBAuth: AuthContext;
 
   async function seedUser(suffix: string, role: Role): Promise<User> {
     const username = `${prefix}-${suffix}`;
@@ -138,7 +139,7 @@ describe.sequential('recoverable settlement drafts', () => {
     await prisma.game.deleteMany({ where: { id: { in: gameIds } } });
   }
 
-  async function seedActiveGame(suffix: string): Promise<GameFixture> {
+  async function seedActiveGame(suffix: string, creator = adminA): Promise<GameFixture> {
     const game = await prisma.game.create({
       data: {
         name: `${prefix}-${suffix}`,
@@ -146,7 +147,7 @@ describe.sequential('recoverable settlement drafts', () => {
         rakeEnabled: true,
         status: GameStatus.ACTIVE,
         version: 1,
-        createdById: adminA.id,
+        createdById: creator.id,
         startedAt: new Date(Date.now() - 30_000)
       }
     });
@@ -227,6 +228,7 @@ describe.sequential('recoverable settlement drafts', () => {
     adminAAuth = await login(adminA);
     adminBAuth = await login(adminB);
     playerAAuth = await login(playerA);
+    playerBAuth = await login(playerB);
   }, 30_000);
 
   beforeEach(async () => {
@@ -332,6 +334,100 @@ describe.sequential('recoverable settlement drafts', () => {
       .toMatchObject({ buyIn: '1500', cashOut: '3000', rawProfit: '1500' });
     expect(new Date(response.body.leaseExpiresAt).getTime())
       .toBeGreaterThan(before.leaseExpiresAt.getTime());
+  });
+
+  it('lets the creator edit and preview only the creator-owned draft', async () => {
+    // Break caught: a creator remains blocked by an admin-only draft route or can save another user's draft.
+    const owned = await seedActiveGame('creator-editor', playerA);
+    await beginSettlement(owned, playerAAuth);
+
+    await read(playerAAuth, `/api/games/${owned.game.id}/settlement-draft`)
+      .expect(200)
+      .expect(({ body }) => expect(body).toMatchObject({
+        editorUserId: playerA.id,
+        canEdit: true,
+        canTakeOver: false
+      }));
+    await write(playerBAuth, 'post', `/api/games/${owned.game.id}/settlement-preview`, balancedPayload(owned))
+      .expect(200);
+    await write(playerBAuth, 'put', `/api/games/${owned.game.id}/settlement-draft`, {
+      version: 1,
+      payload: balancedPayload(owned)
+    }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    await write(playerAAuth, 'put', `/api/games/${owned.game.id}/settlement-draft`, {
+      version: 1,
+      payload: balancedPayload(owned)
+    }).expect(200).expect(({ body }) => expect(body).toMatchObject({
+      version: 2,
+      editorUserId: playerA.id,
+      canEdit: true,
+      previewReady: true
+    }));
+
+    const other = await seedActiveGame('creator-other');
+    await beginSettlement(other);
+    await write(playerAAuth, 'put', `/api/games/${other.game.id}/settlement-draft`, {
+      version: 1,
+      payload: balancedPayload(other)
+    }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+
+    await prisma.settlementDraft.update({
+      where: { gameId: owned.game.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1_000) }
+    });
+    const takenOver = await write(
+      adminBAuth,
+      'post',
+      `/api/games/${owned.game.id}/settlement-draft/takeover`
+    ).expect(200);
+    await write(adminBAuth, 'put', `/api/games/${owned.game.id}/settlement-draft`, {
+      version: takenOver.body.version,
+      payload: takenOver.body.payload
+    }).expect(200).expect(({ body }) => expect(body).toMatchObject({
+      editorUserId: adminB.id,
+      canEdit: true
+    }));
+  });
+
+  it('keeps settlement draft takeover restricted to administrators after lease expiry', async () => {
+    // Break caught: widening draft saves accidentally lets ordinary users take over an expired lease.
+    const fixture = await seedActiveGame('user-takeover');
+    await beginSettlement(fixture);
+    await prisma.settlementDraft.update({
+      where: { gameId: fixture.game.id },
+      data: { leaseExpiresAt: new Date(Date.now() - 1_000) }
+    });
+
+    await write(playerAAuth, 'post', `/api/games/${fixture.game.id}/settlement-draft/takeover`)
+      .expect(403)
+      .expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+  });
+
+  it('rejects disabled and deleted creators at the locked draft-save boundary', async () => {
+    // Break caught: a session issued before disablement or deletion can still mutate the creator's draft.
+    const disabled = await seedActiveGame('disabled-creator', playerA);
+    await beginSettlement(disabled, playerAAuth);
+    await prisma.user.update({ where: { id: playerA.id }, data: { isActive: false } });
+    try {
+      await write(playerAAuth, 'put', `/api/games/${disabled.game.id}/settlement-draft`, {
+        version: 1,
+        payload: balancedPayload(disabled)
+      }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    } finally {
+      playerA = await prisma.user.update({ where: { id: playerA.id }, data: { isActive: true } });
+    }
+
+    const deleted = await seedActiveGame('deleted-creator', playerA);
+    await beginSettlement(deleted, playerAAuth);
+    await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: new Date() } });
+    try {
+      await write(playerAAuth, 'put', `/api/games/${deleted.game.id}/settlement-draft`, {
+        version: 1,
+        payload: balancedPayload(deleted)
+      }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    } finally {
+      playerA = await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: null } });
+    }
   });
 
   it('does not advertise editability after the draft editor is demoted', async () => {

@@ -16,7 +16,11 @@ import {
 } from '../common/errors/app-error.js';
 import { GameStatus, Prisma, type SettlementDraft } from '../generated/prisma/client.js';
 import { lockGameForUpdate } from '../games/game-lock.js';
-import { assertCanViewGameSnapshot, assertGameManager } from '../games/game-policy.js';
+import {
+  assertCanManageGameLifecycle,
+  assertCanViewGameSnapshot,
+  assertGameManager
+} from '../games/game-policy.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
@@ -104,7 +108,7 @@ export class SettlementDraftService {
       const before = await this.lockDraft(transaction, gameId);
       const users = await lockUsersInOrder(transaction, [actor.id]);
       const currentActor = requireCurrentActor(users, actor.id);
-      assertGameManager(currentActor);
+      assertCanManageGameLifecycle(currentActor, game);
       const context = await this.loadPreviewContext(transaction, gameId);
       const previousPayload = parseStoredSettlementDraftPayload(before.payload);
       assertExactDraftPlayerSet(command.payload, context.players.map(({ id }) => id));
@@ -287,7 +291,7 @@ export class SettlementDraftService {
       editorNickname: draft.editorUser.nickname,
       leaseExpiresAt: draft.leaseExpiresAt.toISOString(),
       canEdit: actor.id === draft.editorUserId &&
-        (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN'),
+        (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN' || actor.id === context.game.createdById),
       canTakeOver: actor.id !== draft.editorUserId &&
         (actor.role === 'ADMIN' || actor.role === 'SUPER_ADMIN') &&
         draft.leaseExpiresAt.getTime() <= Date.now(),

@@ -40,7 +40,7 @@ export class SettlementDraftController {
   }
 
   @Put('settlement-draft')
-  @Roles(Role.ADMIN, Role.SUPER_ADMIN)
+  @Roles(Role.USER, Role.ADMIN, Role.SUPER_ADMIN)
   save(
     @CurrentUser() actor: AuthUser,
     @Param('gameId') gameId: string,

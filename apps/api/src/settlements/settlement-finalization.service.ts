@@ -12,7 +12,7 @@ import type { AuthUser } from '../common/auth/auth-user.js';
 import { badRequest, conflict, conflictWithDetails } from '../common/errors/app-error.js';
 import { GameStatus, Prisma } from '../generated/prisma/client.js';
 import { lockGameForUpdate } from '../games/game-lock.js';
-import { assertGameManager } from '../games/game-policy.js';
+import { assertCanManageGameLifecycle } from '../games/game-policy.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { GameEventsService } from '../realtime/game-events.service.js';
 import { lockUsersInOrder, requireCurrentActor } from '../users/user-policy.js';
@@ -119,7 +119,7 @@ export class SettlementFinalizationService {
       });
       const users = await lockUsersInOrder(transaction, [actor.id, ...players.map((player) => player.userId)]);
       const currentActor = requireCurrentActor(users, actor.id);
-      assertGameManager(currentActor);
+      assertCanManageGameLifecycle(currentActor, game);
       if (game.status !== GameStatus.SETTLING) throw conflict('GAME_STATE_CONFLICT');
       if (draft.editorUserId !== currentActor.id) throw conflict('DRAFT_EDITOR_CONFLICT');
       if (draft.version !== command.draftVersion) {

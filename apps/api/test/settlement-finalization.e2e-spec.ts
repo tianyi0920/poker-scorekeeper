@@ -55,6 +55,7 @@ describe.sequential('atomic final settlement', () => {
   let playerC: User;
   let adminAuth: AuthContext;
   let playerAuth: AuthContext;
+  let playerBAuth: AuthContext;
   let originalSettings: SystemSetting | undefined;
 
   async function seedUser(suffix: string, role: Role, rakeEnabled = true): Promise<User> {
@@ -94,9 +95,9 @@ describe.sequential('atomic final settlement', () => {
     return request(app.getHttpServer()).get(path).set('Cookie', auth.cookie);
   }
 
-  async function confirmationToken(fixture: Fixture): Promise<string> {
+  async function confirmationToken(fixture: Fixture, auth = adminAuth): Promise<string> {
     const response = await read(
-      adminAuth,
+      auth,
       `/api/games/${fixture.game.id}/settlement-draft`
     ).expect(200);
     expect(response.body).toMatchObject({
@@ -108,7 +109,7 @@ describe.sequential('atomic final settlement', () => {
     return response.body.confirmationToken;
   }
 
-  async function seedFixture(suffix: string): Promise<Fixture> {
+  async function seedFixture(suffix: string, creator = admin, editor = admin): Promise<Fixture> {
     const startedAt = new Date(Date.now() - 3_600_000);
     const stoppedAt = new Date(startedAt.getTime() + 3_000_000);
     const game = await prisma.game.create({
@@ -118,7 +119,7 @@ describe.sequential('atomic final settlement', () => {
         rakeEnabled: true,
         status: GameStatus.SETTLING,
         version: 5,
-        createdById: admin.id,
+        createdById: creator.id,
         startedAt,
         stoppedAt
       }
@@ -162,8 +163,8 @@ describe.sequential('atomic final settlement', () => {
     const draft = await prisma.settlementDraft.create({
       data: {
         gameId: game.id,
-        editorUserId: admin.id,
-        updatedById: admin.id,
+        editorUserId: editor.id,
+        updatedById: editor.id,
         leaseExpiresAt: new Date(Date.now() + 300_000),
         version: 4,
         payload: {
@@ -235,6 +236,7 @@ describe.sequential('atomic final settlement', () => {
     playerC = await seedUser('player-c', Role.USER, false);
     adminAuth = await login(admin);
     playerAuth = await login(playerA);
+    playerBAuth = await login(playerB);
     originalSettings = await prisma.systemSetting.findUniqueOrThrow({ where: { id: 'singleton' } });
   }, 30_000);
 
@@ -347,6 +349,61 @@ describe.sequential('atomic final settlement', () => {
     await expect(prisma.auditLog.count({
       where: { action: 'SETTLEMENT_FINALIZED', entityType: 'SETTLEMENT', entityId: settlement.id }
     })).resolves.toBe(1);
+  });
+
+  it('lets a creator finalize only the creator-owned draft while preserving other users read access', async () => {
+    // Break caught: a creator remains blocked by the finalization route or another ordinary user can commit it.
+    const owned = await seedFixture('creator-finalize', playerA, playerA);
+    const token = await confirmationToken(owned, playerAuth);
+    await read(playerBAuth, `/api/games/${owned.game.id}/settlement-draft`).expect(200);
+    await write(playerBAuth, `/api/games/${owned.game.id}/settlement-finalize`, {
+      draftVersion: owned.draftVersion,
+      settingsVersion: 7,
+      confirmationToken: token
+    }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    await write(playerAuth, `/api/games/${owned.game.id}/settlement-finalize`, {
+      draftVersion: owned.draftVersion,
+      settingsVersion: 7,
+      confirmationToken: token
+    }).expect(201).expect(({ body }) => expect(body).toMatchObject({
+      immutable: true,
+      settledByNickname: playerA.nickname
+    }));
+
+    const other = await seedFixture('creator-other-finalize');
+    const otherToken = await confirmationToken(other);
+    await write(playerAuth, `/api/games/${other.game.id}/settlement-finalize`, {
+      draftVersion: other.draftVersion,
+      settingsVersion: 7,
+      confirmationToken: otherToken
+    }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+
+    const administratorOwned = await seedFixture('admin-cross-finalize', playerA, admin);
+    const administratorToken = await confirmationToken(administratorOwned);
+    await write(adminAuth, `/api/games/${administratorOwned.game.id}/settlement-finalize`, {
+      draftVersion: administratorOwned.draftVersion,
+      settingsVersion: 7,
+      confirmationToken: administratorToken
+    }).expect(201).expect(({ body }) => expect(body).toMatchObject({
+      immutable: true,
+      settledByNickname: admin.nickname
+    }));
+  });
+
+  it('rejects a deleted creator whose session predates finalization', async () => {
+    // Break caught: finalization trusts the session actor instead of the locked current user row.
+    const fixture = await seedFixture('deleted-creator-finalize', playerA, playerA);
+    const token = await confirmationToken(fixture, playerAuth);
+    await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: new Date() } });
+    try {
+      await write(playerAuth, `/api/games/${fixture.game.id}/settlement-finalize`, {
+        draftVersion: fixture.draftVersion,
+        settingsVersion: 7,
+        confirmationToken: token
+      }).expect(403).expect(({ body }) => expect(body.code).toBe('FORBIDDEN'));
+    } finally {
+      playerA = await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: null } });
+    }
   });
 
   it('returns recoverable conflicts for stale draft and settings previews without persisting', async () => {

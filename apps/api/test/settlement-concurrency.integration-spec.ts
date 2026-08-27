@@ -129,7 +129,12 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
     });
   }
 
-  async function seedFixture(suffix: string, expiredLease = false): Promise<Fixture> {
+  async function seedFixture(
+    suffix: string,
+    expiredLease = false,
+    creator = adminA,
+    editor = adminA
+  ): Promise<Fixture> {
     const startedAt = new Date(Date.now() - 60_000);
     const game = await prisma.game.create({
       data: {
@@ -138,7 +143,7 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
         rakeEnabled: true,
         status: GameStatus.SETTLING,
         version: 4,
-        createdById: adminA.id,
+        createdById: creator.id,
         startedAt,
         stoppedAt: new Date()
       }
@@ -179,8 +184,8 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
     await prisma.settlementDraft.create({
       data: {
         gameId: game.id,
-        editorUserId: adminA.id,
-        updatedById: adminA.id,
+        editorUserId: editor.id,
+        updatedById: editor.id,
         leaseExpiresAt: new Date(Date.now() + (expiredLease ? -1_000 : 300_000)),
         version: 4,
         payload: {
@@ -592,5 +597,29 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
       where: { settlement: { gameId: fixture.game.id } }
     })).resolves.toBe(2);
     await expect(prisma.activePlayerLock.count({ where: { gameId: fixture.game.id } })).resolves.toBe(0);
+  }, 30_000);
+
+  it('persists one immutable settlement when its creator races an administrator', async () => {
+    // Break caught: owner authorization or the finalization race permits two persisted settlements.
+    const fixture = await seedFixture('creator-admin-race', false, playerA, playerA);
+    const command = await commandFor(fixture, playerA);
+    const outcomes = await Promise.allSettled([
+      finalization.finalize(fixture.game.id, authUser(playerA), command),
+      finalization.finalize(fixture.game.id, authUser(adminA), command)
+    ]);
+
+    expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1);
+    expect(outcomes.find(({ status }) => status === 'fulfilled'))
+      .toMatchObject({ status: 'fulfilled', value: { immutable: true } });
+    const rejected = outcomes.find(({ status }) => status === 'rejected');
+    if (rejected === undefined || rejected.status !== 'rejected') {
+      throw new Error('expected exactly one rejected finalization');
+    }
+    expect(['DRAFT_EDITOR_CONFLICT', 'GAME_STATE_CONFLICT']).toContain(
+      (rejected.reason as { code: string }).code
+    );
+    await expect(prisma.settlement.count({ where: { gameId: fixture.game.id } })).resolves.toBe(1);
+    await expect(prisma.settlementResult.count({ where: { settlement: { gameId: fixture.game.id } } }))
+      .resolves.toBe(2);
   }, 30_000);
 });
