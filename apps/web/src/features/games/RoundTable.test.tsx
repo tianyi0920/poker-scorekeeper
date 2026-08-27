@@ -88,8 +88,8 @@ it('turns the board and every player hand into local equity controls', () => {
   expect(selectPlayer).toHaveBeenCalledWith('player-2');
 });
 
-it('highlights the newest purchase with the matching player and amount in the table center', () => {
-  // Break caught: purchases are only available behind the tab, leaving the table center empty during play.
+it('shows the newest purchase as terse single-line copy in the table center', () => {
+  // Break caught: the table center returns to the tall three-line purchase card that crowds the arena.
   const props = {
     players: makePlayers(2),
     selfUserId: 'self',
@@ -99,8 +99,9 @@ it('highlights the newest purchase with the matching player and amount in the ta
   render(<RoundTable {...props} />);
 
   const latest = screen.getByRole('status', { name: '最新购买记录' });
+  expect(within(latest).getByText('最新 ·')).toBeInTheDocument();
   expect(latest).toHaveTextContent('牌友1');
-  expect(latest).toHaveTextContent('购买 1 手');
+  expect(within(latest).getByText('买1手')).toBeInTheDocument();
   expect(latest).toHaveTextContent('¥300');
   expect(latest).not.toHaveTextContent('牌友2');
 });

@@ -670,9 +670,10 @@ test('administrator end-game control and a long latest speech stay inside the fi
           .find((button) => button.textContent?.trim() === '结束对局');
         const homeLink = document.querySelector<HTMLElement>('.game-home-link');
         const voiceToggle = document.querySelector<HTMLElement>('.voice-toggle');
+        const latestPurchase = document.querySelector<HTMLElement>('.table-latest-purchase');
         const speechElement = Array.from(document.querySelectorAll<HTMLElement>('.seat-speech'))
           .find((element) => element.textContent === currentSpeechText);
-        if (!table || !dock || !spectatorBar || !endButton || !homeLink || !voiceToggle || !speechElement) {
+        if (!table || !dock || !spectatorBar || !endButton || !homeLink || !voiceToggle || !latestPurchase || !speechElement) {
           throw new Error('管理员竞技区关键元素未渲染');
         }
         const tableRect = table.getBoundingClientRect();
@@ -681,6 +682,7 @@ test('administrator end-game control and a long latest speech stay inside the fi
         const endRect = endButton.getBoundingClientRect();
         const homeRect = homeLink.getBoundingClientRect();
         const voiceRect = voiceToggle.getBoundingClientRect();
+        const latestPurchaseRect = latestPurchase.getBoundingClientRect();
         const speechRect = speechElement.getBoundingClientRect();
         const ownSeat = speechElement.closest('[data-testid="table-seat"]');
         const ownAmount = ownSeat?.querySelector<HTMLElement>('b');
@@ -700,6 +702,9 @@ test('administrator end-game control and a long latest speech stay inside the fi
           endHeight: endRect.height,
           homeHeight: homeRect.height,
           voiceHeight: voiceRect.height,
+          globalHeaderPresent: document.querySelector('.app-header') !== null,
+          latestPurchaseHeight: latestPurchaseRect.height,
+          latestPurchaseWhiteSpace: getComputedStyle(latestPurchase).whiteSpace,
           speechLeft: speechRect.left,
           speechRight: speechRect.right,
           viewportWidth: window.innerWidth,
@@ -715,6 +720,9 @@ test('administrator end-game control and a long latest speech stay inside the fi
       expect(geometry.endHeight).toBeGreaterThanOrEqual(44);
       expect(geometry.homeHeight).toBe(geometry.endHeight);
       expect(geometry.voiceHeight).toBe(geometry.endHeight);
+      expect(geometry.globalHeaderPresent).toBe(false);
+      expect(geometry.latestPurchaseHeight).toBeLessThanOrEqual(28);
+      expect(geometry.latestPurchaseWhiteSpace).toBe('nowrap');
       expect(geometry.speechLeft).toBeGreaterThanOrEqual(0);
       expect(geometry.speechRight).toBeLessThanOrEqual(geometry.viewportWidth);
       expect(geometry.overlapsSpectatorBar, speechText).toBe(false);

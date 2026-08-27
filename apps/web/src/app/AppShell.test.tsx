@@ -116,10 +116,10 @@ it.each([
   ['/games/new/', false, false],
   ['/games/new/settlement/', false, false],
   ['/history/game-1', false, false],
-])('uses focused shell mode only for the active game workspace: %s', async (pathname, focused, liveGame) => {
-  // Break caught: a live table and settlement share dock clearance, or a normal route loses navigation.
+])('uses focused shell mode and hides global chrome only for the active game workspace: %s', async (pathname, focused, liveGame) => {
+  // Break caught: the live table loses vertical space to the redundant global brand/logout header.
   renderShell(pathname);
-  await screen.findByRole('button', { name: '退出登录' });
+  await screen.findByText('路由内容');
 
   const shell = screen.getByText('路由内容').closest('.app-shell');
   const navigation = screen.queryByRole('navigation', { name: '主导航' });
@@ -131,9 +131,14 @@ it.each([
   else expect(shell).not.toHaveClass('app-shell--focus');
   if (focused) expect(navigation).not.toBeInTheDocument();
   else expect(navigation).toBeVisible();
-  const header = screen.getByRole('banner');
-  if (liveGame) expect(header).toHaveClass('app-header--game');
-  else expect(header).not.toHaveClass('app-header--game');
+  const header = screen.queryByRole('banner');
+  if (liveGame) {
+    expect(header).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: '退出登录' })).not.toBeInTheDocument();
+  } else {
+    expect(header).toBeVisible();
+    expect(screen.getByRole('button', { name: '退出登录' })).toBeVisible();
+  }
 });
 
 it('keeps only home and profile in the bottom navigation and treats history as part of home', async () => {

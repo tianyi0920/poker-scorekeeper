@@ -80,10 +80,10 @@ export function RoundTable({
     ? 0n
     : BigInt(handPrice) * BigInt(latestPurchase.handsDelta);
   const purchaseDescription = latestPurchase?.type === 'ADJUST'
-    ? `更正为 ${latestPurchase.newHands} 手`
+    ? `更正${latestPurchase.newHands}手`
     : latestPurchase === undefined
       ? ''
-      : `购买 ${Math.abs(latestPurchase.handsDelta)} 手`;
+      : `买${Math.abs(latestPurchase.handsDelta)}手`;
 
   return (
     <section
@@ -133,9 +133,10 @@ export function RoundTable({
             aria-label="最新购买记录"
             aria-live="polite"
           >
-            <span>最新购买</span>
+            <span>最新 ·</span>
             <strong title={latestBuyer.nickname}>{latestBuyer.nickname}</strong>
-            <p><em>{purchaseDescription}</em><b>{formatUnsignedMoney(purchaseAmount.toString())}</b></p>
+            <em>{purchaseDescription}</em>
+            <b>{formatUnsignedMoney(purchaseAmount.toString())}</b>
           </div>
         ) : ordered.length === 0 ? <strong className="table-waiting">等待玩家入座</strong> : children}
       </div>

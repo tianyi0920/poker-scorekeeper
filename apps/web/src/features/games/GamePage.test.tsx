@@ -230,8 +230,9 @@ it('shows the full live table, spectators, tabs, and only the latest self adjust
   expect(screen.getByRole('button', { name: '购买筹码' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: '返回首页' })).toHaveAttribute('href', '/');
   const latestPurchase = screen.getByRole('status', { name: '最新购买记录' });
+  expect(latestPurchase).toHaveTextContent('最新 ·');
   expect(latestPurchase).toHaveTextContent('阿明');
-  expect(latestPurchase).toHaveTextContent('购买 1 手');
+  expect(latestPurchase).toHaveTextContent('买1手');
   expect(latestPurchase).toHaveTextContent('¥300');
   const spectatorBar = screen.getByRole('region', { name: '观战区' });
   expect(spectatorBar.compareDocumentPosition(screen.getByTestId('round-table')) & Node.DOCUMENT_POSITION_FOLLOWING)
