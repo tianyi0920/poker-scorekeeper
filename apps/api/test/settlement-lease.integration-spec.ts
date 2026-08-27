@@ -34,6 +34,39 @@ interface SeedFixtureOptions {
   creator?: User;
 }
 
+type Outcome<T> =
+  | { status: 'fulfilled'; value: T }
+  | { status: 'rejected'; reason: unknown };
+
+function captureOutcome<T>(
+  operation: Promise<T>,
+  onSettled: () => void = () => undefined
+): Promise<Outcome<T>> {
+  return operation.then(
+    (value) => {
+      onSettled();
+      return { status: 'fulfilled', value };
+    },
+    (reason: unknown) => {
+      onSettled();
+      return { status: 'rejected', reason };
+    }
+  );
+}
+
+async function waitForLock(
+  locked: Promise<void>,
+  blockerOutcome: Promise<Outcome<void>>
+): Promise<void> {
+  const result = await Promise.race([
+    locked.then(() => ({ status: 'locked' as const })),
+    blockerOutcome.then((outcome) => ({ status: 'blocker-settled' as const, outcome }))
+  ]);
+  if (result.status === 'locked') return;
+  if (result.outcome.status === 'rejected') throw result.outcome.reason;
+  throw new Error('Game-lock blocker settled before publishing its lock barrier');
+}
+
 function normalize(value: string): string {
   return value.trim().normalize('NFKC').toLocaleLowerCase('zh-CN');
 }
@@ -282,29 +315,39 @@ describe.sequential('settlement draft lease concurrency', () => {
     let releaseGame!: () => void;
     const locked = new Promise<void>((resolve) => { gameLocked = resolve; });
     const release = new Promise<void>((resolve) => { releaseGame = resolve; });
-    const blocker = prisma.$transaction(async (transaction) => {
-      await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM games WHERE id = ${fixture.game.id} FOR UPDATE
-      `;
-      gameLocked();
-      await release;
-      await transaction.user.update({ where: { id: adminA.id }, data: { role: Role.USER } });
-    }, { timeout: 10_000, maxWait: 5_000 });
-    await locked;
-
-    let settled = false;
-    const save = drafts.save(
-      fixture.game.id,
-      authUser(adminA),
-      { version: 1, payload: fixture.payload }
-    ).finally(() => { settled = true; });
-    await delay(200);
-    expect(settled).toBe(false);
-    releaseGame();
-    await blocker;
-
+    let blockerOutcome: Promise<Outcome<void>> | undefined;
+    let saveOutcome: Promise<Outcome<Awaited<ReturnType<SettlementDraftService['save']>>>> | undefined;
+    let primaryFailed = false;
+    let primaryError: unknown;
+    let cleanupFailed = false;
+    let cleanupError: unknown;
     try {
-      await expect(save).rejects.toMatchObject({ code: 'FORBIDDEN' });
+      blockerOutcome = captureOutcome(prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM games WHERE id = ${fixture.game.id} FOR UPDATE
+        `;
+        gameLocked();
+        await release;
+        await transaction.user.update({ where: { id: adminA.id }, data: { role: Role.USER } });
+      }, { timeout: 10_000, maxWait: 5_000 }));
+      await waitForLock(locked, blockerOutcome);
+
+      let settled = false;
+      saveOutcome = captureOutcome(drafts.save(
+        fixture.game.id,
+        authUser(adminA),
+        { version: 1, payload: fixture.payload }
+      ), () => { settled = true; });
+      await delay(200);
+      expect(settled).toBe(false);
+      releaseGame();
+      const blockerResult = await blockerOutcome;
+      if (blockerResult.status === 'rejected') throw blockerResult.reason;
+
+      await expect(saveOutcome).resolves.toMatchObject({
+        status: 'rejected',
+        reason: { code: 'FORBIDDEN' }
+      });
       await expect(prisma.settlementDraft.findUniqueOrThrow({ where: { gameId: fixture.game.id } }))
         .resolves.toMatchObject({ version: 1, editorUserId: adminA.id });
       await expect(prisma.auditLog.count({
@@ -315,9 +358,24 @@ describe.sequential('settlement draft lease concurrency', () => {
         }
       }))
         .resolves.toBe(0);
+    } catch (error) {
+      primaryFailed = true;
+      primaryError = error;
     } finally {
-      adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
+      releaseGame();
+      await Promise.allSettled([
+        ...(blockerOutcome === undefined ? [] : [blockerOutcome]),
+        ...(saveOutcome === undefined ? [] : [saveOutcome])
+      ]);
+      try {
+        adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
+      } catch (error) {
+        cleanupFailed = true;
+        cleanupError = error;
+      }
     }
+    if (primaryFailed) throw primaryError;
+    if (cleanupFailed) throw cleanupError;
   }, 15_000);
 
   it('lets a demoted game creator save after waiting for the game lock', async () => {
@@ -330,29 +388,39 @@ describe.sequential('settlement draft lease concurrency', () => {
     let releaseGame!: () => void;
     const locked = new Promise<void>((resolve) => { gameLocked = resolve; });
     const release = new Promise<void>((resolve) => { releaseGame = resolve; });
-    const blocker = prisma.$transaction(async (transaction) => {
-      await transaction.$queryRaw<Array<{ id: string }>>`
-        SELECT id FROM games WHERE id = ${fixture.game.id} FOR UPDATE
-      `;
-      gameLocked();
-      await release;
-      await transaction.user.update({ where: { id: adminA.id }, data: { role: Role.USER } });
-    }, { timeout: 10_000, maxWait: 5_000 });
-    await locked;
-
-    let settled = false;
-    const save = drafts.save(
-      fixture.game.id,
-      authUser(adminA),
-      { version: 1, payload: fixture.payload }
-    ).finally(() => { settled = true; });
-    await delay(200);
-    expect(settled).toBe(false);
-    releaseGame();
-    await blocker;
-
+    let blockerOutcome: Promise<Outcome<void>> | undefined;
+    let saveOutcome: Promise<Outcome<Awaited<ReturnType<SettlementDraftService['save']>>>> | undefined;
+    let primaryFailed = false;
+    let primaryError: unknown;
+    let cleanupFailed = false;
+    let cleanupError: unknown;
     try {
-      await expect(save).resolves.toMatchObject({ version: 2, editorUserId: adminA.id });
+      blockerOutcome = captureOutcome(prisma.$transaction(async (transaction) => {
+        await transaction.$queryRaw<Array<{ id: string }>>`
+          SELECT id FROM games WHERE id = ${fixture.game.id} FOR UPDATE
+        `;
+        gameLocked();
+        await release;
+        await transaction.user.update({ where: { id: adminA.id }, data: { role: Role.USER } });
+      }, { timeout: 10_000, maxWait: 5_000 }));
+      await waitForLock(locked, blockerOutcome);
+
+      let settled = false;
+      saveOutcome = captureOutcome(drafts.save(
+        fixture.game.id,
+        authUser(adminA),
+        { version: 1, payload: fixture.payload }
+      ), () => { settled = true; });
+      await delay(200);
+      expect(settled).toBe(false);
+      releaseGame();
+      const blockerResult = await blockerOutcome;
+      if (blockerResult.status === 'rejected') throw blockerResult.reason;
+
+      await expect(saveOutcome).resolves.toMatchObject({
+        status: 'fulfilled',
+        value: { version: 2, editorUserId: adminA.id }
+      });
       await expect(prisma.settlementDraft.findUniqueOrThrow({ where: { gameId: fixture.game.id } }))
         .resolves.toMatchObject({ version: 2, editorUserId: adminA.id, updatedById: adminA.id });
       await expect(prisma.auditLog.count({
@@ -364,9 +432,24 @@ describe.sequential('settlement draft lease concurrency', () => {
         }
       }))
         .resolves.toBe(1);
+    } catch (error) {
+      primaryFailed = true;
+      primaryError = error;
     } finally {
-      adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
+      releaseGame();
+      await Promise.allSettled([
+        ...(blockerOutcome === undefined ? [] : [blockerOutcome]),
+        ...(saveOutcome === undefined ? [] : [saveOutcome])
+      ]);
+      try {
+        adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
+      } catch (error) {
+        cleanupFailed = true;
+        cleanupError = error;
+      }
     }
+    if (primaryFailed) throw primaryError;
+    if (cleanupFailed) throw cleanupError;
   }, 15_000);
 
   it('broadcasts only after the draft commit is visible', async () => {
