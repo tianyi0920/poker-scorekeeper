@@ -418,6 +418,7 @@ describe.sequential('recoverable settlement drafts', () => {
       playerA = await prisma.user.update({ where: { id: playerA.id }, data: { isActive: true } });
     }
 
+    await prisma.activePlayerLock.deleteMany({ where: { gameId: disabled.game.id } });
     const deleted = await seedActiveGame('deleted-creator', playerA);
     await beginSettlement(deleted, playerAAuth);
     await prisma.user.update({ where: { id: playerA.id }, data: { deletedAt: new Date() } });
