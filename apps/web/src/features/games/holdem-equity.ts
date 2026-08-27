@@ -19,6 +19,7 @@ export interface HoldemEquityResult {
 }
 
 const allowedBoardCounts = new Set([0, 3, 4, 5]);
+const holdemCardPattern = /^[2-9TJQKA][cdhs]$/;
 const suitSymbols = { c: '♣', d: '♦', h: '♥', s: '♠' } as const;
 const suitNames = { c: '梅花', d: '方片', h: '红桃', s: '黑桃' } as const;
 
@@ -46,10 +47,12 @@ export function calculateHoldemEquity({
   boardCards: HoldemCard[];
 }): HoldemEquityResult {
   if (players.length < 2) throw new Error('至少需要两名已选择手牌的玩家');
+  if (players.length > 9) throw new Error('最多只能有九名玩家');
   if (players.some(({ cards }) => cards.length !== 2)) throw new Error('每名玩家必须选择两张手牌');
   if (!allowedBoardCounts.has(boardCards.length)) throw new Error('公共牌只能是 0、3、4 或 5 张');
 
   const visibleCards = [...boardCards, ...players.flatMap(({ cards }) => cards)];
+  if (visibleCards.some((card) => !holdemCardPattern.test(card))) throw new Error('牌面中包含无效的牌');
   if (new Set(visibleCards).size !== visibleCards.length) throw new Error('牌面中不能出现重复的牌');
 
   const evaluatorHands = players.map(({ cards }) => cards) as Parameters<typeof equityHoldem>[0];

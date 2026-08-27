@@ -66,7 +66,51 @@ describe('calculateHoldemEquity', () => {
 
     expect(result.mode).toBe('exact');
     expect(result.samples).toBe(1_712_304);
+    expect(result.players).toEqual([
+      { id: 'aces', equityPercentage: 81.3, winPercentage: 81.1, tiePercentage: 0.4 },
+      { id: 'kings', equityPercentage: 18.7, winPercentage: 18.6, tiePercentage: 0.4 }
+    ]);
     expect(result.players.reduce((total, player) => total + player.equityPercentage, 0)).toBeCloseTo(100, 5);
+  });
+
+  it('enumerates every legal two-card runout on the flop', () => {
+    // Break caught: a flop calculation returns simulated results or an incorrect number of legal runouts.
+    const result = calculateHoldemEquity({
+      players: [
+        { id: 'aces', cards: ['As', 'Ah'] },
+        { id: 'kings', cards: ['Kc', 'Kd'] }
+      ],
+      boardCards: ['2c', '7d', '9h']
+    });
+
+    expect(result).toEqual({
+      mode: 'exact',
+      samples: 990,
+      players: [
+        { id: 'aces', equityPercentage: 91.6, winPercentage: 91.6, tiePercentage: 0 },
+        { id: 'kings', equityPercentage: 8.4, winPercentage: 8.4, tiePercentage: 0 }
+      ]
+    });
+  });
+
+  it('enumerates every legal one-card runout on the turn', () => {
+    // Break caught: a turn calculation returns simulated results or an incorrect number of legal runouts.
+    const result = calculateHoldemEquity({
+      players: [
+        { id: 'aces', cards: ['As', 'Ah'] },
+        { id: 'kings', cards: ['Kc', 'Kd'] }
+      ],
+      boardCards: ['2c', '7d', '9h', 'Jc']
+    });
+
+    expect(result).toEqual({
+      mode: 'exact',
+      samples: 44,
+      players: [
+        { id: 'aces', equityPercentage: 95.5, winPercentage: 95.5, tiePercentage: 0 },
+        { id: 'kings', equityPercentage: 4.5, winPercentage: 4.5, tiePercentage: 0 }
+      ]
+    });
   });
 
   it.each([
@@ -89,5 +133,35 @@ describe('calculateHoldemEquity', () => {
       ],
       boardCards
     })).toThrow(error);
+  });
+
+  it('rejects more than nine complete players before invoking the evaluator', () => {
+    // Break caught: unsupported ten-player deals reach the evaluator despite the public game limit.
+    expect(() => calculateHoldemEquity({
+      players: [
+        { id: 'one', cards: ['As', 'Ah'] },
+        { id: 'two', cards: ['Ks', 'Kh'] },
+        { id: 'three', cards: ['Qs', 'Qh'] },
+        { id: 'four', cards: ['Js', 'Jh'] },
+        { id: 'five', cards: ['Ts', 'Th'] },
+        { id: 'six', cards: ['9s', '9h'] },
+        { id: 'seven', cards: ['8s', '8h'] },
+        { id: 'eight', cards: ['7s', '7h'] },
+        { id: 'nine', cards: ['6s', '6h'] },
+        { id: 'ten', cards: ['5s', '5h'] }
+      ],
+      boardCards: ['2c', '3d', '4h']
+    })).toThrow('最多只能有九名玩家');
+  });
+
+  it('rejects malformed cards at runtime before invoking the evaluator', () => {
+    // Break caught: untyped external inputs bypass the TypeScript card union and reach the odds engine.
+    expect(() => calculateHoldemEquity({
+      players: [
+        { id: 'first', cards: ['As', 'Ah'] },
+        { id: 'second', cards: ['Kc', 'Kd'] }
+      ],
+      boardCards: ['2c', '7d', '1x' as HoldemCard]
+    })).toThrow('牌面中包含无效的牌');
   });
 });
