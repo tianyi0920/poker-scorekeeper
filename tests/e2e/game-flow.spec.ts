@@ -48,7 +48,7 @@ test('a user creates, settles their own game, while another user is read-only an
   try {
     const created = await createAndStartGame(
       creator.page,
-      { handPrice: '300', rakeEnabled: true },
+      { handPrice: '300', rakeEnabled: true, entry: 'home' },
       (createdGameId) => { settledGameId = createdGameId; }
     );
     settledGameId = created.id;
@@ -66,13 +66,27 @@ test('a user creates, settles their own game, while another user is read-only an
     await expect(viewer.page.getByRole('button', { name: '结束对局' })).toHaveCount(0);
     await expect(viewer.page.getByRole('link', { name: '继续结算' })).toHaveCount(0);
 
+    await admin.page.goto(`/games/${encodeURIComponent(created.id)}`);
+    await expect(admin.page.getByRole('heading', { name: created.name })).toBeVisible();
+    await expect(admin.page.getByRole('button', { name: '结束对局' })).toBeVisible();
+
     const forbiddenBegin = await apiWrite(viewerApi, 'post', `/api/games/${encodeURIComponent(created.id)}/begin-settlement`);
     expect(forbiddenBegin.status()).toBe(403);
     expect((await forbiddenBegin.json()).code).toBe('FORBIDDEN');
 
     await beginSettlementFromGamePage(creator.page, created.id);
     await viewer.page.goto(`/games/${encodeURIComponent(created.id)}`);
+    await expect(viewer.page).toHaveURL(new RegExp(`/games/${created.id}$`));
+    await expect(viewer.page.getByRole('heading', { name: created.name })).toBeVisible();
+    await expect(viewer.page.getByText('结算中', { exact: true })).toBeVisible();
+    await expect(viewer.page.getByTestId('round-table')).toBeVisible();
     await expect(viewer.page.getByRole('link', { name: '继续结算' })).toHaveCount(0);
+
+    await admin.page.goto(`/games/${encodeURIComponent(created.id)}`);
+    await expect(admin.page.getByRole('heading', { name: created.name })).toBeVisible();
+    await expect(admin.page.getByText('结算中', { exact: true })).toBeVisible();
+    await expect(admin.page.getByRole('link', { name: '继续结算' }))
+      .toHaveAttribute('href', `/games/${created.id}/settlement`);
 
     const draftResponse = await viewerApi.context.get(`/api/games/${encodeURIComponent(created.id)}/settlement-draft`);
     expect(draftResponse.status()).toBe(200);

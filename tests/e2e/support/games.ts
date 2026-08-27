@@ -7,11 +7,18 @@ export interface CreatedGame {
 
 export async function createAndStartGame(
   page: Page,
-  options: { handPrice: string; rakeEnabled: boolean },
+  options: { handPrice: string; rakeEnabled: boolean; entry?: 'direct' | 'home' },
   onGameCreated?: (gameId: string) => void
 ): Promise<CreatedGame> {
   const name = `Task18 完整流程 ${Date.now().toString(36)}`;
-  await page.goto('/games/new');
+  if (options.entry === 'home') {
+    await page.goto('/');
+    await expect(page.getByRole('link', { name: '创建对局' })).toBeVisible();
+    await page.getByRole('link', { name: '创建对局' }).click();
+    await expect(page).toHaveURL(/\/games\/new$/);
+  } else {
+    await page.goto('/games/new');
+  }
   await expect(page.getByRole('button', { name: '创建并开启' })).toHaveCount(1);
   await expect(page.getByRole('button', { name: '创建草稿' })).toHaveCount(0);
   const startRequests: string[] = [];
