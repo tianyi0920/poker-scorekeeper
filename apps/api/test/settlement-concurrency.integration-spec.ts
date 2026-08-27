@@ -357,7 +357,7 @@ describe.sequential('settlement finalization concurrency and rollback', () => {
 
   it('re-authorizes a demoted actor after finalization waits for the settings lock', async () => {
     // Break caught: an actor authorized before waiting can still commit after a concurrent demotion.
-    const fixture = await seedFixture('actor-demotion');
+    const fixture = await seedFixture('actor-demotion', false, adminB, adminA);
     const command = await commandFor(fixture);
     let settingsLocked!: () => void;
     let releaseSettings!: () => void;
