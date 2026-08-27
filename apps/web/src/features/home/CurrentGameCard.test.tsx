@@ -30,6 +30,7 @@ it('keeps the whole six-player card navigable without a redundant entry prompt',
   expect(screen.getByRole('link', { name: '进入对局：8月25日早场' }))
     .toHaveAttribute('href', '/games/game-1');
   expect(screen.queryByText(/点击整张卡片进入/)).not.toBeInTheDocument();
+  expect(screen.getByText('进行中')).toBeInTheDocument();
   expect(screen.getByText('+1')).toBeInTheDocument();
   expect(screen.getByText('¥12300')).toBeInTheDocument();
   expect(screen.getByText('♠')).toBeInTheDocument();
