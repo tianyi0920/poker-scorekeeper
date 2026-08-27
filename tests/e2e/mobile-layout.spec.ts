@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Locator, type Page } from '@playwright/test';
 import {
   apiBuyHands,
   apiLogin,
@@ -10,6 +10,123 @@ import {
 } from './support/api.js';
 import { cleanupTaskGame } from './support/database.js';
 import { fixtureAccount, tablePlayers } from './support/fixtures.js';
+
+type EquityCard = { rank: string; suit: "黑桃" | "红桃" | "梅花" | "方片" };
+
+async function chooseEquityCards(
+  page: Page,
+  trigger: Locator,
+  cards: EquityCard[],
+): Promise<void> {
+  await trigger.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  for (const card of cards) {
+    await dialog.getByRole("button", { name: `选择点数 ${card.rank}` }).click();
+    await dialog.getByRole("button", { name: `选择花色 ${card.suit}` }).click();
+  }
+  await dialog.getByRole("button", { name: "确认选牌" }).click();
+}
+
+async function replaceEquityCards(
+  page: Page,
+  trigger: Locator,
+  previous: EquityCard[],
+  next: EquityCard[],
+): Promise<void> {
+  await trigger.click();
+  const dialog = page.getByRole("dialog");
+  await expect(dialog).toBeVisible();
+  for (const card of previous)
+    await dialog
+      .getByRole("button", {
+        name: `移除 ${card.rank === "T" ? "10" : card.rank}${card.suit}`,
+      })
+      .click();
+  for (const card of next) {
+    await dialog.getByRole("button", { name: `选择点数 ${card.rank}` }).click();
+    await dialog.getByRole("button", { name: `选择花色 ${card.suit}` }).click();
+  }
+  await dialog.getByRole("button", { name: "确认选牌" }).click();
+}
+
+async function expectExactSuccess(status: Locator): Promise<void> {
+  await expect(status).toHaveText(/精确穷举 · 共计算 [1-9][\d,]* 种牌面/);
+}
+
+async function startEquityEventLog(status: Locator): Promise<void> {
+  await status.evaluate((element) => {
+    element.setAttribute("data-equity-events", JSON.stringify([element.textContent ?? ""]));
+    new MutationObserver(() => {
+      const history = JSON.parse(element.getAttribute("data-equity-events") ?? "[]") as string[];
+      const current = element.textContent ?? "";
+      if (history.at(-1) !== current) {
+        history.push(current);
+        element.setAttribute("data-equity-events", JSON.stringify(history));
+      }
+    }).observe(element, {
+      childList: true,
+      characterData: true,
+      subtree: true,
+    });
+  });
+}
+
+async function equityEvents(status: Locator): Promise<string[]> {
+  return status.evaluate(
+    (element) =>
+      JSON.parse(
+        element.getAttribute("data-equity-events") ?? "[]",
+      ) as string[],
+  );
+}
+
+async function expectEquityGeometry(
+  page: Page,
+  statusSelector: string,
+): Promise<void> {
+  const geometry = await page.evaluate((selector) => {
+    const status = document.querySelector<HTMLElement>(selector);
+    const board = document.querySelector<HTMLElement>(
+      ".equity-board-panel, .community-card-slots",
+    );
+    const players = document.querySelector<HTMLElement>(
+      '.equity-players-panel, [data-testid="round-table"]',
+    );
+    if (!status || !board || !players)
+      throw new Error("胜率页面关键元素未渲染");
+    const statusRect = status.getBoundingClientRect();
+    const boardRect = board.getBoundingClientRect();
+    const playersRect = players.getBoundingClientRect();
+    return {
+      horizontalOverflow:
+        document.documentElement.scrollWidth - window.innerWidth,
+      viewportWidth: window.innerWidth,
+      status: {
+        left: statusRect.left,
+        right: statusRect.right,
+        width: statusRect.width,
+      },
+      board: {
+        left: boardRect.left,
+        right: boardRect.right,
+        width: boardRect.width,
+      },
+      players: {
+        left: playersRect.left,
+        right: playersRect.right,
+        width: playersRect.width,
+      },
+    };
+  }, statusSelector);
+  expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
+  for (const rect of [geometry.status, geometry.board, geometry.players]) {
+    expect(rect.width).toBeGreaterThan(0);
+    expect(rect.left).toBeGreaterThanOrEqual(0);
+    expect(rect.right).toBeLessThanOrEqual(geometry.viewportWidth);
+  }
+}
+
 
 for (const playerCount of [1, 8, 12] as const) test(`${playerCount}-seat table has no horizontal overflow, undersized actions, console errors, or hidden self seat`, async ({ page }, testInfo) => {
   const admin = await apiLogin('admin');
@@ -315,14 +432,14 @@ test('embedded equity picker fits the viewport and calculates preflop and flop o
       { rank: 'Q', suit: '红桃' },
       { rank: 'Q', suit: '黑桃' }
     ]);
-    await expect(page.getByRole('status', { name: '胜率计算状态' })).toContainText('翻牌前 · 模拟 10,000 次 · 2人');
+    await expect(page.getByRole('status', { name: '胜率计算状态' })).toContainText('翻牌前 · 精确穷举');
 
     await chooseCards('选择翻牌，第1张', [
       { rank: '2', suit: '梅花' },
       { rank: '7', suit: '方片' },
       { rank: '9', suit: '红桃' }
     ]);
-    await expect(page.getByRole('status', { name: '胜率计算状态' })).toContainText('翻牌 · 精算 990 种 · 2人');
+    await expect(page.getByRole('status', { name: '胜率计算状态' })).toContainText('翻牌 · 精确穷举 · 共计算 990 种牌面');
     await expect(page.getByRole('button', { name: '选择转牌' })).toBeEnabled();
     await expect(page.getByRole('button', { name: '选择河牌' })).toBeDisabled();
     await testInfo.attach(`equity-result-${testInfo.project.name}`, {
@@ -632,5 +749,337 @@ test('profile tools entry and standalone equity calculator fit mobile viewports'
   await testInfo.attach(`standalone-equity-${testInfo.project.name}`, {
     body: await page.screenshot({ fullPage: true }),
     contentType: 'image/png'
+  });
+});
+
+test("embedded equity uses a real Worker for every street, stays responsive, and drops stale results", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    !["chromium-320x568", "chromium-360x800", "webkit-430x932"].includes(
+      testInfo.project.name,
+    ),
+    "在最窄 Chromium、常用安卓和 iPhone WebKit 尺寸验证选牌完整流程。",
+  );
+
+  const admin = await apiLogin("admin");
+  const playerSessions: ApiSession[] = [];
+  let gameId: string | undefined;
+  try {
+    const self = tablePlayers[0];
+    await page.goto("/login");
+    await page.getByLabel("用户名").fill(self.username);
+    await page.getByLabel("密码").fill(self.password);
+    await page.getByRole("button", { name: "登录" }).click();
+    await expect(page).toHaveURL(/\/$/);
+
+    const game = await createStartedGame(
+      admin,
+      `胜率选牌布局 ${testInfo.project.name}`,
+      "300",
+      (createdGameId) => {
+        gameId = createdGameId;
+      },
+    );
+    gameId = game.id;
+    for (const [index, account] of tablePlayers.slice(0, 2).entries()) {
+      const session = await apiLoginAccount(account);
+      playerSessions.push(session);
+      expect(
+        (
+          await apiBuyHands(
+            session,
+            game.id,
+            1,
+            `equity-layout-${testInfo.project.name}-${index}`,
+          )
+        ).status(),
+      ).toBe(201);
+    }
+
+    await page.goto(`/games/${game.id}`);
+    const chooseCards = async (
+      trigger: Locator,
+      cards: EquityCard[],
+      attachmentName?: string,
+    ) => {
+      await trigger.click();
+      const dialog = page.getByRole("dialog");
+      await expect(dialog).toBeVisible();
+      const geometry = await dialog.evaluate((element) => {
+        const rect = element.getBoundingClientRect();
+        return {
+          top: rect.top,
+          bottom: rect.bottom,
+          left: rect.left,
+          right: rect.right,
+          viewportWidth: window.innerWidth,
+          viewportHeight: window.innerHeight,
+          pageVerticalOverflow:
+            document.documentElement.scrollHeight - window.innerHeight,
+          pageHorizontalOverflow:
+            document.documentElement.scrollWidth - window.innerWidth,
+        };
+      });
+      expect(geometry.top).toBeGreaterThanOrEqual(0);
+      expect(geometry.bottom).toBeLessThanOrEqual(geometry.viewportHeight);
+      expect(geometry.left).toBeGreaterThanOrEqual(0);
+      expect(geometry.right).toBeLessThanOrEqual(geometry.viewportWidth);
+      expect(geometry.pageVerticalOverflow).toBeLessThanOrEqual(0);
+      expect(geometry.pageHorizontalOverflow).toBeLessThanOrEqual(0);
+      if (attachmentName !== undefined) {
+        await testInfo.attach(attachmentName, {
+          body: await page.screenshot(),
+          contentType: "image/png",
+        });
+      }
+      for (const card of cards) {
+        await dialog
+          .getByRole("button", { name: `选择点数 ${card.rank}` })
+          .click();
+        await dialog
+          .getByRole("button", { name: `选择花色 ${card.suit}` })
+          .click();
+      }
+      await dialog.getByRole("button", { name: "确认选牌" }).click();
+    };
+
+    await chooseCards(
+      page.getByRole("button", { name: "为我选择手牌" }),
+      [
+        { rank: "A", suit: "黑桃" },
+        { rank: "K", suit: "红桃" },
+      ],
+      `equity-picker-${testInfo.project.name}`,
+    );
+    await chooseCards(
+      page.getByRole("button", {
+        name: `为${tablePlayers[1]!.nickname}选择手牌`,
+      }),
+      [
+        { rank: "Q", suit: "红桃" },
+        { rank: "Q", suit: "黑桃" },
+      ],
+    );
+    const status = page.getByRole("status", { name: "胜率计算状态" });
+    await startEquityEventLog(status);
+    await expect(status).toContainText("正在精确计算…");
+
+    // A normal safe control must be observed before the zero-board Worker publishes its answer.
+    const voiceToggle = page.locator(".voice-toggle");
+    await voiceToggle.evaluate((button) => {
+      button.addEventListener("click", () => {
+        const status = document.querySelector<HTMLElement>(".table-equity-summary");
+        if (status === null) throw new Error("胜率状态在安全控件点击前消失");
+        const events = JSON.parse(status.getAttribute("data-equity-events") ?? "[]") as string[];
+        events.push("safe control: voice enabled");
+        status.setAttribute("data-equity-events", JSON.stringify(events));
+      }, { once: true });
+      button.click();
+    });
+    await expect(voiceToggle).toHaveAttribute("aria-pressed", "true");
+
+    // Change a hand while the first exact enumeration is still active.  Only this final hand may publish.
+    await replaceEquityCards(
+      page,
+      page.getByRole("button", { name: /为我修改手牌/ }),
+      [
+        { rank: "A", suit: "黑桃" },
+        { rank: "K", suit: "红桃" },
+      ],
+      [
+        { rank: "2", suit: "黑桃" },
+        { rank: "3", suit: "红桃" },
+      ],
+    );
+    await expect(status).toContainText("正在精确计算…");
+    await expectExactSuccess(status);
+    await expect(
+      page.getByTestId("seat-self").locator("..").getByText("胜率 13.6%"),
+    ).toBeVisible();
+    const events = await equityEvents(status);
+    const safeControlIndex = events.indexOf(
+      "safe control: voice enabled",
+    );
+    const successIndex = events.findIndex((event) =>
+      event.includes("精确穷举"),
+    );
+    expect(events, JSON.stringify(events)).toContain("翻牌前 · 正在精确计算…");
+    expect(safeControlIndex).toBeGreaterThanOrEqual(0);
+    expect(successIndex).toBeGreaterThan(safeControlIndex);
+
+    await chooseCards(page.getByRole("button", { name: "选择翻牌，第1张" }), [
+      { rank: "2", suit: "梅花" },
+      { rank: "7", suit: "方片" },
+      { rank: "9", suit: "红桃" },
+    ]);
+    await expectExactSuccess(status);
+    await expect(page.getByRole("button", { name: "选择转牌" })).toBeEnabled();
+    await expect(page.getByRole("button", { name: "选择河牌" })).toBeDisabled();
+    await chooseCards(page.getByRole("button", { name: "选择转牌" }), [
+      { rank: "J", suit: "梅花" },
+    ]);
+    await expectExactSuccess(status);
+    await chooseCards(page.getByRole("button", { name: "选择河牌" }), [
+      { rank: "K", suit: "方片" },
+    ]);
+    await expectExactSuccess(status);
+    await expect(page.locator("body")).not.toContainText("模拟");
+    await expectEquityGeometry(page, ".table-equity-summary");
+    await testInfo.attach(`equity-result-${testInfo.project.name}`, {
+      body: await page.screenshot({ fullPage: true }),
+      contentType: "image/png",
+    });
+  } finally {
+    await closeApiSessions(admin, ...playerSessions);
+    if (gameId) await cleanupTaskGame(gameId);
+  }
+});
+test("standalone equity uses a real Worker through every street and remains responsive at mobile widths", async ({
+  page,
+}, testInfo) => {
+  test.skip(
+    !["chromium-320x568", "chromium-360x800", "webkit-430x932"].includes(
+      testInfo.project.name,
+    ),
+    "在最窄 Chromium、常用安卓和 iPhone WebKit 尺寸验证独立胜率工具。",
+  );
+
+  const self = tablePlayers[0];
+  await page.goto("/login");
+  await page.getByLabel("用户名").fill(self.username);
+  await page.getByLabel("密码").fill(self.password);
+  await page.getByRole("button", { name: "登录" }).click();
+  await expect(page).toHaveURL(/\/$/);
+  await page.getByRole("link", { name: "我的" }).click();
+
+  const avatar = page.getByRole("img", { name: "当前头像" });
+  await expect(avatar).toHaveText(self.nickname.trim()[0]!);
+  const toolEntry = page.getByRole("link", { name: /胜率计算器/ });
+  await expect(toolEntry).toBeVisible();
+  await toolEntry.click();
+  await expect(page).toHaveURL(/\/tools\/equity$/);
+  await expect(page.getByRole("heading", { name: "胜率计算器" })).toBeVisible();
+
+  const firstInitial = [
+    { rank: "A", suit: "方片" },
+    { rank: "K", suit: "梅花" },
+  ] satisfies EquityCard[];
+  const firstFinal = [
+    { rank: "2", suit: "黑桃" },
+    { rank: "3", suit: "红桃" },
+  ] satisfies EquityCard[];
+  const second = [
+    { rank: "Q", suit: "红桃" },
+    { rank: "Q", suit: "黑桃" },
+  ] satisfies EquityCard[];
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "为玩家 1 选择手牌" }),
+    firstInitial,
+  );
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "为玩家 2 选择手牌" }),
+    second,
+  );
+
+  const summary = page.locator(".equity-tool-summary");
+  await startEquityEventLog(summary);
+  await page.getByRole("button", { name: "计算胜率" }).click();
+  await expect(summary).toContainText("翻牌前 · 正在精确计算…");
+
+  // Reset is a safe, unrelated UI action.  Its state change must land before a busy Worker can publish.
+  await page.getByRole("button", { name: "清空" }).evaluate((button) => button.click());
+  await expect(summary).toContainText("翻牌前 · 选完所有玩家手牌后计算");
+  const resetEvents = await equityEvents(summary);
+  const loadingIndex = resetEvents.findIndex((event) =>
+    event.includes("正在精确计算"),
+  );
+  const resetIndex = resetEvents.lastIndexOf("翻牌前 · 选完所有玩家手牌后计算");
+  const resultBeforeReset = resetEvents
+    .slice(Math.max(0, loadingIndex), resetIndex)
+    .some((event) => event.includes("精确穷举"));
+  expect(loadingIndex).toBeGreaterThanOrEqual(0);
+  expect(resetIndex).toBeGreaterThan(loadingIndex);
+  expect(resultBeforeReset, JSON.stringify(resetEvents)).toBe(false);
+
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "为玩家 1 选择手牌" }),
+    firstInitial,
+  );
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "为玩家 2 选择手牌" }),
+    second,
+  );
+  await page.getByRole("button", { name: "计算胜率" }).click();
+  await expect(summary).toContainText("翻牌前 · 正在精确计算…");
+  await replaceEquityCards(
+    page,
+    page.getByRole("button", { name: "为玩家 1 选择手牌" }),
+    firstInitial,
+    firstFinal,
+  );
+  await expect(page.getByRole("button", { name: "计算胜率" })).toBeEnabled();
+  await page.getByRole("button", { name: "计算胜率" }).click();
+  await expect(summary).toContainText("翻牌前 · 正在精确计算…");
+  await expectExactSuccess(summary);
+  await expect(page.getByLabel("玩家 1").getByText("13.6%")).toBeVisible();
+
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "选择翻牌（3张）" }),
+    [
+      { rank: "2", suit: "梅花" },
+      { rank: "7", suit: "方片" },
+      { rank: "9", suit: "红桃" },
+    ],
+  );
+  await page.getByRole("button", { name: "计算胜率" }).click();
+  await expectExactSuccess(summary);
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "选择转牌" }),
+    [{ rank: "J", suit: "梅花" }],
+  );
+  await page.getByRole("button", { name: "计算胜率" }).click();
+  await expectExactSuccess(summary);
+  await chooseEquityCards(
+    page,
+    page.getByRole("button", { name: "选择河牌" }),
+    [{ rank: "K", suit: "方片" }],
+  );
+  await page.getByRole("button", { name: "计算胜率" }).click();
+  await expectExactSuccess(summary);
+  await expect(page.locator("body")).not.toContainText("模拟");
+  await expectEquityGeometry(page, ".equity-tool-summary");
+
+  const undersized = await page
+    .locator("button:visible, a:visible")
+    .evaluateAll((elements) =>
+      elements
+        .filter((element) => !element.matches(".equity-player-cards"))
+        .map((element) => {
+          const rect = element.getBoundingClientRect();
+          return {
+            label:
+              element.getAttribute("aria-label") ??
+              element.textContent?.trim() ??
+              "",
+            width: rect.width,
+            height: rect.height,
+          };
+        })
+        .filter(
+          ({ width, height }) =>
+            width > 0 && height > 0 && (width < 44 || height < 44),
+        ),
+    );
+  expect(undersized, JSON.stringify(undersized)).toEqual([]);
+  await testInfo.attach(`standalone-equity-${testInfo.project.name}`, {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
   });
 });
