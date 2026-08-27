@@ -1613,8 +1613,8 @@ it('keeps the end confirmation open after a failed begin-settlement request and 
   expect(attempts).toBe(2);
 });
 
-it('recovers a SETTLING snapshot after a competing transition or lost begin-settlement response', async () => {
-  // Break caught: another committed transition followed by a lost response leaves no way to resume settlement.
+it('closes the end confirmation after a definitive game-state conflict even when the refresh is unauthorized', async () => {
+  // Break caught: a state conflict leaves a stale retry dialog visible when the follow-up refresh cannot authenticate.
   let snapshotReads = 0;
   const socket = new FakeGameSocket();
   vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
@@ -1622,15 +1622,45 @@ it('recovers a SETTLING snapshot after a competing transition or lost begin-sett
     if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
     if (url.endsWith('/api/games/game-1/snapshot')) {
       snapshotReads += 1;
-      return jsonResponse(snapshot(snapshotReads === 1 ? { players: players(1) } : { status: 'SETTLING', version: 2, stoppedAt: '2026-08-17T13:00:00.000Z', players: players(1) }));
+      return snapshotReads === 1
+        ? jsonResponse(snapshot({ players: players(1) }))
+        : jsonResponse({ code: 'UNAUTHENTICATED' }, 401);
     }
-    if (url.endsWith('/api/games/game-1/begin-settlement')) return jsonResponse({ code: 'INVALID_GAME_TRANSITION' }, 409);
+    if (url.endsWith('/api/games/game-1/begin-settlement')) return jsonResponse({ code: 'GAME_STATE_CONFLICT' }, 409);
     return jsonResponse({ code: 'NOT_FOUND' }, 404);
   }));
   render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes><Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} /><Route path="/games/:id/settlement" element={<SettlementDestination />} /></Routes></MemoryRouter></AuthProvider>);
   const user = userEvent.setup();
   await user.click(await screen.findByRole('button', { name: '结束对局' }));
   await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
-  expect(await screen.findByRole('link', { name: '继续结算' })).toHaveAttribute('href', '/games/game-1/settlement');
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认结束对局' })).not.toBeInTheDocument());
+  expect(screen.getByText('对局状态已变化，请刷新后重试')).toBeInTheDocument();
+  expect(screen.queryByText('已进入结算页')).not.toBeInTheDocument();
+  expect(snapshotReads).toBeGreaterThanOrEqual(2);
+});
+
+it('closes the end confirmation after a role downgrade is forbidden even when the refresh is unauthorized', async () => {
+  // Break caught: an administrator demoted during the request keeps an authority-only retry dialog after session revocation.
+  let snapshotReads = 0;
+  const socket = new FakeGameSocket();
+  vi.stubGlobal('fetch', vi.fn(async (input: string | URL | Request) => {
+    const url = String(input);
+    if (url.endsWith('/api/auth/session')) return jsonResponse(session('ADMIN'));
+    if (url.endsWith('/api/games/game-1/snapshot')) {
+      snapshotReads += 1;
+      return snapshotReads === 1
+        ? jsonResponse(snapshot({ players: players(1) }))
+        : jsonResponse({ code: 'UNAUTHENTICATED' }, 401);
+    }
+    if (url.endsWith('/api/games/game-1/begin-settlement')) return jsonResponse({ code: 'FORBIDDEN' }, 403);
+    return jsonResponse({ code: 'NOT_FOUND' }, 404);
+  }));
+  render(<AuthProvider><MemoryRouter initialEntries={['/games/game-1']}><Routes><Route path="/games/:id" element={<GamePage socketFactory={() => socket} />} /><Route path="/games/:id/settlement" element={<SettlementDestination />} /></Routes></MemoryRouter></AuthProvider>);
+  const user = userEvent.setup();
+  await user.click(await screen.findByRole('button', { name: '结束对局' }));
+  await user.click(screen.getByRole('button', { name: '确认结束并进入结算' }));
+  await waitFor(() => expect(screen.queryByRole('dialog', { name: '确认结束对局' })).not.toBeInTheDocument());
+  expect(screen.getByText('你没有执行此操作的权限')).toBeInTheDocument();
+  expect(screen.queryByText('已进入结算页')).not.toBeInTheDocument();
   expect(snapshotReads).toBeGreaterThanOrEqual(2);
 });

@@ -8,7 +8,7 @@ import {
   expectSettlementDetail,
   settleBalancedGame
 } from './support/settlement.js';
-import { cleanupTaskGame, expireTask18SettlementLease } from './support/database.js';
+import { cleanupTaskGame, expireTask18SettlementLease, readAuditEntityCount, readTaskGameAuditEntities } from './support/database.js';
 import { apiLogin, apiWrite, closeApiSessions } from './support/api.js';
 import { accounts } from './support/fixtures.js';
 
@@ -126,8 +126,13 @@ test('a user creates, settles their own game, while another user is read-only an
       admin.context.close(),
       closeApiSessions(viewerApi, adminApi)
     ]);
-    if (settledGameId) await cleanupTaskGame(settledGameId);
-    if (takeoverGameId) await cleanupTaskGame(takeoverGameId);
+    for (const gameId of [settledGameId, takeoverGameId]) {
+      if (!gameId) continue;
+      const auditEntities = await readTaskGameAuditEntities(gameId);
+      expect(auditEntities).not.toEqual([]);
+      await cleanupTaskGame(gameId);
+      expect(await readAuditEntityCount(auditEntities)).toBe(0);
+    }
   }
 });
 

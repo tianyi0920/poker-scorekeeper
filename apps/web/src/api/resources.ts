@@ -4,8 +4,10 @@ import {
   historyResponseSchema,
   hardDeleteGameResponseSchema,
   managedGamesResponseSchema,
+  currentGamesResponseSchema,
   gameMessageSchema,
   gameMessagesResponseSchema,
+  gameSnapshotSchema,
   selectablePresetAvatarCatalogResponseSchema,
   settlementDetailSchema,
   settlementDraftResponseSchema,
@@ -84,7 +86,7 @@ async function validatedGameMessage(
 }
 
 export const scorekeeperApi = {
-  currentGames: () => apiFetch<CurrentGamesResponse>('/games/current'),
+  currentGames: (): Promise<CurrentGamesResponse> => validatedApiFetch(currentGamesResponseSchema, '/games/current'),
   gameSnapshot: (id: string, signal?: AbortSignal) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/snapshot`, { signal }),
   gameMessages: (gameId: string, signal?: AbortSignal): Promise<GameMessagesResponseDto> => validatedGameMessages(
     gameId,
@@ -127,11 +129,15 @@ export const scorekeeperApi = {
   aggregateHistory: (body: { gameIds: string[] } | { filter: { kind: 'RECENT_10' | 'RECENT_30' | 'LAST_30_DAYS' | 'LAST_90_DAYS' } | { kind: 'CUSTOM_DATE_RANGE'; startAt: string; endAt: string } | { kind: 'MY_MONTH'; year: number; month: number } }): Promise<AllPlayerAggregationDto> => validatedApiFetch(allPlayerAggregationSchema, '/history/aggregate', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
-  createGame: (body: CreateGameRequest) => apiFetch<GameSnapshotDto>('/games', {
+  createGame: (body: CreateGameRequest): Promise<GameSnapshotDto> => validatedApiFetch(gameSnapshotSchema, '/games', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
   }),
   startGame: (id: string) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/start`, { method: 'POST' }),
-  beginSettlement: (id: string, signal?: AbortSignal) => apiFetch<GameSnapshotDto>(`/games/${encodeURIComponent(id)}/begin-settlement`, { method: 'POST', signal }),
+  beginSettlement: (id: string, signal?: AbortSignal): Promise<GameSnapshotDto> => validatedApiFetch(
+    gameSnapshotSchema,
+    `/games/${encodeURIComponent(id)}/begin-settlement`,
+    { method: 'POST', signal }
+  ),
   managedGames: (limit = 50, cursor?: string): Promise<ManagedGamesResponseDto> => validatedApiFetch(
     managedGamesResponseSchema,
     `/games/manage?limit=${limit}${cursor === undefined ? '' : `&cursor=${encodeURIComponent(cursor)}`}`

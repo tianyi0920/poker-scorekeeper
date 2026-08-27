@@ -31,6 +31,7 @@ export function renderAt(path: string, element: ReactElement): ReturnType<typeof
 export function currentGame(index: number) {
   return {
     id: `game-${index}`,
+    createdById: 'user-creator',
     name: `8月${16 + index}日晚场`,
     status: 'ACTIVE',
     version: 1,

@@ -71,6 +71,46 @@ export interface GameGraphCounts {
   hardDeleteAudits: number;
 }
 
+export interface AuditEntityReference {
+  entityType: string;
+  entityId: string;
+}
+
+export async function readTaskGameAuditEntities(gameId: string): Promise<AuditEntityReference[]> {
+  const connection = await openTestDatabase();
+  try {
+    return await connection.query(
+      `SELECT entity_type AS entityType, entity_id AS entityId
+       FROM audit_logs
+       WHERE (entity_type = ? AND entity_id = ?)
+          OR (entity_type = ? AND entity_id IN (SELECT id FROM buyin_events WHERE game_id = ?))
+          OR (entity_type = ? AND entity_id IN (SELECT id FROM settlement_drafts WHERE game_id = ?))
+          OR (entity_type = ? AND entity_id IN (SELECT id FROM settlements WHERE game_id = ?))`,
+      ['GAME', gameId, 'BUYIN_EVENT', gameId, 'SETTLEMENT_DRAFT', gameId, 'SETTLEMENT', gameId]
+    ) as Promise<AuditEntityReference[]>;
+  } finally {
+    await connection.end();
+  }
+}
+
+export async function readAuditEntityCount(entities: readonly AuditEntityReference[]): Promise<number> {
+  if (entities.length === 0) return 0;
+  const connection = await openTestDatabase();
+  try {
+    const conditions = entities.map(() => '(entity_type = ? AND entity_id = ?)').join(' OR ');
+    const parameters = entities.flatMap(({ entityType, entityId }) => [entityType, entityId]);
+    const rows = await connection.query(
+      `SELECT COUNT(*) AS count FROM audit_logs WHERE ${conditions}`,
+      parameters
+    ) as Array<{ count: number | bigint }>;
+    const [row] = rows;
+    if (row === undefined || rows.length !== 1) throw new Error('Expected exactly one audit count row');
+    return Number(row.count);
+  } finally {
+    await connection.end();
+  }
+}
+
 export async function readGameGraphCounts(gameId: string): Promise<GameGraphCounts> {
   const connection = await openTestDatabase();
   try {
@@ -119,6 +159,12 @@ export async function cleanupTaskGame(gameId: string): Promise<void> {
     const players = await connection.query(
       'SELECT id FROM game_players WHERE game_id = ?', [gameId]
     ) as Array<{ id: string }>;
+    const buyinEvents = await connection.query(
+      'SELECT id FROM buyin_events WHERE game_id = ?', [gameId]
+    ) as Array<{ id: string }>;
+    const settlementDrafts = await connection.query(
+      'SELECT id FROM settlement_drafts WHERE game_id = ?', [gameId]
+    ) as Array<{ id: string }>;
     const settlements = await connection.query(
       'SELECT id FROM settlements WHERE game_id = ?', [gameId]
     ) as Array<{ id: string }>;
@@ -135,7 +181,15 @@ export async function cleanupTaskGame(gameId: string): Promise<void> {
       await connection.query('DELETE FROM settlement_results WHERE game_player_id = ?', [playerId]);
     }
     await connection.query('DELETE FROM game_players WHERE game_id = ?', [gameId]);
-    await connection.query('DELETE FROM audit_logs WHERE entity_type = ? AND entity_id = ?', ['GAME', gameId]);
+    const auditEntities: AuditEntityReference[] = [
+      { entityType: 'GAME', entityId: gameId },
+      ...buyinEvents.map(({ id }) => ({ entityType: 'BUYIN_EVENT', entityId: id })),
+      ...settlementDrafts.map(({ id }) => ({ entityType: 'SETTLEMENT_DRAFT', entityId: id })),
+      ...settlements.map(({ id }) => ({ entityType: 'SETTLEMENT', entityId: id }))
+    ];
+    const auditConditions = auditEntities.map(() => '(entity_type = ? AND entity_id = ?)').join(' OR ');
+    const auditParameters = auditEntities.flatMap(({ entityType, entityId }) => [entityType, entityId]);
+    await connection.query(`DELETE FROM audit_logs WHERE ${auditConditions}`, auditParameters);
     await connection.query('DELETE FROM games WHERE id = ?', [gameId]);
     await connection.commit();
   } catch (error) {

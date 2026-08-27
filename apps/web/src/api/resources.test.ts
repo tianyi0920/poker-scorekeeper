@@ -1,5 +1,5 @@
 import { afterEach, expect, it, vi } from 'vitest';
-import { jsonResponse } from '../test/app-fixtures.js';
+import { currentGame, jsonResponse } from '../test/app-fixtures.js';
 import { scorekeeperApi } from './resources.js';
 
 const gameMessage = {
@@ -31,6 +31,22 @@ const detail = {
 };
 
 afterEach(() => vi.unstubAllGlobals());
+
+const gameWithoutCreator: Record<string, unknown> = { ...currentGame(1) };
+delete gameWithoutCreator.createdById;
+
+it.each([
+  ['current games', () => scorekeeperApi.currentGames(), { games: [gameWithoutCreator] }],
+  ['game creation', () => scorekeeperApi.createGame({ handPrice: '300', rakeEnabled: true }), gameWithoutCreator],
+  ['begin settlement', () => scorekeeperApi.beginSettlement('game-1'), gameWithoutCreator]
+])('rejects a snapshot response without its creator id for %s', async (_case, request, malformed) => {
+  // Break caught: lifecycle resources accept snapshots that omit the owner used by client-side visibility rules.
+  vi.stubGlobal('fetch', vi.fn(async () => jsonResponse(malformed)));
+
+  await expect(request()).rejects.toMatchObject({
+    name: 'ApiError', status: 502, code: 'HTTP_ERROR', message: '服务器返回了无效结果'
+  });
+});
 
 it('encodes current-game message paths before strictly rejecting non-canonical responses', async () => {
   // Break caught: a reserved game id alters the route or message responses bypass shared contracts.

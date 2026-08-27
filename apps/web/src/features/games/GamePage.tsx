@@ -15,6 +15,7 @@ import {
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { createGameSocket, type GameSocketClient, type GameSocketListener } from '../../api/game-socket.js';
+import { ApiError } from '../../api/http-client.js';
 import { mutationMessage, scorekeeperApi } from '../../api/resources.js';
 import { useAuth } from '../../auth/AuthProvider.js';
 import { Button } from '../../components/Button.js';
@@ -638,6 +639,9 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
     } catch (reason) {
       if (controller.signal.aborted || deletedRef.current || requestGenerationRef.current !== generation || activeGameIdRef.current !== requestedGameId) return;
       setEndError(mutationMessage(reason, '暂时无法结束对局，请刷新后重试'));
+      if (reason instanceof ApiError && (reason.code === 'FORBIDDEN' || reason.code === 'GAME_STATE_CONFLICT')) {
+        setEndOpen(false);
+      }
       void loadSnapshot(true);
     } finally {
       if (endAbortRef.current === controller) endAbortRef.current = null;
@@ -670,10 +674,11 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
             title={voiceEnabled ? '关闭语音播报' : '开启语音播报'}
             onClick={toggleVoice}
           >{voiceEnabled ? '🔊' : '🔈'}</button>
-          {active && canManage && <Button variant="ghost" unsafe onClick={() => setEndOpen(true)}>结束对局</Button>}
+          {active && canManage && <Button variant="ghost" unsafe onClick={() => { setEndError(null); setEndOpen(true); }}>结束对局</Button>}
           {snapshot.status === 'SETTLING' && canManage && <Link className="action-link" to={`/games/${encodeURIComponent(snapshot.id)}/settlement`}>继续结算</Link>}
         </div>
       </header>
+      {endError !== null && <Toast tone="error" message={endError} />}
 
       {polling && !connectionNoticeDismissed && (
         <div className="connection-banner" role="status" aria-label="实时连接状态">
@@ -801,7 +806,6 @@ export function GamePage({ socketFactory = createGameSocket }: { socketFactory?:
         <Modal title="确认结束对局" onClose={() => { if (!ending) setEndOpen(false); }}>
           <div className="modal-body end-game-confirmation">
             <Toast tone="info" message="确认后立即停止计时并禁止购买与更正，随后进入结算。" />
-            {endError !== null && <Toast tone="error" message={endError} />}
             <Button variant="danger" unsafe disabled={ending} onClick={() => void beginSettlement()}>
               {ending ? '正在结束…' : '确认结束并进入结算'}
             </Button>
