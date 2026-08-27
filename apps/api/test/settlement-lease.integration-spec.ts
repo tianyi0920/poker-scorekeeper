@@ -67,6 +67,50 @@ async function waitForLock(
   throw new Error('Game-lock blocker settled before publishing its lock barrier');
 }
 
+type ExpectedOutcome = 'fulfilled' | { rejectedCode: string };
+
+function outcomeCleanupError(
+  label: string,
+  outcome: Outcome<unknown>,
+  expected: ExpectedOutcome
+): unknown | undefined {
+  if (expected === 'fulfilled') {
+    return outcome.status === 'rejected'
+      ? new AggregateError([outcome.reason], `${label} rejected during cleanup`)
+      : undefined;
+  }
+  if (outcome.status === 'fulfilled') {
+    return new Error(`${label} unexpectedly fulfilled during cleanup`);
+  }
+  const code = typeof outcome.reason === 'object' && outcome.reason !== null &&
+    'code' in outcome.reason
+    ? outcome.reason.code
+    : undefined;
+  return code === expected.rejectedCode
+    ? undefined
+    : new AggregateError([outcome.reason], `${label} rejected unexpectedly during cleanup`);
+}
+
+function throwLeaseTestErrors(
+  primaryFailed: boolean,
+  primaryError: unknown,
+  cleanupErrors: readonly unknown[]
+): void {
+  if (!primaryFailed && cleanupErrors.length === 0) return;
+  if (primaryFailed && cleanupErrors.length === 0) throw primaryError;
+  if (!primaryFailed && cleanupErrors.length === 1) throw cleanupErrors[0];
+  const summary = (error: unknown): string => error instanceof Error
+    ? `${error.name}: ${error.message}`
+    : String(error);
+  const cleanupSummary = cleanupErrors.map(summary).join('; ');
+  throw new AggregateError(
+    primaryFailed ? [primaryError, ...cleanupErrors] : cleanupErrors,
+    primaryFailed
+      ? `Lease test failed (${summary(primaryError)}) and cleanup also failed (${cleanupSummary})`
+      : `Lease test cleanup failed (${cleanupSummary})`
+  );
+}
+
 function normalize(value: string): string {
   return value.trim().normalize('NFKC').toLocaleLowerCase('zh-CN');
 }
@@ -317,10 +361,11 @@ describe.sequential('settlement draft lease concurrency', () => {
     const release = new Promise<void>((resolve) => { releaseGame = resolve; });
     let blockerOutcome: Promise<Outcome<void>> | undefined;
     let saveOutcome: Promise<Outcome<Awaited<ReturnType<SettlementDraftService['save']>>>> | undefined;
+    let blockerChecked = false;
+    let saveChecked = false;
     let primaryFailed = false;
     let primaryError: unknown;
-    let cleanupFailed = false;
-    let cleanupError: unknown;
+    const cleanupErrors: unknown[] = [];
     try {
       blockerOutcome = captureOutcome(prisma.$transaction(async (transaction) => {
         await transaction.$queryRaw<Array<{ id: string }>>`
@@ -342,9 +387,12 @@ describe.sequential('settlement draft lease concurrency', () => {
       expect(settled).toBe(false);
       releaseGame();
       const blockerResult = await blockerOutcome;
+      blockerChecked = true;
       if (blockerResult.status === 'rejected') throw blockerResult.reason;
 
-      await expect(saveOutcome).resolves.toMatchObject({
+      const saveResult = await saveOutcome;
+      saveChecked = true;
+      expect(saveResult).toMatchObject({
         status: 'rejected',
         reason: { code: 'FORBIDDEN' }
       });
@@ -363,19 +411,29 @@ describe.sequential('settlement draft lease concurrency', () => {
       primaryError = error;
     } finally {
       releaseGame();
-      await Promise.allSettled([
-        ...(blockerOutcome === undefined ? [] : [blockerOutcome]),
-        ...(saveOutcome === undefined ? [] : [saveOutcome])
+      const [blockerCleanup, saveCleanup] = await Promise.all([
+        blockerOutcome ?? Promise.resolve(undefined),
+        saveOutcome ?? Promise.resolve(undefined)
       ]);
+      if (!blockerChecked && blockerCleanup !== undefined) {
+        const error = outcomeCleanupError('Game-lock blocker', blockerCleanup, 'fulfilled');
+        if (error !== undefined) cleanupErrors.push(error);
+      }
+      if (!saveChecked && saveCleanup !== undefined) {
+        const error = outcomeCleanupError(
+          'Non-owner draft save',
+          saveCleanup,
+          { rejectedCode: 'FORBIDDEN' }
+        );
+        if (error !== undefined) cleanupErrors.push(error);
+      }
       try {
         adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
       } catch (error) {
-        cleanupFailed = true;
-        cleanupError = error;
+        cleanupErrors.push(new AggregateError([error], 'Admin role restoration failed'));
       }
     }
-    if (primaryFailed) throw primaryError;
-    if (cleanupFailed) throw cleanupError;
+    throwLeaseTestErrors(primaryFailed, primaryError, cleanupErrors);
   }, 15_000);
 
   it('lets a demoted game creator save after waiting for the game lock', async () => {
@@ -390,10 +448,11 @@ describe.sequential('settlement draft lease concurrency', () => {
     const release = new Promise<void>((resolve) => { releaseGame = resolve; });
     let blockerOutcome: Promise<Outcome<void>> | undefined;
     let saveOutcome: Promise<Outcome<Awaited<ReturnType<SettlementDraftService['save']>>>> | undefined;
+    let blockerChecked = false;
+    let saveChecked = false;
     let primaryFailed = false;
     let primaryError: unknown;
-    let cleanupFailed = false;
-    let cleanupError: unknown;
+    const cleanupErrors: unknown[] = [];
     try {
       blockerOutcome = captureOutcome(prisma.$transaction(async (transaction) => {
         await transaction.$queryRaw<Array<{ id: string }>>`
@@ -415,9 +474,12 @@ describe.sequential('settlement draft lease concurrency', () => {
       expect(settled).toBe(false);
       releaseGame();
       const blockerResult = await blockerOutcome;
+      blockerChecked = true;
       if (blockerResult.status === 'rejected') throw blockerResult.reason;
 
-      await expect(saveOutcome).resolves.toMatchObject({
+      const saveResult = await saveOutcome;
+      saveChecked = true;
+      expect(saveResult).toMatchObject({
         status: 'fulfilled',
         value: { version: 2, editorUserId: adminA.id }
       });
@@ -437,19 +499,25 @@ describe.sequential('settlement draft lease concurrency', () => {
       primaryError = error;
     } finally {
       releaseGame();
-      await Promise.allSettled([
-        ...(blockerOutcome === undefined ? [] : [blockerOutcome]),
-        ...(saveOutcome === undefined ? [] : [saveOutcome])
+      const [blockerCleanup, saveCleanup] = await Promise.all([
+        blockerOutcome ?? Promise.resolve(undefined),
+        saveOutcome ?? Promise.resolve(undefined)
       ]);
+      if (!blockerChecked && blockerCleanup !== undefined) {
+        const error = outcomeCleanupError('Game-lock blocker', blockerCleanup, 'fulfilled');
+        if (error !== undefined) cleanupErrors.push(error);
+      }
+      if (!saveChecked && saveCleanup !== undefined) {
+        const error = outcomeCleanupError('Game-creator draft save', saveCleanup, 'fulfilled');
+        if (error !== undefined) cleanupErrors.push(error);
+      }
       try {
         adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
       } catch (error) {
-        cleanupFailed = true;
-        cleanupError = error;
+        cleanupErrors.push(new AggregateError([error], 'Admin role restoration failed'));
       }
     }
-    if (primaryFailed) throw primaryError;
-    if (cleanupFailed) throw cleanupError;
+    throwLeaseTestErrors(primaryFailed, primaryError, cleanupErrors);
   }, 15_000);
 
   it('broadcasts only after the draft commit is visible', async () => {
