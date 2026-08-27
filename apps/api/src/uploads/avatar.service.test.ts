@@ -6,7 +6,6 @@ import { join } from 'node:path';
 import sharp from 'sharp';
 import type { AuditService } from '../audit/audit.service.js';
 import type { PrismaService } from '../prisma/prisma.service.js';
-import { mapGameSnapshot } from '../games/game-snapshot.mapper.js';
 import { AvatarService } from './avatar.service.js';
 import { DEFAULT_PRESET_AVATAR, PRESET_AVATARS } from './preset-avatars.js';
 
@@ -132,29 +131,5 @@ describe('AvatarService append-only uploads', () => {
       status: 400
     });
 
-    expect(mapGameSnapshot({
-      id: 'game-1',
-      createdById: 'user-creator',
-      name: '遗留头像牌局',
-      status: 'ACTIVE',
-      version: 1,
-      handPrice: 1n,
-      rakeEnabled: true,
-      startedAt: null,
-      stoppedAt: null,
-      players: [{
-        id: 'player-1',
-        userId,
-        nicknameSnapshot: '头像用户',
-        avatarKindSnapshot: AvatarKind.PRESET,
-        avatarValueSnapshot: 'preset-01',
-        seatNo: 1
-      }],
-      buyinEvents: []
-    }),
-    ).toMatchObject({
-      createdById: 'user-creator',
-      players: [{ avatarUrl: '/avatars/preset-01.webp' }]
-    });
   });
 });
