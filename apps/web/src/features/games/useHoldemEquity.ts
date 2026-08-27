@@ -12,21 +12,16 @@ export type HoldemEquityState =
   | { status: 'success'; result: HoldemEquityResult }
   | { status: 'error'; result: null };
 
-export type HoldemEquityWorkerClientFactory = () => HoldemEquityWorkerClient;
-
 const idleState: HoldemEquityState = { status: 'idle', result: null };
 
-export function useHoldemEquity(
-  submittedInput: HoldemEquityInput | null,
-  createClient: HoldemEquityWorkerClientFactory = createHoldemEquityWorkerClient
-): HoldemEquityState {
+export function useHoldemEquity(submittedInput: HoldemEquityInput | null): HoldemEquityState {
   const clientRef = useRef<HoldemEquityWorkerClient | null>(null);
   const disposalGenerationRef = useRef(0);
   const [state, setState] = useState<HoldemEquityState>(idleState);
 
   let client = clientRef.current;
   if (client === null) {
-    client = createClient();
+    client = createHoldemEquityWorkerClient();
     clientRef.current = client;
   }
 
