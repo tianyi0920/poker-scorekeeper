@@ -53,6 +53,7 @@ it('requests only current games and omits personal summaries and recent results'
   renderAt('/', <App />);
 
   expect(await screen.findByRole('link', { name: /进入对局/ })).toHaveAttribute('href', '/games/game-1');
+  expect(screen.queryByText(/点击整张卡片进入/)).not.toBeInTheDocument();
   expect(screen.queryByText('个人摘要')).not.toBeInTheDocument();
   expect(screen.queryByText('最近战绩')).not.toBeInTheDocument();
   expectOnlyCurrentRequests(fetchMock);

@@ -28,6 +28,5 @@ export function CurrentGameCard({ game }: { game: GameSnapshotDto }) {
       <div><dt>玩家</dt><dd>{game.players.length} / 12</dd></div>
       <div><dt>总买入</dt><dd>¥{totalBuyIn.toString()}</dd></div>
     </dl>
-    <span className="current-game-enter">点击整张卡片进入 <span aria-hidden="true">→</span></span>
   </Link>;
 }
