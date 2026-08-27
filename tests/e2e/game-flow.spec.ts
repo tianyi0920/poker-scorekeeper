@@ -2,11 +2,15 @@ import { expect, test, type Frame, type WebSocketRoute } from '@playwright/test'
 import { loginContext } from './support/auth.js';
 import { adjustLatestBuy, buyHands, createAndStartGame } from './support/games.js';
 import {
+  beginSettlementFromGamePage,
+  completeBalancedSettlement,
   expectAllPlayerAggregate,
   expectSettlementDetail,
   settleBalancedGame
 } from './support/settlement.js';
-import { cleanupTaskGame } from './support/database.js';
+import { cleanupTaskGame, expireTask18SettlementLease } from './support/database.js';
+import { apiLogin, apiWrite, closeApiSessions } from './support/api.js';
+import { accounts } from './support/fixtures.js';
 
 test('admin creates, three players buy, settle, and aggregate the table', async ({ browser }) => {
   const admin = await loginContext(browser, 'admin');
@@ -30,6 +34,86 @@ test('admin creates, three players buy, settle, and aggregate the table', async 
   } finally {
     await Promise.all([admin.context.close(), playerA.context.close(), playerB.context.close()]);
     if (gameId) await cleanupTaskGame(gameId);
+  }
+});
+
+test('a user creates, settles their own game, while another user is read-only and an admin can take over', async ({ browser }) => {
+  const creator = await loginContext(browser, 'player-a');
+  const viewer = await loginContext(browser, 'player-b');
+  const admin = await loginContext(browser, 'admin');
+  const viewerApi = await apiLogin('player-b');
+  const adminApi = await apiLogin('admin');
+  let settledGameId: string | undefined;
+  let takeoverGameId: string | undefined;
+  try {
+    const created = await createAndStartGame(
+      creator.page,
+      { handPrice: '300', rakeEnabled: true },
+      (createdGameId) => { settledGameId = createdGameId; }
+    );
+    settledGameId = created.id;
+    const snapshot = await creator.page.context().request.get(`/api/games/${encodeURIComponent(created.id)}/snapshot`);
+    expect(snapshot.status()).toBe(200);
+    expect(await snapshot.json()).toMatchObject({ id: created.id, createdById: accounts['player-a'].id });
+
+    await buyHands(creator.page, created.id, 5);
+    await buyHands(viewer.page, created.id, 3);
+    await buyHands(admin.page, created.id, 4);
+    await adjustLatestBuy(creator.page, created.id, 3);
+
+    await viewer.page.goto(`/games/${encodeURIComponent(created.id)}`);
+    await expect(viewer.page.getByRole('heading', { name: created.name })).toBeVisible();
+    await expect(viewer.page.getByRole('button', { name: '结束对局' })).toHaveCount(0);
+    await expect(viewer.page.getByRole('link', { name: '继续结算' })).toHaveCount(0);
+
+    const forbiddenBegin = await apiWrite(viewerApi, 'post', `/api/games/${encodeURIComponent(created.id)}/begin-settlement`);
+    expect(forbiddenBegin.status()).toBe(403);
+    expect((await forbiddenBegin.json()).code).toBe('FORBIDDEN');
+
+    await beginSettlementFromGamePage(creator.page, created.id);
+    await viewer.page.goto(`/games/${encodeURIComponent(created.id)}`);
+    await expect(viewer.page.getByRole('link', { name: '继续结算' })).toHaveCount(0);
+
+    const draftResponse = await viewerApi.context.get(`/api/games/${encodeURIComponent(created.id)}/settlement-draft`);
+    expect(draftResponse.status()).toBe(200);
+    const draft = await draftResponse.json() as { version: number; payload: unknown };
+    const forbiddenSave = await apiWrite(viewerApi, 'put', `/api/games/${encodeURIComponent(created.id)}/settlement-draft`, {
+      version: draft.version,
+      payload: draft.payload
+    });
+    expect(forbiddenSave.status()).toBe(403);
+    expect((await forbiddenSave.json()).code).toBe('FORBIDDEN');
+    const forbiddenFinalize = await apiWrite(viewerApi, 'post', `/api/games/${encodeURIComponent(created.id)}/settlement-finalize`, {
+      draftVersion: draft.version,
+      settingsVersion: 1,
+      confirmationToken: 'not-authorized'
+    });
+    expect(forbiddenFinalize.status()).toBe(403);
+    expect((await forbiddenFinalize.json()).code).toBe('FORBIDDEN');
+
+    await completeBalancedSettlement(creator.page, created.id);
+    await expectSettlementDetail(viewer.page, created.id);
+
+    const takeover = await createAndStartGame(
+      creator.page,
+      { handPrice: '300', rakeEnabled: true },
+      (createdGameId) => { takeoverGameId = createdGameId; }
+    );
+    takeoverGameId = takeover.id;
+    await beginSettlementFromGamePage(creator.page, takeover.id);
+    await expireTask18SettlementLease(takeover.id);
+    const takenOver = await apiWrite(adminApi, 'post', `/api/games/${encodeURIComponent(takeover.id)}/settlement-draft/takeover`);
+    expect(takenOver.status()).toBe(200);
+    expect(await takenOver.json()).toMatchObject({ editorUserId: accounts.admin.id, canEdit: true });
+  } finally {
+    await Promise.all([
+      creator.context.close(),
+      viewer.context.close(),
+      admin.context.close(),
+      closeApiSessions(viewerApi, adminApi)
+    ]);
+    if (settledGameId) await cleanupTaskGame(settledGameId);
+    if (takeoverGameId) await cleanupTaskGame(takeoverGameId);
   }
 });
 

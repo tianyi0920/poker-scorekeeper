@@ -29,13 +29,9 @@ test('backend rejects every representative role escalation while the UI hides pr
     expect(changeRake.status()).toBe(403);
     expect((await changeRake.json()).code).toBe('FORBIDDEN');
 
-    const createGame = await apiWrite(player, 'post', '/api/games', {
-      name: `Task18 denied ${runId}`,
-      handPrice: '300',
-      rakeEnabled: true
-    });
-    expect(createGame.status()).toBe(403);
-    expect((await createGame.json()).code).toBe('FORBIDDEN');
+    const startGame = await apiWrite(player, 'post', '/api/games/not-a-fixture/start');
+    expect(startGame.status()).toBe(403);
+    expect((await startGame.json()).code).toBe('FORBIDDEN');
   } finally {
     await closeApiSessions(admin, player);
   }

@@ -9,7 +9,7 @@ function formatSignedMoney(value: string): string {
   return `${amount > 0n ? '+' : '−'}¥${(amount < 0n ? -amount : amount).toLocaleString('zh-CN')}`;
 }
 
-export async function settleBalancedGame(page: Page, gameId: string): Promise<void> {
+export async function beginSettlementFromGamePage(page: Page, gameId: string): Promise<void> {
   await page.goto(`/games/${encodeURIComponent(gameId)}`);
   await page.getByRole('button', { name: '结束对局' }).click();
   const begunResponse = page.waitForResponse((response) => {
@@ -21,7 +21,10 @@ export async function settleBalancedGame(page: Page, gameId: string): Promise<vo
   await page.getByRole('button', { name: '确认结束并进入结算' }).click();
   await begunResponse;
   await expect(page).toHaveURL(new RegExp(`/games/${gameId}/settlement$`));
+}
 
+export async function completeBalancedSettlement(page: Page, gameId: string): Promise<void> {
+  await page.goto(`/games/${encodeURIComponent(gameId)}/settlement`);
   await page.getByLabel(`${accounts.admin.nickname}的带走金额`).fill('600');
   await page.getByLabel(`${accounts['player-a'].nickname}的带走金额`).fill('1500');
   await page.getByLabel(`${accounts['player-b'].nickname}的带走金额`).fill('900');
@@ -44,6 +47,11 @@ export async function settleBalancedGame(page: Page, gameId: string): Promise<vo
   await expect(page.getByRole('dialog', { name: '确认永久结算' })).toHaveCount(0);
   await page.getByRole('button', { name: '确认结算' }).click();
   await expect(page.getByLabel('历史结算明细')).toBeVisible();
+}
+
+export async function settleBalancedGame(page: Page, gameId: string): Promise<void> {
+  await beginSettlementFromGamePage(page, gameId);
+  await completeBalancedSettlement(page, gameId);
 }
 
 export async function expectSettlementDetail(page: Page, gameId: string): Promise<void> {
