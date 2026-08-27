@@ -29,6 +29,11 @@ interface Fixture {
   payload: SettlementDraftPayload;
 }
 
+interface SeedFixtureOptions {
+  expired?: boolean;
+  creator?: User;
+}
+
 function normalize(value: string): string {
   return value.trim().normalize('NFKC').toLocaleLowerCase('zh-CN');
 }
@@ -76,7 +81,10 @@ describe.sequential('settlement draft lease concurrency', () => {
     });
   }
 
-  async function seedFixture(suffix: string, expired = false): Promise<Fixture> {
+  async function seedFixture(
+    suffix: string,
+    { expired = false, creator = adminA }: SeedFixtureOptions = {}
+  ): Promise<Fixture> {
     const game = await prisma.game.create({
       data: {
         name: `${prefix}-${suffix}`,
@@ -84,7 +92,7 @@ describe.sequential('settlement draft lease concurrency', () => {
         rakeEnabled: true,
         status: GameStatus.SETTLING,
         version: 2,
-        createdById: adminA.id,
+        createdById: creator.id,
         startedAt: new Date(Date.now() - 60_000),
         stoppedAt: new Date()
       }
@@ -239,7 +247,7 @@ describe.sequential('settlement draft lease concurrency', () => {
   });
 
   it('lets exactly one administrator take an expired lease', async () => {
-    const fixture = await seedFixture('takeover-race', true);
+    const fixture = await seedFixture('takeover-race', { expired: true });
     const draft = await prisma.settlementDraft.findUniqueOrThrow({
       where: { gameId: fixture.game.id },
       select: { id: true }
@@ -264,8 +272,8 @@ describe.sequential('settlement draft lease concurrency', () => {
     })).resolves.toBe(1);
   });
 
-  it('re-authorizes the editor after waiting for the game lock', async () => {
-    const fixture = await seedFixture('editor-demotion');
+  it('rejects a demoted non-owner editor after waiting for the game lock', async () => {
+    const fixture = await seedFixture('non-owner-editor-demotion', { creator: adminB });
     const draft = await prisma.settlementDraft.findUniqueOrThrow({
       where: { gameId: fixture.game.id },
       select: { id: true }
@@ -307,6 +315,55 @@ describe.sequential('settlement draft lease concurrency', () => {
         }
       }))
         .resolves.toBe(0);
+    } finally {
+      adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
+    }
+  }, 15_000);
+
+  it('lets a demoted game creator save after waiting for the game lock', async () => {
+    const fixture = await seedFixture('creator-editor-demotion');
+    const draft = await prisma.settlementDraft.findUniqueOrThrow({
+      where: { gameId: fixture.game.id },
+      select: { id: true }
+    });
+    let gameLocked!: () => void;
+    let releaseGame!: () => void;
+    const locked = new Promise<void>((resolve) => { gameLocked = resolve; });
+    const release = new Promise<void>((resolve) => { releaseGame = resolve; });
+    const blocker = prisma.$transaction(async (transaction) => {
+      await transaction.$queryRaw<Array<{ id: string }>>`
+        SELECT id FROM games WHERE id = ${fixture.game.id} FOR UPDATE
+      `;
+      gameLocked();
+      await release;
+      await transaction.user.update({ where: { id: adminA.id }, data: { role: Role.USER } });
+    }, { timeout: 10_000, maxWait: 5_000 });
+    await locked;
+
+    let settled = false;
+    const save = drafts.save(
+      fixture.game.id,
+      authUser(adminA),
+      { version: 1, payload: fixture.payload }
+    ).finally(() => { settled = true; });
+    await delay(200);
+    expect(settled).toBe(false);
+    releaseGame();
+    await blocker;
+
+    try {
+      await expect(save).resolves.toMatchObject({ version: 2, editorUserId: adminA.id });
+      await expect(prisma.settlementDraft.findUniqueOrThrow({ where: { gameId: fixture.game.id } }))
+        .resolves.toMatchObject({ version: 2, editorUserId: adminA.id, updatedById: adminA.id });
+      await expect(prisma.auditLog.count({
+        where: {
+          action: 'SETTLEMENT_DRAFT_UPDATED',
+          entityType: 'SETTLEMENT_DRAFT',
+          entityId: draft.id,
+          actorUserId: adminA.id
+        }
+      }))
+        .resolves.toBe(1);
     } finally {
       adminA = await prisma.user.update({ where: { id: adminA.id }, data: { role: Role.ADMIN } });
     }
