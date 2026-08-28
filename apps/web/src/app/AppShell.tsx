@@ -30,10 +30,11 @@ export function AppShell() {
   const { pathname } = useLocation();
   const focused = isFocusedGameRoute(pathname);
   const liveGame = isLiveGameRoute(pathname);
-  const compactDetail = isCompactHistoryRoute(pathname);
+  const equityToolRoute = /^\/tools\/equity\/?$/.test(pathname);
+  const compactDetail = isCompactHistoryRoute(pathname) || equityToolRoute;
   const historyRoute = /^\/history(?:\/|$)/.test(pathname);
   const profileRoute = pathname === '/profile' || /^\/tools(?:\/|$)/.test(pathname);
-  const shellClassName = ['app-shell', focused && 'app-shell--focus', liveGame && 'app-shell--game', compactDetail && 'app-shell--compact-detail'].filter(Boolean).join(' ');
+  const shellClassName = ['app-shell', focused && 'app-shell--focus', liveGame && 'app-shell--game', compactDetail && 'app-shell--compact-detail', equityToolRoute && 'app-shell--equity'].filter(Boolean).join(' ');
   return <div className={shellClassName}>
     {!compactDetail && !liveGame && <header className="app-header"><div><span className="eyebrow">朋友牌局</span><h1>德州计分</h1></div><Button variant="ghost" unsafe aria-label="退出登录" onClick={() => void logout()}>退出</Button></header>}
     <main className="app-content">{!compactDetail && <p className={liveGame ? 'welcome welcome--game' : 'welcome'}>晚上好，{user?.nickname}</p>}<Outlet /></main>

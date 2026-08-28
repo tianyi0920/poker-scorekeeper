@@ -101,6 +101,16 @@ it('starts with two players and enforces flop, turn and river order', () => {
   expect(screen.getByRole('button', { name: '计算胜率' })).toBeDisabled();
 });
 
+it('uses a visible compact return header instead of the redundant tool kicker', () => {
+  // Break caught: the back action becomes an unlabeled glyph or the oversized secondary heading returns.
+  renderPage();
+
+  expect(screen.getByRole('link', { name: '返回我的' })).toHaveTextContent('返回我的');
+  expect(screen.queryByText('德州工具')).not.toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: '胜率计算器' })).toBeVisible();
+  expect(screen.getByRole('button', { name: '清空' })).toBeVisible();
+});
+
 it('supports two to nine players without leaving stale cards behind', async () => {
   // Break caught: the add control exceeds nine players or removal can leave fewer than two participants.
   renderPage();

@@ -122,8 +122,8 @@ export function EquityCalculatorPage() {
 
   return <section className="page-stack equity-tool-page" aria-labelledby="equity-tool-title">
     <header className="equity-tool-heading">
-      <Link to="/profile" aria-label="返回我的">‹</Link>
-      <div><span className="section-kicker">德州工具</span><h2 id="equity-tool-title">胜率计算器</h2></div>
+      <Link to="/profile" aria-label="返回我的"><span aria-hidden="true">←</span> 返回我的</Link>
+      <h1 id="equity-tool-title">胜率计算器</h1>
       <button type="button" onClick={reset}>清空</button>
     </header>
 
@@ -173,14 +173,16 @@ export function EquityCalculatorPage() {
     </section>
 
     <button type="button" className="button button--primary equity-calculate" disabled={!canCalculate} onClick={calculate}>计算胜率</button>
-    <p className="equity-tool-summary">{calculation.status === 'idle'
-      ? `${street} · 选完所有玩家手牌后计算`
-      : calculation.status === 'loading'
-        ? `${street} · 正在精确计算…`
-        : calculation.status === 'error'
-          ? `${street} · 精确计算失败，请重试`
-          : `${street} · 精确穷举 · 共计算 ${sampleFormatter.format(calculation.result.samples)} 种牌面 · ${players.length}人`}</p>
-    <p className="equity-tool-local-note">仅在本机计算，不上传牌面</p>
+    <footer className="equity-tool-footer">
+      <p className="equity-tool-summary">{calculation.status === 'idle'
+        ? `${street} · 选完所有玩家手牌后计算`
+        : calculation.status === 'loading'
+          ? `${street} · 正在精确计算…`
+          : calculation.status === 'error'
+            ? `${street} · 精确计算失败，请重试`
+            : `${street} · 精确穷举 · 共计算 ${sampleFormatter.format(calculation.result.samples)} 种牌面 · ${players.length}人`}</p>
+      <p className="equity-tool-local-note">仅在本机计算，不上传牌面</p>
+    </footer>
 
     {picker !== null && <HoldemCardPicker
       key={`${pickerTarget?.type}:${pickerTarget?.type === 'player' ? pickerTarget.playerId : pickerTarget?.street}`}

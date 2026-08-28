@@ -778,15 +778,23 @@ test('profile tools entry and standalone equity calculator fit mobile viewports'
 
   const geometry = await page.evaluate(() => ({
     horizontalOverflow: document.documentElement.scrollWidth - window.innerWidth,
+    verticalOverflow: document.documentElement.scrollHeight - window.innerHeight,
     pageWidth: document.documentElement.getBoundingClientRect().width,
+    pageHeight: document.documentElement.getBoundingClientRect().height,
     viewportWidth: window.innerWidth,
+    viewportHeight: window.innerHeight,
     boardRight: document.querySelector<HTMLElement>('.equity-board-panel')?.getBoundingClientRect().right ?? Number.NaN,
-    playerRight: document.querySelector<HTMLElement>('.equity-players-panel')?.getBoundingClientRect().right ?? Number.NaN
+    playerRight: document.querySelector<HTMLElement>('.equity-players-panel')?.getBoundingClientRect().right ?? Number.NaN,
+    calculateBottom: document.querySelector<HTMLElement>('.equity-calculate')?.getBoundingClientRect().bottom ?? Number.NaN,
+    navigationTop: document.querySelector<HTMLElement>('.bottom-nav')?.getBoundingClientRect().top ?? Number.NaN
   }));
   expect(geometry.horizontalOverflow).toBeLessThanOrEqual(0);
+  expect(geometry.verticalOverflow).toBeLessThanOrEqual(0);
   expect(geometry.pageWidth).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.pageHeight).toBeLessThanOrEqual(geometry.viewportHeight);
   expect(geometry.boardRight).toBeLessThanOrEqual(geometry.viewportWidth);
   expect(geometry.playerRight).toBeLessThanOrEqual(geometry.viewportWidth);
+  expect(geometry.calculateBottom).toBeLessThanOrEqual(geometry.navigationTop);
 
   const undersized = await page.locator('button:visible, a:visible').evaluateAll((elements) => elements
     .filter((element) => !element.matches('.equity-player-cards'))

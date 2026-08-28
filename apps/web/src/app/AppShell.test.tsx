@@ -174,6 +174,18 @@ it('routes the profile tool entry to a protected standalone equity calculator', 
   expect(within(navigation).getByRole('link', { name: '我的' })).toHaveAttribute('aria-current', 'page');
 });
 
+it('uses a compact shell for the standalone equity calculator without global branding', async () => {
+  // Break caught: the calculator loses its first viewport to the global brand, logout, and greeting.
+  renderShell('/tools/equity');
+  await screen.findByText('路由内容');
+
+  expect(screen.queryByRole('banner')).not.toBeInTheDocument();
+  expect(screen.queryByText('德州计分')).not.toBeInTheDocument();
+  expect(screen.queryByText(/晚上好/)).not.toBeInTheDocument();
+  expect(screen.getByText('路由内容').closest('.app-shell')).toHaveClass('app-shell--compact-detail');
+  expect(screen.getByRole('navigation', { name: '主导航' })).toBeVisible();
+});
+
 it('lets a regular user reach the settlement route where the API remains authoritative', async () => {
   // Break caught: a creator's settlement link redirects at the route gate before the server can enforce ownership.
   window.history.replaceState({}, '', '/games/game-1/settlement');
